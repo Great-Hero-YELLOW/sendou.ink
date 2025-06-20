@@ -54,9 +54,9 @@ Speaking of the Switch 2 Pro Controller, the new buttons that were added to the 
 
 ## **Display**
 
-The display of Splatoon 3 on Switch 2 has both pros and cons to it. On one hand, it looks fantastic in docked mode, especially if you enable HDR on your Switch 2\. The colors and details stand out, something that has been further enhanced in patch 10.0.0. In docked mode, the game is locked to 1080p. 
+The display of Splatoon 3 on Switch 2 has both pros and cons to it. On one hand, it looks fantastic in docked mode, even when HDR is not yet supported for this game on Switch 2\. The colors and details stand out, with enhanced shadow quality, something that has been further enhanced in patch 10.0.0. In docked mode, the game can run in 4K at 60fps, which is an upgrade from 1080p docked mode on the Switch 1\. 
 
-However… In handheld mode, the game is locked to 720p. Due to the Switch 2’s larger screen, the game doesn’t look very good. Edges and details can look jagged and pixelated because the display stretches to fit the screen. It is a big quality disappointment, but at least in the latest update, screenshots and photos taken in-game will have their resolution increased when stored in the Nintendo Switch 2 Album. 
+However… In handheld mode, the game, which displays at 720p on the Switch 1, now runs at 1080p. Due to the Switch 2’s larger screen, to some, the game doesn’t look very good. Edges and details can look jagged and pixelated because the display stretches to fit the screen. It is a big quality disappointment, but at least in the latest update, screenshots and photos taken in-game will have their resolution increased when stored in the Nintendo Switch 2 Album. 
 
 ## **Glitches…** 
 
