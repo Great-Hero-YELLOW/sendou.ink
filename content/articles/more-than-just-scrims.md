@@ -1,3 +1,4 @@
+---
 title: "More Than Just Scrims - Four Ways to Practice in Splatoon"
 date: 2025-06-18
 author:
