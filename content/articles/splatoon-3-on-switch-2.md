@@ -1,3 +1,4 @@
+---
 title: "Splatoon 3 on Nintendo Switch 2: A Two Week Retrospective"
 date: 2025-06-20
 author:
