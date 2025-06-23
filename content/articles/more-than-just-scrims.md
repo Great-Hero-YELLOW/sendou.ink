@@ -3,7 +3,7 @@ title: "More Than Just Scrims - Four Ways to Practice in Splatoon"
 date: 2025-06-18
 author:
    - name: YELLOW
-   link: https://sendou.ink/u/great-hero-yellow
+     link: https://sendou.ink/u/great-hero-yellow
 ---
 
 Article originally posted on the [https://www.splatoonstronghold.com/guides/more-than-just-scrims-four-ways-to-practice-in-splatoon](https://www.splatoonstronghold.com/guides/more-than-just-scrims-four-ways-to-practice-in-splatoon) website.
