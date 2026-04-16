@@ -29,14 +29,11 @@ import { deleteMatchPickBanEvents } from "../queries/deleteMatchPickBanEvents.se
 import { deleteParticipantsByMatchGameResultId } from "../queries/deleteParticipantsByMatchGameResultId.server";
 import { deletePickBanEvent } from "../queries/deletePickBanEvent.server";
 import { deleteTournamentMatchGameResultById } from "../queries/deleteTournamentMatchGameResultById.server";
-import {
-	type FindMatchById,
-	findMatchById,
-} from "../queries/findMatchById.server";
 import { findResultsByMatchId } from "../queries/findResultsByMatchId.server";
 import { insertTournamentMatchGameResult } from "../queries/insertTournamentMatchGameResult.server";
 import { insertTournamentMatchGameResultParticipant } from "../queries/insertTournamentMatchGameResultParticipant.server";
 import { updateMatchGameResultPoints } from "../queries/updateMatchGameResultPoints.server";
+import type { FindMatchById } from "../TournamentMatchRepository.server";
 import {
 	matchPageParamsSchema,
 	matchSchema,
@@ -56,7 +53,9 @@ export const action: ActionFunction = async ({ params, request }) => {
 		params,
 		schema: matchPageParamsSchema,
 	});
-	const match = notFoundIfFalsy(findMatchById(matchId));
+	const match = notFoundIfFalsy(
+		await TournamentMatchRepository.findMatchById(matchId),
+	);
 	const data = await parseRequestPayload({
 		request,
 		schema: matchSchema,
@@ -113,6 +112,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 
 	let emitMatchUpdate = false;
 	let emitTournamentUpdate = false;
+	let endedDroppedMatchIds: number[] = [];
 
 	switch (data._action) {
 		case "REPORT_SCORE": {
@@ -225,7 +225,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 				}
 
 				if (setOver) {
-					endDroppedTeamMatches({ tournament, manager });
+					endedDroppedMatchIds = endDroppedTeamMatches({
+						tournament,
+						manager,
+					});
 				}
 			})();
 
@@ -710,6 +713,11 @@ export const action: ActionFunction = async ({ params, request }) => {
 						result: winnerTeamId === match.opponentTwo!.id ? "win" : "loss",
 					},
 				});
+
+				endedDroppedMatchIds = endDroppedTeamMatches({
+					tournament,
+					manager,
+				});
 			})();
 
 			emitMatchUpdate = true;
@@ -732,6 +740,11 @@ export const action: ActionFunction = async ({ params, request }) => {
 				type: "TOURNAMENT_MATCH_UPDATED",
 				revalidateOnly: true,
 			},
+			...endedDroppedMatchIds.map((id) => ({
+				room: tournamentMatchWebsocketRoom(id),
+				type: "TOURNAMENT_MATCH_UPDATED" as const,
+				revalidateOnly: true as const,
+			})),
 		]);
 	}
 	if (emitTournamentUpdate) {
