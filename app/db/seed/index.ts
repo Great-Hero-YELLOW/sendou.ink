@@ -51,7 +51,10 @@ import type {
 	ModeShort,
 	StageId,
 } from "~/modules/in-game-lists/types";
-import { mainWeaponIds } from "~/modules/in-game-lists/weapon-ids";
+import {
+	canonicalWeaponSplId,
+	mainWeaponIds,
+} from "~/modules/in-game-lists/weapon-ids";
 import type { TournamentMapListMap } from "~/modules/tournament-map-list-generator/types";
 import { nullFilledArray } from "~/utils/arrays";
 import {
@@ -1115,14 +1118,15 @@ async function thisMonthsSuggestions() {
 	}
 }
 
-function syncPlusTiers() {
-	sql
-		.prepare(
-			/* sql */ `
-    insert into "PlusTier" ("userId", "tier") select "userId", "tier" from "FreshPlusTier" where "tier" is not null;
-  `,
-		)
-		.run();
+async function syncPlusTiers() {
+	const tiers = await PlusVotingRepository.allPlusTiersFromLatestVoting();
+
+	if (tiers.length === 0) return;
+
+	await db
+		.insertInto("PlusTier")
+		.values(tiers.map(({ userId, plusTier }) => ({ userId, tier: plusTier })))
+		.execute();
 }
 
 function getAvailableBadgeIds() {
@@ -2051,7 +2055,12 @@ const randomAbility = (legalTypes: AbilityType[]) => {
 	return randomOrderAbilities.find((a) => legalTypes.includes(a.type))!.name;
 };
 
-const adminWeaponPool = mainWeaponIds.filter(() => faker.number.float(1) > 0.8);
+const canonicalMainWeaponIds = mainWeaponIds.filter(
+	(id) => canonicalWeaponSplId(id) === id,
+);
+const adminWeaponPool = canonicalMainWeaponIds.filter(
+	() => faker.number.float(1) > 0.8,
+);
 async function adminBuilds() {
 	for (let i = 0; i < 50; i++) {
 		const randomOrderHeadGear = faker.helpers.shuffle(headGearIds.slice());
@@ -2126,7 +2135,7 @@ async function manySplattershotBuilds() {
 		);
 		const randomOrderShoesGear = faker.helpers.shuffle(shoesGearIds.slice());
 		const randomOrderWeaponIds = faker.helpers
-			.shuffle(mainWeaponIds.slice())
+			.shuffle(canonicalMainWeaponIds.slice())
 			.filter((id) => id !== SPLATTERSHOT_ID);
 
 		const ownerId = users.pop()!;

@@ -24,6 +24,7 @@ import {
 	tournamentWebsocketRoom,
 } from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
 import invariant from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import {
@@ -774,13 +775,17 @@ export const action: ActionFunction = async ({ params, request }) => {
 				(p) => p.id === user.id,
 			);
 			errorToastIfFalsy(isMemberOfATeamInTheMatch, "Unauthorized");
-			errorToastIfFalsy(!tournament.ctx.isFinalized, "Tournament is finalized");
+			errorToastIfFalsy(
+				tournament.weaponReportingOpen,
+				"Weapon reporting is closed",
+			);
 
 			await ReportedWeaponRepository.upsertOneTournament({
 				tournamentMatchId: matchId,
 				mapIndex: data.mapIndex,
 				userId: user.id,
 				weaponSplId: data.weaponSplId,
+				createdAt: dateToDatabaseTimestamp(tournament.ctx.startTime),
 			});
 
 			break;
@@ -790,7 +795,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 				(p) => p.id === user.id,
 			);
 			errorToastIfFalsy(isMemberOfATeamInTheMatch, "Unauthorized");
-			errorToastIfFalsy(!tournament.ctx.isFinalized, "Tournament is finalized");
+			errorToastIfFalsy(
+				tournament.weaponReportingOpen,
+				"Weapon reporting is closed",
+			);
 
 			await ReportedWeaponRepository.deleteByUserMapIndexTournament({
 				tournamentMatchId: matchId,
@@ -807,18 +815,19 @@ export const action: ActionFunction = async ({ params, request }) => {
 
 	clearTournamentDataCache(tournamentId);
 
-	// TODO: we could optimize this in the future by including an `authorUserId` field and skip revalidation if the author is the same as the current user
 	if (emitMatchUpdate) {
 		ChatSystemMessage.send([
 			{
 				room: tournamentMatchWebsocketRoom(matchId),
 				type: "TOURNAMENT_MATCH_UPDATED",
 				revalidateOnly: true,
+				authorUserId: user.id,
 			},
 			...endedDroppedMatchIds.map((id) => ({
 				room: tournamentMatchWebsocketRoom(id),
 				type: "TOURNAMENT_MATCH_UPDATED" as const,
 				revalidateOnly: true as const,
+				authorUserId: user.id,
 			})),
 		]);
 	}
@@ -828,6 +837,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 				room: tournamentWebsocketRoom(tournament.ctx.id),
 				type: "TOURNAMENT_UPDATED",
 				revalidateOnly: true,
+				authorUserId: user.id,
 			},
 		]);
 	}

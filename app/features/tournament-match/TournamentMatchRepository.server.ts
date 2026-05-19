@@ -39,6 +39,7 @@ export async function findMatchById(id: number) {
 			"Tournament.mapPickingStyle",
 			"TournamentRound.id as roundId",
 			"TournamentRound.maps as roundMaps",
+			"Tournament.id as tournamentId",
 			jsonArrayFrom(
 				eb
 					.selectFrom("TournamentTeamMember")
@@ -80,8 +81,16 @@ export async function findMatchById(id: number) {
 
 	return {
 		...row,
+		opponentOne: normalizeOpponent(row.opponentOne),
+		opponentTwo: normalizeOpponent(row.opponentTwo),
 		bestOf: row.roundMaps.count,
 	};
+}
+
+// Kysely's ParseJSONResultsPlugin only parses strings starting with `[` or `{`,
+// so the JSON `null` stored for BYE opponents survives as the literal text "null".
+function normalizeOpponent<T>(value: T): T | null {
+	return (value as unknown) === "null" ? null : value;
 }
 
 export function findResultById(id: number) {
