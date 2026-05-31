@@ -13,6 +13,9 @@ import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as LFGRepository from "~/features/lfg/LFGRepository.server";
 import { TIMEZONES } from "~/features/lfg/lfg-constants";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import { BANNED_MAPS } from "~/features/match-profile/banned-maps";
+import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
+import { AMOUNT_OF_MAPS_IN_POOL_PER_MODE } from "~/features/match-profile/match-profile-constants";
 import * as NotificationRepository from "~/features/notifications/NotificationRepository.server";
 import type { Notification } from "~/features/notifications/notifications-types";
 import * as PlusSuggestionRepository from "~/features/plus-suggestions/PlusSuggestionRepository.server";
@@ -26,9 +29,6 @@ import * as ScrimPostRepository from "~/features/scrims/ScrimPostRepository.serv
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
 import * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
-import { BANNED_MAPS } from "~/features/sendouq-settings/banned-maps";
-import * as QSettingsRepository from "~/features/sendouq-settings/QSettingsRepository.server";
-import { AMOUNT_OF_MAPS_IN_POOL_PER_MODE } from "~/features/sendouq-settings/q-settings-constants";
 import { clearAllTournamentDataCache } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
 import * as TournamentOrganizationRepository from "~/features/tournament-organization/TournamentOrganizationRepository.server";
@@ -74,9 +74,9 @@ import {
 } from "../../../scripts/seed-art-urls";
 import type {
 	ParsedMemento,
-	QWeaponPool,
 	Tables,
 	UserMapModePreferences,
+	WeaponPoolEntry,
 } from "../tables";
 import {
 	ADMIN_TEST_AVATAR,
@@ -183,7 +183,7 @@ const basicSeeds = (variation?: SeedVariation | null) => [
 	adminUserWidgets,
 	userProfiles,
 	variation === "TEAM_MAP_PREFS" ? undefined : userMapModePreferences,
-	userQWeaponPool,
+	userMatchProfileWeaponPool,
 	seedingSkills,
 	lastMonthsVoting,
 	syncPlusTiers,
@@ -892,7 +892,7 @@ async function userProfiles() {
 		if (faker.number.float(1) > 0.9) defaultLanguages.push("it");
 		if (faker.number.float(1) > 0.9) defaultLanguages.push("ja");
 
-		await QSettingsRepository.updateVoiceChat({
+		await MatchProfileRepository.updateVoiceChat({
 			languages: defaultLanguages,
 			userId: id,
 			vc:
@@ -946,7 +946,7 @@ async function userMapModePreferences() {
 	}
 }
 
-async function userQWeaponPool() {
+async function userMatchProfileWeaponPool() {
 	for (let id = 1; id < 500; id++) {
 		if (id === 2) continue; // no weapons for N-ZAP
 		if (faker.number.float(1) < 0.2) continue; // 80% have weapons
@@ -955,14 +955,14 @@ async function userQWeaponPool() {
 			.shuffle(mainWeaponIds)
 			.slice(0, faker.helpers.arrayElement([1, 2, 3, 4]));
 
-		const weaponPool: Array<QWeaponPool> = weapons.map((weaponSplId) => ({
+		const weaponPool: Array<WeaponPoolEntry> = weapons.map((weaponSplId) => ({
 			weaponSplId,
 			isFavorite: faker.number.float(1) > 0.7 ? 1 : 0,
 		}));
 
 		await db
 			.updateTable("User")
-			.set({ qWeaponPool: JSON.stringify(weaponPool) })
+			.set({ weaponPool: JSON.stringify(weaponPool) })
 			.where("User.id", "=", id)
 			.execute();
 	}
@@ -2695,14 +2695,14 @@ async function groups(variation?: SeedVariation | null) {
 			nzapGroupMemberIds[2],
 		].filter((id): id is number => typeof id === "number");
 		for (const userId of guaranteedWeaponPoolUserIds) {
-			const weapons: QWeaponPool[] = [
+			const weapons: WeaponPoolEntry[] = [
 				{ weaponSplId: 0, isFavorite: 1 },
 				{ weaponSplId: 2000, isFavorite: 0 },
 				{ weaponSplId: 4000, isFavorite: 0 },
 			];
 			await db
 				.updateTable("User")
-				.set({ qWeaponPool: JSON.stringify(weapons) })
+				.set({ weaponPool: JSON.stringify(weapons) })
 				.where("User.id", "=", userId)
 				.execute();
 		}
@@ -3188,7 +3188,34 @@ async function scrimPosts() {
 		return result;
 	};
 
-	for (let i = 0; i < 20; i++) {
+	// Deterministic post 1: admin (Sendou) vs N-ZAP. The e2e map-by-map test
+	// navigates straight to /scrims/1 and relies on this being an accepted
+	// scrim with admin on the ALPHA side and N-ZAP on the BRAVO side.
+	const adminVsNzapAt = date(true);
+	const adminVsNzapPostId = await ScrimPostRepository.insert({
+		at: adminVsNzapAt,
+		rangeEnd: null,
+		isScheduledForFuture: true,
+		teamId: null,
+		text: null,
+		visibility: null,
+		users: users()
+			.map((u) => ({ ...u, isOwner: 0 }))
+			.concat({ userId: ADMIN_ID, isOwner: 1 }),
+		managedByAnyone: true,
+		maps: null,
+		mapsTournamentId: 4,
+	});
+	await ScrimPostRepository.insertRequest({
+		scrimPostId: adminVsNzapPostId,
+		users: users()
+			.map((u) => ({ ...u, isOwner: 0 }))
+			.concat({ userId: NZAP_TEST_ID, isOwner: 1 }),
+		message: null,
+	});
+	await ScrimPostRepository.acceptRequest(1);
+
+	for (let i = 0; i < 19; i++) {
 		const divs = divRange();
 		const atTime = date();
 		const hasRangeEnd = Math.random() > 0.5;
@@ -3258,7 +3285,9 @@ async function scrimPostRequests() {
 		.where("TeamMember.teamId", "=", 1)
 		.execute();
 
-	for (const id of [1, 5, 12, 14, 19]) {
+	// Post 1 is already accepted (admin-vs-nzap, seeded in scrimPosts()), so it
+	// is excluded here.
+	for (const id of [5, 12, 14, 19]) {
 		await ScrimPostRepository.insertRequest({
 			scrimPostId: id,
 			users: allianceRogueMembers.map((member) => ({
@@ -3272,8 +3301,6 @@ async function scrimPostRequests() {
 					: null,
 		});
 	}
-
-	await ScrimPostRepository.acceptRequest(3);
 }
 
 async function associations() {

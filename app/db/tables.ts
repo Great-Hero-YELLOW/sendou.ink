@@ -978,7 +978,7 @@ export interface UserMapModePreferences {
 	}>;
 }
 
-export interface QWeaponPool {
+export interface WeaponPoolEntry {
 	weaponSplId: MainWeaponId;
 	isFavorite: number;
 }
@@ -1074,7 +1074,7 @@ export interface User {
 	vc: Generated<"YES" | "NO" | "LISTEN_ONLY">;
 	youtubeId: string | null;
 	mapModePreferences: JSONColumnTypeNullable<UserMapModePreferences>;
-	qWeaponPool: JSONColumnTypeNullable<QWeaponPool[]>;
+	weaponPool: JSONColumnTypeNullable<WeaponPoolEntry[]>;
 	plusSkippedForSeasonNth: number | null;
 	noScreen: Generated<DBBoolean>;
 	/** User doesn't have access to SplatNet 3 to join rooms made by others */
@@ -1257,6 +1257,27 @@ export interface ScrimPost {
 	mapsTournamentId: number | null;
 	createdAt: GeneratedAlways<number>;
 	updatedAt: Generated<number>;
+}
+
+export interface ScrimMapList {
+	id: GeneratedAlways<number>;
+	scrimPostId: number;
+	side: "ALPHA" | "BRAVO";
+	source: "TOURNAMENT" | "POOL";
+	tournamentId: number | null;
+	serializedPool: string | null;
+	updatedAt: number;
+}
+
+export interface ScrimMap {
+	id: GeneratedAlways<number>;
+	scrimPostId: number;
+	index: number;
+	mode: ModeShort;
+	stageId: StageId;
+	winnerSide: "ALPHA" | "BRAVO" | null;
+	reportedAt: number | null;
+	reportedByUserId: number | null;
 }
 
 export interface ScrimPostUser {
@@ -1442,6 +1463,8 @@ export interface DB {
 	ScrimPostUser: ScrimPostUser;
 	ScrimPostRequest: ScrimPostRequest;
 	ScrimPostRequestUser: ScrimPostRequestUser;
+	ScrimMapList: ScrimMapList;
+	ScrimMap: ScrimMap;
 	Association: Association;
 	AssociationMember: AssociationMember;
 	Notification: Notification;

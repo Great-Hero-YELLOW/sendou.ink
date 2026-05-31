@@ -19,7 +19,11 @@ import {
 } from "../core/match-timeline";
 import * as SendouQMatch from "../core/SendouQMatch";
 import type { SendouQMatchLoaderData } from "../loaders/q.match.$id.server";
-import { MatchmadeRejoinSection, TrustedRejoinSection } from "./RejoinSections";
+import {
+	MatchmadeRejoinSection,
+	OffSeasonRejoinSection,
+	TrustedRejoinSection,
+} from "./RejoinSections";
 import styles from "./SendouQMatchActionTab.module.css";
 
 export function SendouQMatchActionTab({
@@ -222,7 +226,8 @@ function RequeueTab({
 				</div>
 			) : (
 				<div className={styles.rematchContent}>
-					{viewerGroup.matchmade ? (
+					{data.isOffSeason ? <OffSeasonRejoinSection /> : null}
+					{!data.isOffSeason && viewerGroup.matchmade ? (
 						<MatchmadeRejoinSection
 							data={data}
 							viewerGroup={viewerGroup}
@@ -231,7 +236,8 @@ function RequeueTab({
 							isOnReporterTeam={isOnReporterTeam}
 						/>
 					) : null}
-					{!viewerGroup.matchmade &&
+					{!data.isOffSeason &&
+					!viewerGroup.matchmade &&
 					(!awaitingConfirmation || isOnReporterTeam) ? (
 						<TrustedRejoinSection
 							viewerGroup={viewerGroup}
@@ -429,7 +435,9 @@ function InProgressTab({
 					{ method: "post" },
 				);
 			}}
-			weaponReport={isStaffOnly ? undefined : weaponReport}
+			secondaryAction={
+				isStaffOnly ? null : <WeaponReporter {...weaponReport} />
+			}
 			actionButtons={
 				<>
 					{isStaffOnly ? (
@@ -463,29 +471,28 @@ function InProgressTab({
 							</SendouButton>
 						</FormWithConfirm>
 					)}
-					{scoreIsNotZero ? (
-						<SendouButton
-							variant="minimal-destructive"
-							size="miniscule"
-							icon={<Undo2 size={16} />}
-							isPending={undoFetcher.state !== "idle"}
-							onPress={() => {
-								const mapIndex = data.match.mapList.findLastIndex(
-									(m) => m.winnerGroupId !== null,
-								);
-								if (mapIndex < 0) return;
-								undoFetcher.submit(
-									{
-										_action: "UNDO_MAP_REPORT",
-										mapIndex: String(mapIndex),
-									},
-									{ method: "post" },
-								);
-							}}
-						>
-							{t("q:match.undoReport")}
-						</SendouButton>
-					) : null}
+					<SendouButton
+						variant="minimal-destructive"
+						size="miniscule"
+						icon={<Undo2 size={16} />}
+						isPending={undoFetcher.state !== "idle"}
+						isDisabled={!scoreIsNotZero}
+						onPress={() => {
+							const mapIndex = data.match.mapList.findLastIndex(
+								(m) => m.winnerGroupId !== null,
+							);
+							if (mapIndex < 0) return;
+							undoFetcher.submit(
+								{
+									_action: "UNDO_MAP_REPORT",
+									mapIndex: String(mapIndex),
+								},
+								{ method: "post" },
+							);
+						}}
+					>
+						{t("q:match.undoReport")}
+					</SendouButton>
 				</>
 			}
 		/>
