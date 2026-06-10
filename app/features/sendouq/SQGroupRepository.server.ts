@@ -3,10 +3,11 @@ import { type NotNull, sql, type Transaction } from "kysely";
 import { jsonArrayFrom, jsonBuildObject } from "kysely/helpers/sqlite";
 import { db } from "~/db/sql";
 import type { DB, Tables, UserMapModePreferences } from "~/db/tables";
+import { actorId } from "~/features/auth/core/user.server";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import invariant from "~/utils/invariant";
-import { COMMON_USER_FIELDS } from "~/utils/kysely.server";
+import { COMMON_USER_FIELDS, matchProfileWeapons } from "~/utils/kysely.server";
 import { errorIsSqliteForeignKeyConstraintFailure } from "~/utils/sql";
 import { userIsBanned } from "../ban/core/banned.server";
 import { FULL_GROUP_SIZE } from "./q-constants";
@@ -61,7 +62,11 @@ export async function findCurrentGroups() {
 		vc: Tables["User"]["vc"];
 		role: Tables["GroupMember"]["role"];
 		note: Tables["GroupMember"]["note"];
-		weapons: Tables["User"]["weaponPool"];
+		weapons:
+			| (Pick<Tables["UserWeaponPool"], "weaponSplId" | "isFavorite"> & {
+					isTenStar: number;
+			  })[]
+			| null;
 		plusTier: Tables["PlusTier"]["tier"] | null;
 	};
 
@@ -99,7 +104,7 @@ export async function findCurrentGroups() {
 						noScreen: eb.ref("User.noScreen"),
 						role: eb.ref("GroupMember.role"),
 						note: eb.ref("GroupMember.note"),
-						weapons: eb.ref("User.weaponPool"),
+						weapons: matchProfileWeapons(eb),
 						languages: eb.ref("User.languages"),
 						plusTier: eb.ref("PlusTier.tier"),
 						vc: eb.ref("User.vc"),
@@ -737,13 +742,11 @@ export function refreshGroup(groupId: number, trx?: Transaction<DB>) {
 		.execute();
 }
 
-export function updateMemberNote({
+export function updateOwnMemberNote({
 	groupId,
-	userId,
 	value,
 }: {
 	groupId: number;
-	userId: number;
 	value: string | null;
 }) {
 	return db.transaction().execute(async (trx) => {
@@ -751,7 +754,7 @@ export function updateMemberNote({
 			.updateTable("GroupMember")
 			.set({ note: value })
 			.where("groupId", "=", groupId)
-			.where("userId", "=", userId)
+			.where("userId", "=", actorId())
 			.execute();
 
 		await refreshGroup(groupId, trx);

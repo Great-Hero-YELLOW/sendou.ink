@@ -4,6 +4,7 @@ import { jsonArrayFrom, jsonObjectFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, ParsedMemento } from "~/db/tables";
+import { actorId } from "~/features/auth/core/user.server";
 import * as Seasons from "~/features/mmr/core/Seasons";
 import type { TournamentMapListMap } from "~/modules/tournament-map-list-generator/types";
 import { mostPopularArrayElement } from "~/utils/arrays";
@@ -13,6 +14,7 @@ import invariant from "~/utils/invariant";
 import {
 	COMMON_USER_FIELDS,
 	concatUserSubmittedImagePrefix,
+	matchProfileWeapons,
 	tournamentLogoWithDefault,
 } from "~/utils/kysely.server";
 import type { Unpacked } from "~/utils/types";
@@ -144,7 +146,7 @@ function groupWithTeamAndMembers(
 							"User.vc",
 							"User.languages",
 							"User.noScreen",
-							"User.weaponPool as weapons",
+							matchProfileWeapons(arrayEb).as("weapons"),
 							"User.mapModePreferences",
 							"PlusTier.tier as plusTier",
 							"GroupMatchContinueVote.isContinuing",
@@ -577,13 +579,12 @@ export type CancelMatchResult =
 
 export async function cancelMatch({
 	matchId,
-	reportedByUserId,
 	isAdminReport,
 }: {
 	matchId: number;
-	reportedByUserId: number;
 	isAdminReport?: boolean;
 }): Promise<CancelMatchResult> {
+	const reportedByUserId = actorId();
 	const match = await findById(matchId);
 	invariant(match, "Match not found");
 

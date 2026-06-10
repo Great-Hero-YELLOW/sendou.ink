@@ -181,8 +181,17 @@ export const userArtPage = (
 	user: UserLinkArgs,
 	source?: ArtSource,
 	bigArtId?: number,
-) =>
-	`${userPage(user)}/art${source ? `?source=${source}` : ""}${bigArtId ? `?big=${bigArtId}` : ""}`;
+) => {
+	const params = new URLSearchParams();
+	if (source) {
+		params.set("source", source);
+	}
+	if (typeof bigArtId === "number") {
+		params.set("big", String(bigArtId));
+	}
+
+	return `${userPage(user)}/art${params.size > 0 ? `?${params.toString()}` : ""}`;
+};
 export const newArtPage = (artId?: Tables["Art"]["id"]) =>
 	`${artPage()}/new${artId ? `?art=${artId}` : ""}`;
 export const userNewBuildPage = (
@@ -230,7 +239,7 @@ export const leaderboardsPage = (args: {
 	type?: "USER" | "TEAM";
 }) => {
 	const params = new URLSearchParams();
-	if (args.season) {
+	if (typeof args.season === "number") {
 		params.set("season", String(args.season));
 	}
 	if (args.type) {
@@ -369,8 +378,14 @@ export const tournamentOrganizationPage = ({
 }: {
 	organizationSlug: string;
 	tournamentName?: string;
-}) =>
-	`/org/${organizationSlug}${tournamentName ? `?source=${decodeURIComponent(tournamentName)}` : ""}`;
+}) => {
+	const params = new URLSearchParams();
+	if (tournamentName) {
+		params.set("source", tournamentName);
+	}
+
+	return `/org/${organizationSlug}${params.size > 0 ? `?${params.toString()}` : ""}`;
+};
 export const tournamentOrganizationEditPage = (organizationSlug: string) =>
 	`${tournamentOrganizationPage({ organizationSlug })}/edit`;
 
@@ -434,15 +449,6 @@ export const objectDamageCalculatorPage = (weaponId?: MainWeaponId) =>
 		typeof weaponId === "number" ? `?weapon=${weaponId}` : ""
 	}`;
 
-export const uploadImagePage = (
-	args:
-		| { type: "team-pfp" | "team-banner"; teamCustomUrl: string }
-		| { type: "org-pfp"; slug: string },
-) =>
-	args.type === "org-pfp"
-		? `/upload?type=${args.type}&slug=${args.slug}`
-		: `/upload?type=${args.type}&team=${args.teamCustomUrl}`;
-
 export const vodVideoPage = (videoId: number) => `${VODS_PAGE}/${videoId}`;
 
 export const lfgNewPostPage = (postId?: number) =>
@@ -478,6 +484,9 @@ export const outlinedMainWeaponImageUrl = (mainWeaponSplId: MainWeaponId) =>
 export const outlinedFiveStarMainWeaponImageUrl = (
 	mainWeaponSplId: MainWeaponId,
 ) => `/static-assets/img/main-weapons-outlined-2/${mainWeaponSplId}`;
+export const outlinedTenStarMainWeaponImageUrl = (
+	mainWeaponSplId: MainWeaponId,
+) => `/static-assets/img/main-weapons-outlined-3/${mainWeaponSplId}`;
 export const subWeaponImageUrl = (subWeaponSplId: SubWeaponId) =>
 	`/static-assets/img/sub-weapons/${subWeaponSplId}`;
 export const specialWeaponImageUrl = (specialWeaponSplId: SpecialWeaponId) =>
@@ -498,7 +507,7 @@ export const stageImageUrl = (stageId: StageId) =>
 export const stageBannerImageUrl = (stageId: StageId) =>
 	`/static-assets/img/stage-banners/${stageId}.avif`;
 export const tierImageUrl = (tier: TierName | "CALCULATING") =>
-	`/static-assets/img/tiers/${tier.toLowerCase()}`;
+	`/static-assets/img/tiers/${tier === "CALCULATING" ? "unranked" : tier.toLowerCase()}`;
 export const controllerImageUrl = (controller: string) =>
 	`/static-assets/img/controllers/${controller}.avif`;
 export const preferenceEmojiUrl = (preference?: Preference) => {

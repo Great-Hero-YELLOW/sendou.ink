@@ -2,7 +2,7 @@ import type { ExpressionBuilder, FunctionModule, NotNull } from "kysely";
 import { sql } from "kysely";
 import { jsonArrayFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
-import { db, sql as dbDirect } from "~/db/sql";
+import { db } from "~/db/sql";
 import type {
 	BuildSort,
 	CustomTheme,
@@ -11,6 +11,7 @@ import type {
 	TablesInsertable,
 	UserPreferences,
 } from "~/db/tables";
+import { actorId } from "~/features/auth/core/user.server";
 import { userRoles } from "~/modules/permissions/mapper.server";
 import { isSupporter } from "~/modules/permissions/utils";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
@@ -21,6 +22,7 @@ import {
 	concatUserSubmittedImagePrefix,
 	tournamentLogoOrNull,
 	userChatNameHue,
+	userProfileWeapons,
 } from "~/utils/kysely.server";
 import { logger } from "~/utils/logger";
 import { safeNumberParse } from "~/utils/number";
@@ -181,13 +183,7 @@ export async function findProfileByIdentifier(
 			"User.patronTier",
 			"PlusTier.tier as plusTier",
 			"User.pronouns",
-			jsonArrayFrom(
-				eb
-					.selectFrom("UserWeapon")
-					.select(["UserWeapon.weaponSplId", "UserWeapon.isFavorite"])
-					.whereRef("UserWeapon.userId", "=", "User.id")
-					.orderBy("UserWeapon.order", "asc"),
-			).as("weapons"),
+			userProfileWeapons(eb).as("weapons"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("TeamMemberWithSecondary")
@@ -1048,23 +1044,20 @@ type UpdateProfileArgs = Pick<
 	| "commissionText"
 	| "commissionsOpen"
 > & {
-	userId: number;
 	weapons: Pick<TablesInsertable["UserWeapon"], "weaponSplId" | "isFavorite">[];
 	favoriteBadgeIds?: number[] | null;
 };
-export function updateProfile(args: UpdateProfileArgs) {
+export function updateOwnProfile(args: UpdateProfileArgs) {
+	const userId = actorId();
 	return db.transaction().execute(async (trx) => {
-		await trx
-			.deleteFrom("UserWeapon")
-			.where("userId", "=", args.userId)
-			.execute();
+		await trx.deleteFrom("UserWeapon").where("userId", "=", userId).execute();
 
 		if (args.weapons.length > 0) {
 			await trx
 				.insertInto("UserWeapon")
 				.values(
 					args.weapons.map((weapon, i) => ({
-						userId: args.userId,
+						userId,
 						weaponSplId: weapon.weaponSplId,
 						isFavorite: weapon.isFavorite,
 						order: i + 1,
@@ -1094,26 +1087,24 @@ export function updateProfile(args: UpdateProfileArgs) {
 				commissionsOpenedAt:
 					args.commissionsOpen === 1 ? databaseTimestampNow() : null,
 			})
-			.where("id", "=", args.userId)
+			.where("id", "=", userId)
 			.returning(["User.id", "User.customUrl", "User.discordId"])
 			.executeTakeFirstOrThrow();
 	});
 }
 
-export function updateCustomTheme(userId: number, css: CustomTheme | null) {
+export function updateOwnCustomTheme(css: CustomTheme | null) {
 	return db
 		.updateTable("User")
 		.set({
 			customTheme: css ? JSON.stringify(css) : null,
 		})
-		.where("id", "=", userId)
+		.where("id", "=", actorId())
 		.execute();
 }
 
-export function updatePreferences(
-	userId: number,
-	newPreferences: UserPreferences,
-) {
+export function updateOwnPreferences(newPreferences: UserPreferences) {
+	const userId = actorId();
 	return db.transaction().execute(async (trx) => {
 		const current =
 			(
@@ -1140,15 +1131,15 @@ export function updatePreferences(
 }
 
 type UpdateResultHighlightsArgs = {
-	userId: number;
 	resultTeamIds: Array<number>;
 	resultTournamentTeamIds: Array<number>;
 };
-export function updateResultHighlights(args: UpdateResultHighlightsArgs) {
+export function updateOwnResultHighlights(args: UpdateResultHighlightsArgs) {
+	const userId = actorId();
 	return db.transaction().execute(async (trx) => {
 		await trx
 			.deleteFrom("UserResultHighlight")
-			.where("userId", "=", args.userId)
+			.where("userId", "=", userId)
 			.execute();
 
 		if (args.resultTeamIds.length > 0) {
@@ -1156,7 +1147,7 @@ export function updateResultHighlights(args: UpdateResultHighlightsArgs) {
 				.insertInto("UserResultHighlight")
 				.values(
 					args.resultTeamIds.map((teamId) => ({
-						userId: args.userId,
+						userId,
 						teamId,
 					})),
 				)
@@ -1168,7 +1159,7 @@ export function updateResultHighlights(args: UpdateResultHighlightsArgs) {
 			.set({
 				isHighlight: 0,
 			})
-			.where("TournamentResult.userId", "=", args.userId)
+			.where("TournamentResult.userId", "=", userId)
 			.execute();
 
 		if (args.resultTournamentTeamIds.length > 0) {
@@ -1177,7 +1168,7 @@ export function updateResultHighlights(args: UpdateResultHighlightsArgs) {
 				.set({
 					isHighlight: 1,
 				})
-				.where("TournamentResult.userId", "=", args.userId)
+				.where("TournamentResult.userId", "=", userId)
 				.where(
 					"TournamentResult.tournamentTeamId",
 					"in",
@@ -1188,17 +1179,11 @@ export function updateResultHighlights(args: UpdateResultHighlightsArgs) {
 	});
 }
 
-export function updateBuildSorting({
-	userId,
-	buildSorting,
-}: {
-	userId: number;
-	buildSorting: BuildSort[] | null;
-}) {
+export function updateOwnBuildSorting(buildSorting: BuildSort[] | null) {
 	return db
 		.updateTable("User")
 		.set({ buildSorting: buildSorting ? JSON.stringify(buildSorting) : null })
-		.where("id", "=", userId)
+		.where("id", "=", actorId())
 		.execute();
 }
 
@@ -1236,31 +1221,34 @@ export function updatePatronData(users: UpdatePatronDataArgs) {
 	});
 }
 
-// TODO: use Kysely
-const updateByDiscordIdStm = dbDirect.prepare(/* sql */ `
-  update
-    "User"
-  set
-    "discordAvatar" = @discordAvatar,
-    "discordName" = coalesce(@discordName, "discordName"),
-    "discordUniqueName" = coalesce(@discordUniqueName, "discordUniqueName")
-  where
-    "discordId" = @discordId
-`);
-export const updateMany = dbDirect.transaction(
-	(
-		argsArr: Array<
-			Pick<
-				Tables["User"],
-				"discordAvatar" | "discordName" | "discordUniqueName" | "discordId"
-			>
-		>,
-	) => {
+export function updateMany(
+	argsArr: Array<
+		Pick<
+			Tables["User"],
+			"discordAvatar" | "discordName" | "discordUniqueName" | "discordId"
+		>
+	>,
+) {
+	return db.transaction().execute(async (trx) => {
 		for (const updateArgs of argsArr) {
-			updateByDiscordIdStm.run(updateArgs);
+			await trx
+				.updateTable("User")
+				.set((eb) => ({
+					discordAvatar: updateArgs.discordAvatar,
+					discordName: eb.fn.coalesce(
+						eb.val(updateArgs.discordName),
+						"User.discordName",
+					),
+					discordUniqueName: eb.fn.coalesce(
+						eb.val(updateArgs.discordUniqueName),
+						"User.discordUniqueName",
+					),
+				}))
+				.where("User.discordId", "=", updateArgs.discordId)
+				.execute();
 		}
-	},
-);
+	});
+}
 
 export async function anyUserPrefersNoScreen(
 	userIds: number[],
@@ -1338,5 +1326,26 @@ export function findIdsByTwitchUsernames(twitchUsernames: string[]) {
 		.selectFrom("User")
 		.select(["User.id", "User.twitch"])
 		.where("User.twitch", "in", twitchUsernames)
+		.execute();
+}
+
+/** Returns weapon pool entries with ten-star status for the given user. */
+export function weaponPoolByUserId(userId: number) {
+	return db
+		.selectFrom("UserWeaponPool")
+		.leftJoin("TenStarWeapon", (join) =>
+			join
+				.onRef("TenStarWeapon.userId", "=", "UserWeaponPool.userId")
+				.onRef("TenStarWeapon.weaponSplId", "=", "UserWeaponPool.weaponSplId"),
+		)
+		.select([
+			"UserWeaponPool.weaponSplId",
+			"UserWeaponPool.isFavorite",
+			sql<number>`case when "TenStarWeapon"."weaponSplId" is not null then 1 else 0 end`.as(
+				"isTenStar",
+			),
+		])
+		.where("UserWeaponPool.userId", "=", userId)
+		.orderBy("UserWeaponPool.sortOrder", "asc")
 		.execute();
 }
