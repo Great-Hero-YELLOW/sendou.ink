@@ -4,12 +4,13 @@ import { db } from "~/db/sql";
 import type { CustomTheme, DB, Tables } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
 import * as LFGRepository from "~/features/lfg/LFGRepository.server";
+import { NON_PLAYER_TEAM_ROLES } from "~/features/team/team-constants";
 import { subsOfResult } from "~/features/team/team-utils";
 import { databaseTimestampNow } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import invariant from "~/utils/invariant";
 import {
-	COMMON_USER_FIELDS,
+	commonUserSelect,
 	concatUserSubmittedImagePrefix,
 	tournamentLogoOrNull,
 	userProfileWeapons,
@@ -33,7 +34,8 @@ export function findAllUndisbanded() {
 					.innerJoin("User", "User.id", "TeamMemberWithSecondary.userId")
 					.leftJoin("PlusTier", "PlusTier.userId", "User.id")
 					.select(["User.id", "User.username", "PlusTier.tier as plusTier"])
-					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id"),
+					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id")
+					.orderBy("TeamMemberWithSecondary.order", "asc"),
 			).as("members"),
 		])
 		.execute();
@@ -50,16 +52,49 @@ export function searchByName({
 		.selectFrom("Team")
 		.leftJoin("UserSubmittedImage", "UserSubmittedImage.id", "Team.avatarImgId")
 		.select(({ eb }) => [
+			"Team.id",
 			"Team.customUrl",
 			"Team.name",
 			concatUserSubmittedImagePrefix(eb.ref("UserSubmittedImage.url")).as(
 				"avatarUrl",
 			),
+			jsonArrayFrom(
+				eb
+					.selectFrom("TeamMemberWithSecondary")
+					.innerJoin("User", "User.id", "TeamMemberWithSecondary.userId")
+					.select(["User.id", "User.username"])
+					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id")
+					.where((eb2) =>
+						eb2.and([
+							eb2.or([
+								eb2("TeamMemberWithSecondary.role", "is", null),
+								eb2(
+									"TeamMemberWithSecondary.role",
+									"not in",
+									NON_PLAYER_TEAM_ROLES,
+								),
+							]),
+							eb2.or([
+								eb2("TeamMemberWithSecondary.roleType", "is", null),
+								eb2("TeamMemberWithSecondary.roleType", "!=", "OTHER"),
+							]),
+						]),
+					)
+					.orderBy("TeamMemberWithSecondary.order", "asc"),
+			).as("members"),
 		])
 		.where("Team.name", "like", `%${query}%`)
 		.orderBy("Team.name", "asc")
 		.limit(limit)
 		.execute();
+}
+
+export function findById(teamId: number) {
+	return db
+		.selectFrom("AllTeam")
+		.select(["AllTeam.id", "AllTeam.name"])
+		.where("AllTeam.id", "=", teamId)
+		.executeTakeFirst();
 }
 
 export function findAllMemberOfByUserId(userId: number) {
@@ -73,6 +108,7 @@ export function findAllMemberOfByUserId(userId: number) {
 			"Team.name",
 			"Team.mapModePreferences",
 			"TeamMemberWithSecondary.role",
+			"TeamMemberWithSecondary.customRole",
 			"TeamMemberWithSecondary.isOwner",
 			"TeamMemberWithSecondary.isManager",
 			concatUserSubmittedImagePrefix(eb.ref("UserSubmittedImage.url")).as(
@@ -141,8 +177,10 @@ export function findByCustomUrl(
 					.selectFrom("TeamMemberWithSecondary")
 					.innerJoin("User", "User.id", "TeamMemberWithSecondary.userId")
 					.select(({ eb: innerEb }) => [
-						...COMMON_USER_FIELDS,
+						...commonUserSelect(innerEb),
 						"TeamMemberWithSecondary.role",
+						"TeamMemberWithSecondary.customRole",
+						"TeamMemberWithSecondary.roleType",
 						"TeamMemberWithSecondary.isOwner",
 						"TeamMemberWithSecondary.isManager",
 						"TeamMemberWithSecondary.isMainTeam",
@@ -150,7 +188,8 @@ export function findByCustomUrl(
 						"User.patronTier",
 						userProfileWeapons(innerEb).as("weapons"),
 					])
-					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id"),
+					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id")
+					.orderBy("TeamMemberWithSecondary.order", "asc"),
 			).as("members"),
 		])
 		.$if(includeInviteCode, (qb) => qb.select("Team.inviteCode"))
@@ -238,7 +277,7 @@ export async function findResultsById(teamId: number) {
 					)
 					.innerJoin("User", "User.id", "TournamentResult.userId")
 					.whereRef("results2.tournamentId", "=", "results.tournamentId")
-					.select(COMMON_USER_FIELDS),
+					.select((eb) => commonUserSelect(eb)),
 			).as("participants"),
 		])
 		.orderBy("CalendarEventDate.startTime", "desc")
@@ -284,8 +323,9 @@ export async function teamsByMemberUserId(
 				eb
 					.selectFrom("TeamMemberWithSecondary as m2")
 					.innerJoin("User", "User.id", "m2.userId")
-					.select([...COMMON_USER_FIELDS, "m2.role"])
-					.whereRef("TeamMemberWithSecondary.teamId", "=", "m2.teamId"),
+					.select((eb) => [...commonUserSelect(eb), "m2.role", "m2.roleType"])
+					.whereRef("TeamMemberWithSecondary.teamId", "=", "m2.teamId")
+					.orderBy("m2.order", "asc"),
 			).as("members"),
 		])
 		.where("userId", "=", userId)
@@ -496,13 +536,24 @@ export function joinTeam({
 
 		const isMainTeam = Number(teamCount === 0);
 
+		const maxOrder = await trx
+			.selectFrom("AllTeamMember")
+			.select((eb) =>
+				eb.fn.coalesce(eb.fn.max("order"), sql<number>`-1`).as("maxOrder"),
+			)
+			.where("teamId", "=", teamId)
+			.where("leftAt", "is", null)
+			.executeTakeFirst();
+		const order = (maxOrder?.maxOrder ?? -1) + 1;
+
 		await trx
 			.insertInto("AllTeamMember")
-			.values({ userId, teamId, isMainTeam })
+			.values({ userId, teamId, isMainTeam, order })
 			.onConflict((oc) =>
 				oc.columns(["userId", "teamId"]).doUpdateSet({
 					leftAt: null,
 					isMainTeam,
+					order,
 				}),
 			)
 			.execute();
@@ -518,50 +569,103 @@ export function handleMemberLeaving({
 	teamId: number;
 	newOwnerUserId?: number;
 }) {
+	return db
+		.transaction()
+		.execute((trx) => memberLeave(trx, { userId, teamId, newOwnerUserId }));
+}
+
+/**
+ * Applies a roster edit in a single transaction: updates each kept member's role
+ * & editor status and removes (kicks) the members in `kickedUserIds`.
+ */
+export function updateRoster({
+	teamId,
+	members,
+	kickedUserIds,
+}: {
+	teamId: number;
+	members: Array<{
+		userId: number;
+		role: Tables["TeamMember"]["role"];
+		customRole: Tables["TeamMember"]["customRole"];
+		roleType: Tables["TeamMember"]["roleType"];
+		isManager: boolean;
+		order: number;
+	}>;
+	kickedUserIds: number[];
+}) {
 	return db.transaction().execute(async (trx) => {
-		const currentTeams = await teamsByMemberUserId(userId, trx);
-
-		const teamToLeave = currentTeams.find((team) => team.id === teamId);
-		invariant(teamToLeave, "User is not a member of this team");
-		invariant(
-			!teamToLeave.isOwner || newOwnerUserId,
-			"New owner id must be provided when old is leaving",
-		);
-
-		const wasMainTeam = teamToLeave.isMainTeam;
-		const newMainTeam = currentTeams.find((team) => team.id !== teamId);
-		if (wasMainTeam && newMainTeam) {
-			await trx
-				.updateTable("AllTeamMember")
-				.set({
-					isMainTeam: 1,
-				})
-				.where("userId", "=", userId)
-				.where("teamId", "=", newMainTeam.id)
-				.execute();
+		for (const userId of kickedUserIds) {
+			await memberLeave(trx, { userId, teamId });
 		}
 
-		await trx
-			.updateTable("AllTeamMember")
-			.set({
-				leftAt: databaseTimestampNow(),
-				isMainTeam: 0,
-				isOwner: 0,
-				isManager: 0,
-			})
-			.where("userId", "=", userId)
-			.where("teamId", "=", teamId)
-			.execute();
-		if (newOwnerUserId) {
+		for (const member of members) {
 			await trx
 				.updateTable("AllTeamMember")
 				.set({
-					isOwner: 1,
-					isManager: 0,
+					role: member.role,
+					customRole: member.customRole,
+					roleType: member.roleType,
+					isManager: member.isManager ? 1 : 0,
+					order: member.order,
 				})
-				.where("userId", "=", newOwnerUserId)
 				.where("teamId", "=", teamId)
+				.where("userId", "=", member.userId)
 				.execute();
 		}
 	});
+}
+
+async function memberLeave(
+	trx: Transaction<DB>,
+	{
+		userId,
+		teamId,
+		newOwnerUserId,
+	}: { userId: number; teamId: number; newOwnerUserId?: number },
+) {
+	const currentTeams = await teamsByMemberUserId(userId, trx);
+
+	const teamToLeave = currentTeams.find((team) => team.id === teamId);
+	invariant(teamToLeave, "User is not a member of this team");
+	invariant(
+		!teamToLeave.isOwner || newOwnerUserId,
+		"New owner id must be provided when old is leaving",
+	);
+
+	const wasMainTeam = teamToLeave.isMainTeam;
+	const newMainTeam = currentTeams.find((team) => team.id !== teamId);
+	if (wasMainTeam && newMainTeam) {
+		await trx
+			.updateTable("AllTeamMember")
+			.set({
+				isMainTeam: 1,
+			})
+			.where("userId", "=", userId)
+			.where("teamId", "=", newMainTeam.id)
+			.execute();
+	}
+
+	await trx
+		.updateTable("AllTeamMember")
+		.set({
+			leftAt: databaseTimestampNow(),
+			isMainTeam: 0,
+			isOwner: 0,
+			isManager: 0,
+		})
+		.where("userId", "=", userId)
+		.where("teamId", "=", teamId)
+		.execute();
+	if (newOwnerUserId) {
+		await trx
+			.updateTable("AllTeamMember")
+			.set({
+				isOwner: 1,
+				isManager: 0,
+			})
+			.where("userId", "=", newOwnerUserId)
+			.where("teamId", "=", teamId)
+			.execute();
+	}
 }

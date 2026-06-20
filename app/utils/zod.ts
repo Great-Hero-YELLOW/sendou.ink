@@ -19,7 +19,6 @@ export const id = z.coerce.number({ message: "Required" }).int().positive();
 export const idObject = z.object({
 	id,
 });
-export const optionalId = z.coerce.number().int().positive().optional();
 
 export const inviteCode = z.string().length(SHORT_NANOID_LENGTH);
 export const inviteCodeObject = z.object({
@@ -282,12 +281,14 @@ export function safeJSONParse(value: unknown): unknown {
 }
 
 const EMPTY_CHARACTERS = [
+	"\u00AD",
 	"\u200B",
 	"\u200C",
 	"\u200D",
 	"\u200E",
 	"\u200F",
 	"󠀠",
+	"\u2800",
 	"\u3164",
 	"\u115F",
 	"\u1160",

@@ -15,12 +15,20 @@ import {
 	SUSPENDED_PAGE,
 } from "~/utils/urls";
 import { refreshSendouQInstance, SendouQ } from "../core/SendouQ.server";
-import { JOIN_CODE_SEARCH_PARAM_KEY } from "../q-constants";
+import {
+	JOIN_CODE_SEARCH_PARAM_KEY,
+	SENDOUQ_LOOKING_ROOM,
+	sqGroupWebsocketRoom,
+} from "../q-constants";
 import { frontPageSchema } from "../q-schemas.server";
 import { userCanJoinQueueAt } from "../q-utils";
-import { SendouQError, setGroupChatMetadata } from "../q-utils.server";
+import {
+	SendouQError,
+	setGroupChatMetadata,
+	sqRedirectIfNeeded,
+} from "../q-utils.server";
 
-export const action: ActionFunction = async ({ request }) => {
+export const action: ActionFunction = async ({ request, url }) => {
 	const user = requireUser();
 	const data = await parseRequestPayload({
 		request,
@@ -30,6 +38,11 @@ export const action: ActionFunction = async ({ request }) => {
 	try {
 		switch (data._action) {
 			case "JOIN_QUEUE": {
+				sqRedirectIfNeeded({
+					ownGroup: SendouQ.findOwnGroup(user.id),
+					currentLocation: "default",
+				});
+
 				await validateCanJoinQ(user);
 
 				const { chatCodeToRevalidate } = await SQGroupRepository.createGroup({
@@ -47,6 +60,16 @@ export const action: ActionFunction = async ({ request }) => {
 
 				await refreshSendouQInstance();
 
+				// Joining directly creates an ACTIVE group that enters the pool, so
+				// refresh every looking client. (A PREPARING group isn't in the pool.)
+				if (data.direct === "true") {
+					ChatSystemMessage.send({
+						room: SENDOUQ_LOOKING_ROOM,
+						revalidateOnly: true,
+						authorUserId: user.id,
+					});
+				}
+
 				return redirect(
 					data.direct === "true"
 						? SENDOUQ_LOOKING_PAGE
@@ -56,9 +79,7 @@ export const action: ActionFunction = async ({ request }) => {
 			case "JOIN_TEAM": {
 				await validateCanJoinQ(user);
 
-				const code = new URL(request.url).searchParams.get(
-					JOIN_CODE_SEARCH_PARAM_KEY,
-				);
+				const code = url.searchParams.get(JOIN_CODE_SEARCH_PARAM_KEY);
 
 				const groupInvitedTo =
 					code && user ? SendouQ.findGroupByInviteCode(code) : undefined;
@@ -90,6 +111,25 @@ export const action: ActionFunction = async ({ request }) => {
 					setGroupChatMetadata({
 						chatCode: joinedGroup.chatCode,
 						members: joinedGroup.members,
+					});
+				}
+
+				if (groupInvitedTo.status === "PREPARING") {
+					// A preparing group isn't in the pool, so notify just its existing
+					// members (on the preparing page) via the group topic.
+					ChatSystemMessage.send({
+						room: sqGroupWebsocketRoom(groupInvitedTo.id),
+						revalidateOnly: true,
+						authorUserId: user.id,
+					});
+				} else {
+					// Joining an active group changes its size/suitability for the whole
+					// pool, so refresh every looking client — which already includes the
+					// group's own existing members.
+					ChatSystemMessage.send({
+						room: SENDOUQ_LOOKING_ROOM,
+						revalidateOnly: true,
+						authorUserId: user.id,
 					});
 				}
 

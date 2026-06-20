@@ -2,6 +2,7 @@ import { cachified } from "@epic-web/cachified";
 import { addDays } from "date-fns";
 import { href } from "react-router";
 import * as R from "remeda";
+import * as ExternalStreamRepository from "~/features/admin/ExternalStreamRepository.server";
 import { userIsBanned } from "~/features/ban/core/banned.server";
 import type { ShowcaseCalendarEvent } from "~/features/calendar/calendar-types";
 import {
@@ -46,6 +47,7 @@ export type SidebarFriend = {
 	name: string;
 	discordId: string;
 	discordAvatar: string | null;
+	customAvatarUrl: string | null;
 	url: string;
 	subtitle: string;
 	badge: string;
@@ -61,10 +63,8 @@ const TOURNAMENT_SUB_QUOTA = 2;
 
 export async function resolveSidebarData(userId: number | null) {
 	if (!userId) {
-		const tournamentsData =
-			await ShowcaseTournaments.categorizedTournamentsByUserId(null);
 		return {
-			events: showcaseEventsToSidebarEvents(tournamentsData.showcase),
+			events: [] as SidebarEvent[],
 			friends: [] as SidebarFriend[],
 			streams: await combinedStreamsCached(),
 			savedTournamentIds: [] as number[],
@@ -100,16 +100,9 @@ export async function resolveSidebarData(userId: number | null) {
 
 	const scrimEvents: SidebarEvent[] = scrimsData.map(scrimToSidebarEvent);
 
-	const personalEvents = [
-		...tournamentEvents,
-		...savedEvents,
-		...scrimEvents,
-	].sort((a, b) => a.startTime - b.startTime);
-	const events = (
-		personalEvents.length > 0
-			? personalEvents
-			: showcaseEventsToSidebarEvents(tournamentsData.showcase)
-	).slice(0, MAX_EVENTS_VISIBLE);
+	const events = [...tournamentEvents, ...savedEvents, ...scrimEvents]
+		.sort((a, b) => a.startTime - b.startTime)
+		.slice(0, MAX_EVENTS_VISIBLE);
 
 	const friends = resolveFriends(friendsWithActivity);
 
@@ -136,11 +129,13 @@ function combinedStreamsCached(): Promise<SidebarStream[]> {
 
 async function combinedStreams(): Promise<SidebarStream[]> {
 	const tournamentStreams = getLiveTournamentStreams();
-	const [sendouQEntries, xRankRows, upcomingTournaments] = await Promise.all([
-		getSendouQSidebarStreams(),
-		LiveStreamRepository.findXRankStreams(),
-		ShowcaseTournaments.upcomingTournaments(),
-	]);
+	const [sendouQEntries, xRankRows, upcomingTournaments, externalStreams] =
+		await Promise.all([
+			getSendouQSidebarStreams(),
+			LiveStreamRepository.findXRankStreams(),
+			ShowcaseTournaments.upcomingTournaments(),
+			ExternalStreamRepository.forSidebar(),
+		]);
 
 	const seenUsernames = new Set([
 		...getLiveTournamentStreamerTwitchNames(),
@@ -150,6 +145,21 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 	]);
 
 	const ranked: { stream: SidebarStream; score: number }[] = [];
+
+	for (const externalStream of externalStreams) {
+		ranked.push({
+			stream: {
+				id: `external-${externalStream.id}`,
+				name: externalStream.name,
+				imageUrl: externalStream.avatarUrl ?? BLANK_IMAGE_URL,
+				url: externalStream.url,
+				subtitle: "",
+				startsAt: externalStream.startTime,
+				tier: null,
+			},
+			score: StreamRanking.EXTERNAL_STREAM_SCORE,
+		});
+	}
 
 	for (const stream of tournamentStreams) {
 		ranked.push({
@@ -191,13 +201,15 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 			stream: {
 				id: `xrank-${row.id}`,
 				name: row.username,
-				imageUrl: row.discordAvatar
-					? discordAvatarUrl({
-							discordId: row.discordId,
-							discordAvatar: row.discordAvatar,
-							size: "sm",
-						})
-					: BLANK_IMAGE_URL,
+				imageUrl: row.customAvatarUrl
+					? row.customAvatarUrl
+					: row.discordAvatar
+						? discordAvatarUrl({
+								discordId: row.discordId,
+								discordAvatar: row.discordAvatar,
+								size: "sm",
+							})
+						: BLANK_IMAGE_URL,
 				url: row.twitchUsername
 					? twitchUrl(row.twitchUsername)
 					: userPage({ discordId: row.discordId, customUrl: row.customUrl }),
@@ -342,19 +354,6 @@ function resolveFriends(friendsWithActivity: FriendWithActivity[]) {
 	return result;
 }
 
-function showcaseEventsToSidebarEvents(
-	events: ShowcaseCalendarEvent[],
-): SidebarEvent[] {
-	return events.map((e) => ({
-		id: e.id,
-		name: e.name,
-		url: e.url,
-		logoUrl: e.logoUrl,
-		startTime: e.startTime,
-		type: "tournament" as const,
-	}));
-}
-
 function rowToSidebarFriend(
 	row: FriendWithActivity,
 	subtitle: string,
@@ -365,6 +364,7 @@ function rowToSidebarFriend(
 		name: row.username,
 		discordId: row.discordId,
 		discordAvatar: row.discordAvatar,
+		customAvatarUrl: row.customAvatarUrl,
 		url: userPage({ discordId: row.discordId, customUrl: row.customUrl }),
 		subtitle,
 		badge,

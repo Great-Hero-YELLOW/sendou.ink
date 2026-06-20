@@ -22,8 +22,9 @@ import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import invariant from "~/utils/invariant";
 import {
-	COMMON_USER_FIELDS,
+	commonUserSelect,
 	concatUserSubmittedImagePrefix,
+	customAvatarUrl,
 	tournamentLogoWithDefault,
 } from "~/utils/kysely.server";
 import type { Unwrapped } from "~/utils/types";
@@ -56,11 +57,19 @@ export async function findById(id: number) {
 			"Tournament.castTwitchAccounts",
 			"Tournament.castedMatchesInfo",
 			"Tournament.mapPickingStyle",
-			"Tournament.rules",
+			sql<boolean>`"Tournament"."rules" is not null`.as("hasRules"),
 			"Tournament.parentTournamentId",
+			eb
+				.selectFrom("CalendarEvent as ParentCalendarEvent")
+				.select("ParentCalendarEvent.name")
+				.whereRef(
+					"ParentCalendarEvent.tournamentId",
+					"=",
+					"Tournament.parentTournamentId",
+				)
+				.as("parentTournamentName"),
 			"Tournament.tier",
 			"CalendarEvent.name",
-			"CalendarEvent.description",
 			"CalendarEventDate.startTime",
 			"Tournament.isFinalized",
 			"Tournament.seedingSnapshot",
@@ -87,10 +96,10 @@ export async function findById(id: number) {
 									"TournamentOrganizationMember.userId",
 									"User.id",
 								)
-								.select([
+								.select((eb) => [
 									"TournamentOrganizationMember.userId",
 									"TournamentOrganizationMember.role",
-									...COMMON_USER_FIELDS,
+									...commonUserSelect(eb),
 									"User.pronouns",
 								])
 								.whereRef(
@@ -99,6 +108,16 @@ export async function findById(id: number) {
 									"TournamentOrganization.id",
 								),
 						).as("members"),
+						jsonArrayFrom(
+							innerEb
+								.selectFrom("TournamentOrganizationSeries")
+								.select("TournamentOrganizationSeries.name")
+								.whereRef(
+									"TournamentOrganizationSeries.organizationId",
+									"=",
+									"TournamentOrganization.id",
+								),
+						).as("series"),
 					])
 					.whereRef(
 						"TournamentOrganization.id",
@@ -110,15 +129,15 @@ export async function findById(id: number) {
 			jsonObjectFrom(
 				eb
 					.selectFrom("User")
-					.select([...COMMON_USER_FIELDS, "User.pronouns"])
+					.select((eb) => [...commonUserSelect(eb), "User.pronouns"])
 					.whereRef("User.id", "=", "CalendarEvent.authorId"),
 			).as("author"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("TournamentStaff")
 					.innerJoin("User", "TournamentStaff.userId", "User.id")
-					.select([
-						...COMMON_USER_FIELDS,
+					.select((eb) => [
+						...commonUserSelect(eb),
 						"User.pronouns",
 						"TournamentStaff.role",
 					])
@@ -157,6 +176,7 @@ export async function findById(id: number) {
 						"TournamentTeam.activeRosterUserIds",
 						"TournamentTeam.startingBracketIdx",
 						"TournamentTeam.abDivision",
+						"TournamentTeam.avatarImgId",
 						concatUserSubmittedImagePrefix(
 							innerEb.ref("UserSubmittedImage.url"),
 						).as("pickupAvatarUrl"),
@@ -175,7 +195,7 @@ export async function findById(id: number) {
 								)
 								.leftJoin("PlusTier", "PlusTier.userId", "User.id")
 								.leftJoin("LiveStream", "LiveStream.userId", "User.id")
-								.select([
+								.select((eb) => [
 									"User.id as userId",
 									"User.username",
 									"User.discordId",
@@ -194,6 +214,7 @@ export async function findById(id: number) {
 									"LiveStream.twitch as streamTwitch",
 									"LiveStream.viewerCount as streamViewerCount",
 									"LiveStream.thumbnailUrl as streamThumbnailUrl",
+									customAvatarUrl(eb).as("customAvatarUrl"),
 								])
 								.whereRef(
 									"TournamentTeamMember.tournamentTeamId",
@@ -323,6 +344,34 @@ export async function findById(id: number) {
 	};
 }
 
+/**
+ * Loads a tournament's rules markdown. Kept out of {@link findById} since it can
+ * be large and is only needed on the tournament's rules page.
+ */
+export async function findRulesById(tournamentId: number) {
+	const row = await db
+		.selectFrom("Tournament")
+		.select("Tournament.rules")
+		.where("Tournament.id", "=", tournamentId)
+		.executeTakeFirst();
+
+	return row?.rules ?? null;
+}
+
+/**
+ * Loads a tournament's description markdown. Kept out of {@link findById} since it
+ * can be large and is only needed on the tournament's info page.
+ */
+export async function findDescriptionById(tournamentId: number) {
+	const row = await db
+		.selectFrom("CalendarEvent")
+		.select("CalendarEvent.description")
+		.where("CalendarEvent.tournamentId", "=", tournamentId)
+		.executeTakeFirst();
+
+	return row?.description ?? null;
+}
+
 export async function hasChildTournaments(parentTournamentId: number) {
 	const row = await db
 		.selectFrom("Tournament")
@@ -418,25 +467,6 @@ export function relatedUsersByTournamentIds(tournamentIds: number[]) {
 			).as("staff"),
 			jsonArrayFrom(
 				eb
-					.selectFrom("TournamentOrganization")
-					.innerJoin(
-						"TournamentOrganizationMember",
-						"TournamentOrganization.id",
-						"TournamentOrganizationMember.organizationId",
-					)
-					.select(["TournamentOrganizationMember.userId"])
-					.whereRef(
-						"TournamentOrganization.id",
-						"=",
-						"CalendarEvent.organizationId",
-					)
-					.where("TournamentOrganizationMember.role", "in", [
-						"ADMIN",
-						"ORGANIZER",
-					]),
-			).as("organizationMembers"),
-			jsonArrayFrom(
-				eb
 					.selectFrom("TournamentTeam")
 					.innerJoin(
 						"TournamentTeamMember",
@@ -450,7 +480,6 @@ export function relatedUsersByTournamentIds(tournamentIds: number[]) {
 		.where("Tournament.id", "in", tournamentIds)
 		.$narrowType<{
 			staff: NotNull;
-			organizationMembers: NotNull;
 			teamMembers: NotNull;
 		}>()
 		.execute();
@@ -537,7 +566,7 @@ export function forShowcase() {
 					.whereRef("TournamentResult.tournamentId", "=", "Tournament.id")
 					.where("TournamentResult.placement", "=", 1)
 					.select((eb) => [
-						...COMMON_USER_FIELDS,
+						...commonUserSelect(eb),
 						"User.country",
 						"TournamentResult.div",
 						"TournamentTeam.name as teamName",
@@ -618,7 +647,7 @@ export function topThreeResultsByTournamentId(tournamentId: number) {
 			jsonObjectFrom(
 				eb
 					.selectFrom("User")
-					.select([...COMMON_USER_FIELDS])
+					.select((eb) => commonUserSelect(eb))
 					.whereRef("User.id", "=", "TournamentResult.userId"),
 			).as("user"),
 		])
@@ -748,37 +777,35 @@ export function overrideTeamBracketProgression({
 		.execute();
 }
 
-export function addStaff({
+export function setStaff({
 	tournamentId,
-	userId,
-	role,
+	staff,
 }: {
 	tournamentId: number;
-	userId: number;
-	role: Tables["TournamentStaff"]["role"];
+	staff: Array<{
+		userId: number;
+		role: Tables["TournamentStaff"]["role"];
+	}>;
 }) {
-	return db
-		.insertInto("TournamentStaff")
-		.values({
-			tournamentId,
-			userId,
-			role,
-		})
-		.execute();
-}
+	return db.transaction().execute(async (trx) => {
+		await trx
+			.deleteFrom("TournamentStaff")
+			.where("tournamentId", "=", tournamentId)
+			.execute();
 
-export function removeStaff({
-	tournamentId,
-	userId,
-}: {
-	tournamentId: number;
-	userId: number;
-}) {
-	return db
-		.deleteFrom("TournamentStaff")
-		.where("tournamentId", "=", tournamentId)
-		.where("userId", "=", userId)
-		.execute();
+		if (staff.length > 0) {
+			await trx
+				.insertInto("TournamentStaff")
+				.values(
+					staff.map((staffer) => ({
+						tournamentId,
+						userId: staffer.userId,
+						role: staffer.role,
+					})),
+				)
+				.execute();
+		}
+	});
 }
 
 interface UpsertPreparedMapsArgs {
@@ -827,7 +854,11 @@ export function updateCastTwitchAccounts({
 	return db
 		.updateTable("Tournament")
 		.set({
-			castTwitchAccounts: JSON.stringify(castTwitchAccounts),
+			castTwitchAccounts: JSON.stringify(
+				castTwitchAccounts
+					.map((account) => account.trim().toLowerCase())
+					.filter(Boolean),
+			),
 		})
 		.where("id", "=", tournamentId)
 		.execute();
@@ -1277,10 +1308,12 @@ export async function searchByName({
 	query,
 	limit,
 	minStartTime,
+	maxStartTime,
 }: {
 	query: string;
 	limit: number;
 	minStartTime?: Date;
+	maxStartTime?: Date;
 }) {
 	let sqlQuery = db
 		.selectFrom("Tournament")
@@ -1306,6 +1339,14 @@ export async function searchByName({
 			"CalendarEventDate.startTime",
 			">=",
 			dateToDatabaseTimestamp(minStartTime),
+		);
+	}
+
+	if (maxStartTime) {
+		sqlQuery = sqlQuery.where(
+			"CalendarEventDate.startTime",
+			"<=",
+			dateToDatabaseTimestamp(maxStartTime),
 		);
 	}
 
