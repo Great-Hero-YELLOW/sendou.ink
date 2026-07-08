@@ -15,7 +15,6 @@ import { assertUnreachable } from "~/utils/types";
 import { navIconUrl, SENDOUQ_PAGE, sendouQMatchPage } from "~/utils/urls";
 import { groupAfterMorph } from "../core/groups";
 import { refreshSendouQInstance, SendouQ } from "../core/SendouQ.server";
-import * as PrivateUserNoteRepository from "../PrivateUserNoteRepository.server";
 import { SENDOUQ_LOOKING_ROOM, sqGroupWebsocketRoom } from "../q-constants";
 import { lookingSchema } from "../q-schemas.server";
 import { resolveFutureMatchModes } from "../q-utils";
@@ -37,14 +36,12 @@ export const action: ActionFunction = async ({ request }) => {
 		ChatSystemMessage.send({
 			room: SENDOUQ_LOOKING_ROOM,
 			revalidateOnly: true,
-			authorUserId: user.id,
 		});
 
 	const revalidateGroupTopic = (groupId: number) =>
 		ChatSystemMessage.send({
 			room: sqGroupWebsocketRoom(groupId),
 			revalidateOnly: true,
-			authorUserId: user.id,
 		});
 
 	const notifyLikeReceived = (groupId: number) =>
@@ -52,7 +49,6 @@ export const action: ActionFunction = async ({ request }) => {
 			room: sqGroupWebsocketRoom(groupId),
 			type: "LIKE_RECEIVED",
 			revalidateOnly: true,
-			authorUserId: user.id,
 		});
 
 	try {
@@ -215,13 +211,11 @@ export const action: ActionFunction = async ({ request }) => {
 						room: sqGroupWebsocketRoom(ownGroup.id),
 						type: "MATCH_STARTED",
 						revalidateOnly: true,
-						authorUserId: user.id,
 					},
 					{
 						room: sqGroupWebsocketRoom(theirGroup.id),
 						type: "MATCH_STARTED",
 						revalidateOnly: true,
-						authorUserId: user.id,
 					},
 				]);
 
@@ -333,11 +327,6 @@ export const action: ActionFunction = async ({ request }) => {
 				await refreshSendouQInstance();
 
 				broadcastLookingUpdate();
-
-				break;
-			}
-			case "DELETE_PRIVATE_USER_NOTE": {
-				await PrivateUserNoteRepository.deleteOwnNoteById(data.targetId);
 
 				break;
 			}

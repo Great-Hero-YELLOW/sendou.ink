@@ -15,7 +15,7 @@ import {
 } from "~/features/tournament/tournament-utils";
 import type * as Progression from "~/features/tournament-bracket/core/Progression";
 import type { TournamentManagerDataSet } from "~/modules/brackets-manager/types";
-import type { Match, Stage } from "~/modules/brackets-model";
+import { type Match, type Stage, Status } from "~/modules/brackets-model";
 import type { ModeShort } from "~/modules/in-game-lists/types";
 import { isAdmin } from "~/modules/permissions/utils";
 import {
@@ -37,6 +37,11 @@ import * as Swiss from "./Swiss";
 import type { TournamentData, TournamentDataTeam } from "./Tournament.server";
 
 export type OptionalIdObject = { id: number } | undefined;
+
+/** The progress status of a team member in a running tournament, as resolved by {@link Tournament.teamMemberOfProgressStatus}. */
+export type TournamentTeamMemberProgressStatus = NonNullable<
+	ReturnType<Tournament["teamMemberOfProgressStatus"]>
+>;
 
 /** Extends and providers utility functions on top of the bracket-manager library. Updating data after the bracket has started is responsibility of bracket-manager. */
 export class Tournament {
@@ -793,6 +798,11 @@ export class Tournament {
 		// match didn't start yet
 		if (!match.opponent1 || !match.opponent2) return false;
 
+		// waiting for teams to finish their previous matches
+		if (match.status === Status.Locked || match.status === Status.Waiting) {
+			return false;
+		}
+
 		const matchIsOver =
 			match.opponent1.result === "win" || match.opponent2.result === "win";
 
@@ -1375,6 +1385,31 @@ export class Tournament {
 		}
 
 		return this.ctx.author.id === user.id;
+	}
+
+	/**
+	 * Checks if the given user can edit the tournament's calendar event info.
+	 *
+	 * Mirrors the authorization enforced when the edit is submitted: organization
+	 * admins can only edit when the organization is established, unless they have
+	 * the TOURNAMENT_ADDER role.
+	 */
+	canEditEventInfo(
+		user: OptionalIdObject,
+		{ isTournamentAdder }: { isTournamentAdder: boolean },
+	) {
+		if (!user) return false;
+		if (isAdmin(user)) return true;
+		if (this.ctx.author.id === user.id) return true;
+
+		const isOrganizationAdmin = this.ctx.organization?.members.some(
+			(member) => member.userId === user.id && member.role === "ADMIN",
+		);
+
+		return Boolean(
+			isOrganizationAdmin &&
+				(isTournamentAdder || this.ctx.organization?.isEstablished),
+		);
 	}
 
 	/** Checks if the given user is an organizer of the tournament. */

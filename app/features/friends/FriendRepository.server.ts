@@ -1,9 +1,11 @@
+import { sub } from "date-fns";
 import { type SelectQueryBuilder, sql } from "kysely";
 import { db } from "~/db/sql";
 import type { DB } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { commonUserSelect, customAvatarUrl } from "~/utils/kysely.server";
+import { FRIEND } from "./friends-constants";
 
 export async function findByUserIdWithActivity(userId: number) {
 	const [friendRows, teamMemberRows] = await Promise.all([
@@ -163,6 +165,19 @@ export async function deleteFriendRequest({
 		.execute();
 }
 
+export function deleteOldPendingRequests() {
+	return db
+		.deleteFrom("FriendRequest")
+		.where(
+			"FriendRequest.createdAt",
+			"<",
+			dateToDatabaseTimestamp(
+				sub(new Date(), { months: FRIEND.PENDING_REQUEST_EXPIRES_IN_MONTHS }),
+			),
+		)
+		.executeTakeFirst();
+}
+
 export async function findFriendRequestBetween({
 	senderId,
 	receiverId,
@@ -219,6 +234,18 @@ export async function findPendingReceivedRequests(receiverId: number) {
 		.where("FriendRequest.receiverId", "=", receiverId)
 		.orderBy("FriendRequest.createdAt", "desc")
 		.execute();
+}
+
+export async function findPendingReceivedRequestIds(
+	receiverId: number,
+): Promise<number[]> {
+	const rows = await db
+		.selectFrom("FriendRequest")
+		.select("FriendRequest.id")
+		.where("FriendRequest.receiverId", "=", receiverId)
+		.execute();
+
+	return rows.map((row) => row.id);
 }
 
 export async function insertFriendship({

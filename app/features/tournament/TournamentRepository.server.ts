@@ -85,6 +85,7 @@ export async function findById(id: number) {
 						"TournamentOrganization.id",
 						"TournamentOrganization.name",
 						"TournamentOrganization.slug",
+						"TournamentOrganization.isEstablished",
 						concatUserSubmittedImagePrefix(
 							innerEb.ref("UserSubmittedImage.url"),
 						).as("logoUrl"),
@@ -221,6 +222,7 @@ export async function findById(id: number) {
 									"=",
 									"TournamentTeam.id",
 								)
+								.orderBy(sql`"TournamentTeamMember"."role" = 'OWNER'`, "desc")
 								.orderBy("TournamentTeamMember.createdAt", "asc"),
 						).as("members"),
 						jsonArrayFrom(
@@ -417,6 +419,39 @@ export async function findChildTournaments(parentTournamentId: number) {
 		...row,
 		participantUserIds: new Set(row.teamMembers.map((member) => member.userId)),
 	}));
+}
+
+/** Child division tournaments of a league sign-up, with their name and finalized status. */
+export function findChildTournamentsForDivCalc(parentTournamentId: number) {
+	return db
+		.selectFrom("Tournament")
+		.innerJoin("CalendarEvent", "Tournament.id", "CalendarEvent.tournamentId")
+		.select([
+			"Tournament.id as tournamentId",
+			"CalendarEvent.name",
+			"Tournament.isFinalized",
+		])
+		.where("Tournament.parentTournamentId", "=", parentTournamentId)
+		.execute();
+}
+
+/**
+ * User ids eligible for a LUTI division placement in the given tournament: they have a result, were
+ * on a team that did not drop out, and played at least one match.
+ */
+export function findLeagueDivParticipantUserIds(tournamentId: number) {
+	return db
+		.selectFrom("TournamentResult")
+		.innerJoin(
+			"TournamentTeam",
+			"TournamentTeam.id",
+			"TournamentResult.tournamentTeamId",
+		)
+		.select("TournamentResult.userId")
+		.distinct()
+		.where("TournamentResult.tournamentId", "=", tournamentId)
+		.where("TournamentTeam.droppedOut", "=", 0)
+		.execute();
 }
 
 export async function findTOSetMapPoolById(tournamentId: number) {

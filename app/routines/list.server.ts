@@ -1,8 +1,10 @@
 import { CloseExpiredCommissionsRoutine } from "./closeExpiredCommissions";
 import { CloseExpiredContinueVotesRoutine } from "./closeExpiredContinueVotes";
+import { ComputeLutiDivsRoutine } from "./computeLutiDivs";
 import { DeleteObsoleteMatchVodsRoutine } from "./deleteObsoleteMatchVods";
 import { DeleteOldExternalStreamsRoutine } from "./deleteOldExternalStreams";
 import { DeleteOldNotificationsRoutine } from "./deleteOldNotifications";
+import { DeleteOldPendingFriendRequestsRoutine } from "./deleteOldPendingFriendRequests";
 import { DeleteOldTournamentAuditLogsRoutine } from "./deleteOldTournamentAuditLogs";
 import { DeleteOrphanArtTagsRoutine } from "./deleteOrphanArtTags";
 import { NotifyCheckInStartRoutine } from "./notifyCheckInStart";
@@ -38,9 +40,11 @@ export const everyHourAt30 = [
 export const daily = [
 	DeleteObsoleteMatchVodsRoutine,
 	DeleteOldNotificationsRoutine,
+	DeleteOldPendingFriendRequestsRoutine,
 	DeleteOldTournamentAuditLogsRoutine,
 	CloseExpiredCommissionsRoutine,
 	DeleteOrphanArtTagsRoutine,
+	ComputeLutiDivsRoutine,
 	OptimizeDatabaseRoutine,
 ];
 

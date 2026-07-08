@@ -168,6 +168,7 @@
 	"seasons": "",
 	"seasons.noQ": "",
 	"seasons.noSeasons": "",
+	"seasons.tabs.sets": "",
 	"seasons.tabs.weapons": "",
 	"seasons.tabs.stages": "",
 	"seasons.tabs.self": "",
@@ -204,5 +205,17 @@
 	"mutualFriends.count_one": "",
 	"mutualFriends.count_few": "",
 	"mutualFriends.count_many": "",
-	"mutualFriends.count_other": ""
+	"mutualFriends.count_other": "",
+	"card.viewUserPage": "",
+	"card.sendFriendRequest": "",
+	"card.friendRequestPending": "",
+	"card.friendRequestSent": "",
+	"card.editPrivateNote": "",
+	"card.privateNote": "",
+	"card.xp": "",
+	"card.freeAgent": "",
+	"card.noMutualFriends": "",
+	"card.edit.title": "",
+	"card.edit.bannerColor": "",
+	"card.edit.supporterOnlyBanner": ""
 }
