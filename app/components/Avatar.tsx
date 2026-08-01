@@ -3,7 +3,7 @@ import * as React from "react";
 import type { Tables } from "~/db/tables";
 import { useHydrated } from "~/hooks/useHydrated";
 import { LRUCache } from "~/modules/cache";
-import { BLANK_IMAGE_URL, discordAvatarUrl } from "~/utils/urls";
+import { BLANK_IMAGE_URL, resolveAvatarUrl } from "~/utils/urls";
 import styles from "./Avatar.module.css";
 
 const dimensions = {
@@ -42,7 +42,7 @@ function generateColors(hash: number) {
 	};
 }
 
-function generateIdenticon(input: string, size = 128, gridSize = 5) {
+export function generateIdenticon(input: string, size = 128, gridSize = 5) {
 	const cacheKey = `${input}-${size}-${gridSize}`;
 	const cached = identiconCache.get(cacheKey);
 	if (cached) return cached;
@@ -108,6 +108,7 @@ export function Avatar({
 	size = "sm",
 	className,
 	alt = "",
+	loading = "lazy",
 	...rest
 }: {
 	user?: Pick<Tables["User"], "discordId" | "discordAvatar"> & {
@@ -118,6 +119,7 @@ export function Avatar({
 	className?: string;
 	alt?: string;
 	size: keyof typeof dimensions;
+	loading?: "lazy" | "eager";
 } & React.ButtonHTMLAttributes<HTMLImageElement>) {
 	const [isErrored, setIsErrored] = React.useState(false);
 	const isClient = useHydrated();
@@ -130,19 +132,23 @@ export function Avatar({
 
 	const identiconSource = identiconInput ?? user?.discordId ?? "unknown";
 
-	const src = url
-		? url
-		: user?.customAvatarUrl && !isErrored
-			? user.customAvatarUrl
-			: user?.discordAvatar && !isErrored
-				? discordAvatarUrl({
-						discordAvatar: user.discordAvatar,
-						discordId: user.discordId,
-						size: size === "lg" || size === "xmd" ? "lg" : "sm",
-					})
-				: isClient
-					? generateIdenticon(identiconSource, dimensions[size], 7)
-					: BLANK_IMAGE_URL;
+	const userAvatarUrl = user
+		? resolveAvatarUrl({
+				customAvatarUrl: user.customAvatarUrl,
+				discordId: user.discordId,
+				discordAvatar: user.discordAvatar,
+				size: size === "lg" || size === "xmd" ? "lg" : "sm",
+			})
+		: undefined;
+
+	const avatarUrl = url ?? userAvatarUrl;
+
+	const src =
+		avatarUrl && !isErrored
+			? avatarUrl
+			: isClient
+				? generateIdenticon(identiconSource, dimensions[size], 7)
+				: BLANK_IMAGE_URL;
 
 	return (
 		<div className={clsx(styles.avatarWrapper, className)}>
@@ -153,6 +159,7 @@ export function Avatar({
 				title={alt ? alt : undefined}
 				width={dimensions[size]}
 				height={dimensions[size]}
+				loading={loading}
 				onError={() => setIsErrored(true)}
 				{...rest}
 			/>

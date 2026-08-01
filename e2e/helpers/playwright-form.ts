@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
 import type { z } from "zod";
-import { formRegistry } from "~/form/fields";
+import { getFormFieldMetadata } from "~/form/fields";
 import type { FormField } from "~/form/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,7 +81,7 @@ export function createFormHelpers<T extends z.ZodRawShape>(
 	const getFieldMetadata = (name: string): FormField | undefined => {
 		const fieldSchema = schema.shape[name];
 		if (!fieldSchema) return undefined;
-		return formRegistry.get(fieldSchema) as FormField | undefined;
+		return getFormFieldMetadata(fieldSchema as z.ZodType);
 	};
 
 	const getLabel = (name: string): string => {
@@ -199,7 +199,8 @@ export function createFormHelpers<T extends z.ZodRawShape>(
 
 		async selectUser(name, userName) {
 			const label = getLabel(String(name));
-			const comboboxButton = page.getByLabel(label, { exact: true });
+			// role + non-exact name: the trigger's accessible name is e.g. "User search User *"
+			const comboboxButton = page.getByRole("button", { name: label });
 			const searchInput = page.getByTestId("user-search-input");
 			const option = page.getByTestId("user-search-item").first();
 

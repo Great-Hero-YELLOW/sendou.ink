@@ -15,12 +15,16 @@ import { WeaponSelect } from "../WeaponSelect";
 import { SecondaryAction } from "./SecondaryAction";
 import styles from "./WeaponReporter.module.css";
 
-interface WeaponReporterMap {
+export interface WeaponReporterMap {
+	/** Index of the map in the match's map list, which is what a weapon is reported for. */
+	mapIndex: number;
 	stageId: StageId;
 	mode: ModeShort;
 }
 
 export interface WeaponReporterProps {
+	/** Only the maps the viewer took part in, so someone who was subbed out is
+	 * never asked for a weapon of a map they did not play. */
 	maps: WeaponReporterMap[];
 	pastReported: MainWeaponId[];
 	nextMapIndex: number;
@@ -51,10 +55,12 @@ export function WeaponReporter({
 		null,
 	);
 
-	const inputTargetMap = nextMapIndex >= 0 ? maps[nextMapIndex] : undefined;
+	const inputTargetMap = maps.find((map) => map.mapIndex === nextMapIndex);
 	const unreportedCount = inputTargetMap
 		? maps.length - pastReported.length - 1
 		: maps.length - pastReported.length;
+	const allReported =
+		pastReported.length > 0 && !inputTargetMap && unreportedCount === 0;
 
 	const handleToggle = (newOpen: boolean) => {
 		setIsOpen(newOpen);
@@ -71,6 +77,7 @@ export function WeaponReporter({
 			collapsedLabel={t("q:match.actions.reportWeapons")}
 			collapsedIcon={<Crosshair size={16} />}
 			standalone={standalone}
+			alwaysOpen={allReported}
 		>
 			{inputTargetMap ? (
 				<div className={styles.mapRow}>

@@ -1,9 +1,10 @@
 import slugify from "slugify";
 import { Config } from "~/config";
-import type { GearType, Preference, Tables } from "~/db/tables";
+import type { Tables } from "~/db/tables";
+import type { Preference } from "~/db/tables-json";
 import type { ArtSource } from "~/features/art/art-types";
 import type { AuthErrorCode } from "~/features/auth/core/errors";
-import { serializeBuild } from "~/features/build-analyzer/core/utils";
+import { serializeBuild } from "~/features/build-analyzer/core/serializer";
 import type { CalendarFilters } from "~/features/calendar/calendar-types";
 import type { MapPool } from "~/features/map-list-generator/core/map-pool";
 import type { StageBackgroundStyle } from "~/features/map-planner";
@@ -14,6 +15,7 @@ import type {
 	AbilityWithUnknown,
 	BrandId,
 	BuildAbilitiesTupleWithUnknown,
+	GearType,
 	MainWeaponId,
 	ModeShort,
 	ModeShortWithSpecial,
@@ -36,6 +38,29 @@ export const discordAvatarUrl = ({
 	`https://cdn.discordapp.com/avatars/${discordId}/${
 		discordAvatar
 	}.webp${size === "lg" ? "?size=240" : "?size=80"}`;
+
+/**
+ * Resolves the avatar image url of an user, preferring their custom avatar over
+ * the Discord one. Returns undefined if the user has neither.
+ */
+export const resolveAvatarUrl = ({
+	customAvatarUrl,
+	discordId,
+	discordAvatar,
+	size,
+}: {
+	customAvatarUrl?: string | null;
+	discordId: string;
+	discordAvatar?: string | null;
+	size: "lg" | "sm";
+}) => {
+	if (customAvatarUrl) return customAvatarUrl;
+	if (discordAvatar) {
+		return discordAvatarUrl({ discordId, discordAvatar, size });
+	}
+
+	return undefined;
+};
 
 export const SENDOU_INK_BASE_URL = "https://sendou.ink";
 
@@ -66,6 +91,8 @@ export const SPR_INFO_URL =
 	"https://web.archive.org/web/20250513034545/https://www.pgstats.com/articles/introducing-spr-and-uf";
 export const SPLATOON3_INK_SCHEDULES_URL =
 	"https://splatoon3.ink/data/schedules.json";
+export const PICOCAD2_WEB_VIEWER_URL =
+	"https://picocad2-web-viewer.hfcred.workers.dev/";
 
 export const bskyUrl = (accountName: string) =>
 	`https://bsky.app/profile/${accountName}`;
@@ -80,9 +107,12 @@ export const ADMIN_PAGE = "/admin";
 export const API_PAGE = "/api";
 export const ARTICLES_MAIN_PAGE = "/a";
 export const FAQ_PAGE = "/faq";
+export const WELCOME_PAGE = "/welcome";
 export const SUPPORT_PAGE = "/support";
 export const CONTRIBUTIONS_PAGE = "/contributions";
 export const BADGES_PAGE = "/badges";
+export const TROPHIES_PAGE = "/trophies";
+export const NEW_TROPHY_PAGE = "/trophies/new";
 export const BUILDS_PAGE = "/builds";
 export const TEAM_SEARCH_PAGE = "/t";
 export const NEW_TEAM_PAGE = "/t/new";
@@ -128,6 +158,7 @@ export const SENDOU_LOVE_EMOJI_PATH = `${STATIC_ASSETS_URL}/img/layout/sendou_lo
 export const FIRST_PLACEMENT_ICON_PATH = `${STATIC_ASSETS_URL}/svg/placements/first.svg`;
 export const SECOND_PLACEMENT_ICON_PATH = `${STATIC_ASSETS_URL}/svg/placements/second.svg`;
 export const THIRD_PLACEMENT_ICON_PATH = `${STATIC_ASSETS_URL}/svg/placements/third.svg`;
+export const WELCOME_HERO_IMAGE_PATH = `${STATIC_ASSETS_URL}/img/welcome-hero.webp`;
 
 export const APP_ICON_URL = `${STATIC_ASSETS_URL}/img/app-icon.png`;
 export const pwaSplashScreenImageUrl = (fileName: string) =>
@@ -152,6 +183,16 @@ export const userCardFriendshipPage = (
 
 export const userCardNotePage = (userId: number) => `/user-card/${userId}/note`;
 
+export const userReportPage = (userId: number) => `/user-report/${userId}`;
+
+export const trophyPage = (trophyId: number) => `${TROPHIES_PAGE}/${trophyId}`;
+
+export const trophyWinsPage = (args: { trophyId: number; userId: number }) =>
+	`${TROPHIES_PAGE}/${args.trophyId}/wins/${args.userId}`;
+
+export const trophyTournamentsPage = (trophyId: number) =>
+	`${TROPHIES_PAGE}/${trophyId}/tournaments`;
+
 interface UserLinkArgs {
 	discordId: Tables["User"]["discordId"];
 	customUrl?: Tables["User"]["customUrl"];
@@ -169,6 +210,13 @@ export const userSeasonsPage = ({
 	`${userPage(user)}/seasons${
 		typeof season === "number" ? `?season=${season}` : ""
 	}`;
+export const userSeasonSummaryGraphicPage = ({
+	user,
+	season,
+}: {
+	user: UserLinkArgs;
+	season: number;
+}) => `${userPage(user)}/seasons/summary-graphic?season=${season}`;
 export const userSeasonsStatsPage = ({
 	user,
 	season,

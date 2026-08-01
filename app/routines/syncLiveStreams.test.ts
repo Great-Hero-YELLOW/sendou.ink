@@ -6,7 +6,6 @@ import {
 	testTournament,
 	tournamentCtxTeam,
 } from "~/features/tournament-bracket/core/tests/test-utils";
-import { dbReset } from "~/utils/Test";
 import { SyncLiveStreamsRoutine } from "./syncLiveStreams";
 
 const { mockGetStreams } = vi.hoisted(() => ({
@@ -44,13 +43,12 @@ function addRunningTournament(
 let timeOffset = 0;
 
 describe("syncLiveStreams tournament streamers", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(
 			add(new Date("2025-01-15T12:00:00Z"), { minutes: timeOffset }),
 		);
 		timeOffset += 31;
-		dbReset();
 		RunningTournaments.clear();
 		mockGetStreams.mockReset();
 	});
@@ -104,6 +102,7 @@ describe("syncLiveStreams tournament streamers", () => {
 							twitch: "player_one",
 							plusTier: null,
 							role: "OWNER",
+							isSub: 0,
 							createdAt: 0,
 							streamTwitch: null,
 							streamViewerCount: null,
@@ -145,6 +144,7 @@ describe("syncLiveStreams tournament streamers", () => {
 							twitch: "dropped_player",
 							plusTier: null,
 							role: "OWNER",
+							isSub: 0,
 							createdAt: 0,
 							streamTwitch: null,
 							streamViewerCount: null,
@@ -199,6 +199,7 @@ describe("syncLiveStreams tournament streamers", () => {
 							twitch: "different_account",
 							plusTier: null,
 							role: "OWNER",
+							isSub: 0,
 							createdAt: 0,
 							streamTwitch: null,
 							streamViewerCount: null,
@@ -236,6 +237,7 @@ describe("syncLiveStreams tournament streamers", () => {
 							twitch: "streamer_a",
 							plusTier: null,
 							role: "OWNER",
+							isSub: 0,
 							createdAt: 0,
 							streamTwitch: null,
 							streamViewerCount: null,
@@ -252,8 +254,7 @@ describe("syncLiveStreams tournament streamers", () => {
 		const rowsAfterFirst = await findAllTournamentStreamers();
 		expect(rowsAfterFirst).toHaveLength(1);
 
-		// clear DB and add a different tournament — if throttle works, nothing new is inserted
-		await db.deleteFrom("TournamentStreamer").execute();
+		// add a different tournament — if throttle works, nothing new is inserted
 		RunningTournaments.clear();
 
 		mockGetStreams.mockResolvedValue([
@@ -276,6 +277,7 @@ describe("syncLiveStreams tournament streamers", () => {
 							twitch: "streamer_b",
 							plusTier: null,
 							role: "OWNER",
+							isSub: 0,
 							createdAt: 0,
 							streamTwitch: null,
 							streamViewerCount: null,
@@ -291,6 +293,7 @@ describe("syncLiveStreams tournament streamers", () => {
 		await SyncLiveStreamsRoutine.run();
 
 		const rowsAfterSecond = await findAllTournamentStreamers();
-		expect(rowsAfterSecond).toHaveLength(0);
+		expect(rowsAfterSecond).toHaveLength(1);
+		expect(rowsAfterSecond[0].twitchAccount).toBe("streamer_a");
 	});
 });

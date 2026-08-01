@@ -1,23 +1,18 @@
 import { styleText } from "node:util";
 import * as Sentry from "@sentry/react-router";
 import Database from "better-sqlite3";
-import {
-	Kysely,
-	type LogEvent,
-	ParseJSONResultsPlugin,
-	SqliteDialect,
-} from "kysely";
+import { Kysely, type LogEvent, SqliteDialect } from "kysely";
 import { format } from "sql-formatter";
 import { Config } from "~/config";
 import { ServerConfig } from "~/config.server";
 import { logger } from "~/utils/logger";
 import { roundToNDecimalPlaces } from "~/utils/number";
+import { FastParseJSONResultsPlugin } from "./parse-json-results-plugin";
 import type { DB } from "./tables";
+import { WriteTrackerPlugin } from "./write-tracker";
 
-const migratedEmptyDb = new Database("db-test.sqlite3").serialize();
-
-export const sql = new Database(
-	ServerConfig.isTest ? migratedEmptyDb : ServerConfig.dbPath,
+const sql = new Database(
+	ServerConfig.isTest ? migratedEmptyDb() : ServerConfig.dbPath,
 );
 
 sql.pragma("journal_mode = WAL");
@@ -51,8 +46,22 @@ export const db = new Kysely<DB>({
 		database: sql,
 	}),
 	log,
-	plugins: [new ParseJSONResultsPlugin()],
+	plugins: [new FastParseJSONResultsPlugin(), new WriteTrackerPlugin()],
 });
+
+// The test database file is created and migrated by scripts/ensure-test-db.ts
+// (vitest globalSetup) before any test worker imports this module.
+function migratedEmptyDb() {
+	const testDb = new Database("db-test.sqlite3", {
+		readonly: true,
+		fileMustExist: true,
+	});
+	try {
+		return testDb.serialize();
+	} finally {
+		testDb.close();
+	}
+}
 
 function log(event: LogEvent) {
 	if (Config.sentry.enabled && event.level === "query") {
@@ -80,7 +89,9 @@ function logQuery(event: LogEvent) {
 	if (event.level === "query" && isSelectQuery) {
 		const from = () =>
 			(event.query.query as any).from.froms.map(
-				(f: any) => f.table.identifier.name,
+				// plain tables have the name under table, aliased tables and
+				// subqueries under alias
+				(f: any) => f.table?.identifier?.name ?? f.alias?.name ?? "unknown",
 			);
 		// biome-ignore lint/suspicious/noConsole: dev only
 		console.log(styleText("blue", `-- SQLITE QUERY to "${from()}" --`));

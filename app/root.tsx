@@ -19,6 +19,7 @@ import {
 	Scripts,
 	ScrollRestoration,
 	type ShouldRevalidateFunction,
+	useFetchers,
 	useHref,
 	useLoaderData,
 	useMatches,
@@ -27,9 +28,8 @@ import {
 	useRevalidator,
 	useSearchParams,
 } from "react-router";
-import { useChangeLanguage } from "remix-i18next/react";
 import { Config } from "~/config";
-import type { CustomTheme } from "~/db/tables";
+import type { CustomTheme } from "~/db/tables-json";
 import * as NotificationRepository from "~/features/notifications/NotificationRepository.server";
 import { NOTIFICATIONS } from "~/features/notifications/notifications-contants";
 import { resolveSidebarData } from "~/features/sidebar/core/sidebar.server";
@@ -53,10 +53,16 @@ import {
 	useTheme,
 } from "./features/theme/core/provider";
 import { getThemeSession } from "./features/theme/core/theme-session.server";
+import { UnsavedChangesGuard } from "./form/UnsavedChangesGuard";
 import { useUserIntlPreference } from "./hooks/intl/useUserIntlPreference";
 import { useHydrated } from "./hooks/useHydrated";
 import { DEFAULT_LANGUAGE } from "./modules/i18n/config";
-import { i18nCookie, i18next } from "./modules/i18n/i18next.server";
+import {
+	getLocale,
+	i18nCookie,
+	i18nMiddleware,
+} from "./modules/i18n/i18next.server";
+import { useChangeLanguage } from "./modules/i18n/useChangeLanguage";
 import { isSupporter } from "./modules/permissions/utils";
 import { IS_E2E_TEST_RUN } from "./utils/e2e";
 import { allI18nNamespaces } from "./utils/i18n";
@@ -68,6 +74,7 @@ export const middleware: Route.MiddlewareFunction[] = [
 	requestContextMiddleware,
 	sessionIdMiddleware,
 	userMiddleware,
+	i18nMiddleware,
 ];
 
 import "~/styles/vars.css";
@@ -110,7 +117,7 @@ export type LoggedInUser = NonNullable<RootLoaderData["user"]>;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
 	const user = getUser();
-	const locale = await i18next.getLocale(request);
+	const locale = getLocale();
 	const themeSession = await getThemeSession(request);
 	const sidenavSession = await getSidenavSession(request);
 
@@ -132,9 +139,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 						inGameName: user.inGameName,
 						friendCode: user.friendCode,
 						preferences: user.preferences ?? {},
-						languages: user.languages ? user.languages.split(",") : [],
+						languages: user.languages ?? [],
 						plusTier: user.plusTier,
 						roles: user.roles,
+						createdAt: user.createdAt,
 					}
 				: undefined,
 			customTheme: isSupporter(user) ? user?.customTheme : undefined,
@@ -227,9 +235,10 @@ function Document({
 			<body>
 				{IS_E2E_TEST_RUN && <HydrationTestIndicator />}
 				<React.StrictMode>
-					<RouterProvider navigate={navigate} useHref={useHref}>
+					<RouterProvider navigate={navigate} useHref={useExternalAwareHref}>
 						<I18nProvider locale={language}>
 							<SendouToastRegion />
+							<UnsavedChangesGuard />
 							<MyFuse data={data} />
 							<ChatProvider user={data?.user}>
 								<Layout data={data}>{children}</Layout>
@@ -242,6 +251,19 @@ function Document({
 			</body>
 		</html>
 	);
+}
+
+const ABSOLUTE_URL_REGEX = /^[a-z][a-z\d+\-.]*:/i;
+
+/**
+ * Href every React Aria link (menu items, buttons, tabs) is rendered with.
+ * `useHref` resolves its argument against the current route, which would turn an
+ * absolute URL such as a Twitch link into a path of our own.
+ */
+function useExternalAwareHref(href: string) {
+	const resolved = useHref(href);
+
+	return ABSOLUTE_URL_REGEX.test(href) ? href : resolved;
 }
 
 function useTriggerToasts() {
@@ -425,10 +447,24 @@ export const ErrorBoundary = () => {
 
 function HydrationTestIndicator() {
 	const isHydrated = useHydrated();
+	const navigation = useNavigation();
+	const revalidator = useRevalidator();
+	const fetchers = useFetchers();
 
 	if (!isHydrated) return null;
 
-	return <div style={{ display: "none" }} data-testid="hydrated" />;
+	const routerIdle =
+		navigation.state === "idle" &&
+		revalidator.state === "idle" &&
+		fetchers.every((fetcher) => fetcher.state === "idle");
+
+	return (
+		<div
+			style={{ display: "none" }}
+			data-testid="hydrated"
+			data-router-idle={routerIdle ? "true" : undefined}
+		/>
+	);
 }
 
 function Fonts() {

@@ -2,6 +2,8 @@ import type { LoaderFunctionArgs } from "react-router";
 import { z } from "zod";
 import { getUser } from "~/features/auth/core/user.server";
 import { calculateTentativeTier } from "~/features/tournament/core/tiering";
+import * as TrophyRepository from "~/features/trophies/TrophyRepository.server";
+import { canAccessTrophies } from "~/features/trophies/trophies-utils";
 import type { SerializeFrom } from "~/utils/remix";
 import { parseSafeSearchParams } from "~/utils/remix.server";
 import { id } from "~/utils/zod";
@@ -80,9 +82,12 @@ export async function loader({ params, request }: LoaderFunctionArgs) {
 		series: await seriesInfo(),
 		month,
 		year,
+		trophies: canAccessTrophies(user)
+			? await TrophyRepository.findByOrganizationId(organization.id)
+			: [],
 		bannedUsers:
 			user?.id && organization.permissions.BAN.includes(user.id)
-				? await TournamentOrganizationRepository.allBannedUsersByOrganizationId(
+				? await TournamentOrganizationRepository.findAllBannedUsersByOrganizationId(
 						organization.id,
 					)
 				: null,
@@ -137,6 +142,6 @@ async function seriesStuff({
 				: null,
 		eventsCount: events.length,
 		logoUrl: events[0].logoUrl,
-		established: events.at(-1)!.startTime,
+		established: events.at(-1)!.startsAt,
 	};
 }

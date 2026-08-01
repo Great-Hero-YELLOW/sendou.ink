@@ -1,7 +1,6 @@
 import * as React from "react";
 import { TAB_KEYS } from "~/components/match-page/MatchTabs";
 import { resolveRoomPass } from "~/components/match-page/utils";
-import { TournamentMatchStatus } from "~/db/tables";
 import { useUser } from "~/features/auth/core/user";
 import { useTournament } from "~/features/tournament/routes/to.$id";
 import { isLeagueRoundLocked } from "~/features/tournament/tournament-utils";
@@ -87,6 +86,7 @@ export function MatchPageProvider({
 					],
 					mapList: data.mapList,
 					pickBanEventCount: data.pickBanEventCount,
+					matchId: data.match.id,
 				})
 			: null;
 	const isPickBanStep =
@@ -101,16 +101,17 @@ export function MatchPageProvider({
 		scores,
 	});
 
-	const waitingForPreviousMatch =
-		data.match.status === TournamentMatchStatus.Locked ||
-		data.match.status === TournamentMatchStatus.Waiting;
+	const waitingForPreviousMatch = data.match.status === "PENDING";
 
 	const joinInfo = resolveJoinInfo({ tournament, data, teams });
 
 	const tabs = resolveVisibleTabs({
-		canReportScore: tournament.canReportScore({
-			matchId: data.match.id,
+		canReportScore: resolveCanReportScore({
+			tournament,
 			user,
+			teams,
+			matchIsOver: data.matchIsOver,
+			waitingForPreviousMatch,
 		}),
 		canReportWeapons:
 			isParticipant && tournament.weaponReportingOpen && hasReportedMaps,
@@ -208,6 +209,33 @@ function resolveVisibleTabs({
 	return tabs;
 }
 
+// Derived from the match loader's data instead of the tournament loader's
+// bracket data — the latter can be stale on the client (its revalidation is
+// aborted if the user navigates mid-flight and same-tournament navigations
+// skip it), which would hide the action tab on an already-ready match.
+function resolveCanReportScore({
+	tournament,
+	user,
+	teams,
+	matchIsOver,
+	waitingForPreviousMatch,
+}: {
+	tournament: ReturnType<typeof useTournament>;
+	user: ReturnType<typeof useUser>;
+	teams: [MatchPageTeam | null, MatchPageTeam | null];
+	matchIsOver: boolean;
+	waitingForPreviousMatch: boolean;
+}) {
+	const [teamOne, teamTwo] = teams;
+	if (!teamOne || !teamTwo) return false;
+	if (waitingForPreviousMatch || matchIsOver) return false;
+
+	const userTeamId = tournament.teamMemberOfByUser(user)?.id;
+	const isParticipant = userTeamId === teamOne.id || userTeamId === teamTwo.id;
+
+	return isParticipant || tournament.isOrganizer(user);
+}
+
 function resolveJoinInfo({
 	tournament,
 	data,
@@ -232,9 +260,7 @@ function resolveJoinInfo({
 	);
 	const bracket = tournament.brackets[bracketIdx];
 	const bracketMatch = bracket?.data.match.find((m) => m.id === data.match.id);
-	const group = bracket?.data.group.find(
-		(g) => g.id === bracketMatch?.group_id,
-	);
+	const group = bracket?.data.group.find((g) => g.id === bracketMatch?.groupId);
 
 	const poolCode = tournament.resolvePoolCode({
 		hostingTeamId: hostingTeam.id,
