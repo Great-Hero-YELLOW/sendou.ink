@@ -1,6 +1,7 @@
 import * as R from "remeda";
 import type { Tables } from "~/db/tables";
 import * as Standings from "~/features/tournament/core/Standings";
+import * as Engine from "~/features/tournament-bracket/core/engine";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
 import invariant from "~/utils/invariant";
 import { logger } from "~/utils/logger";
@@ -71,20 +72,40 @@ export class SwissBracket extends Bracket {
 		};
 	}
 
-	/** Swiss rounds are paired one at a time, so a round that has no matches yet can still change the standings. */
+	/**
+	 * Swiss rounds are paired one at a time, so a round that has no matches yet can still change the standings.
+	 * Exception being rounds that can never be paired because every team of the group has already
+	 * advanced or been eliminated (early advance variation).
+	 */
 	get standingsAreFinal() {
-		const everyRoundPaired = this.data.round.every((round) =>
-			this.data.match.some((match) => match.roundId === round.id),
-		);
+		if (!this.everyMatchOver) return false;
 
-		return everyRoundPaired && this.everyMatchOver;
+		return this.data.group.every((group) => {
+			const groupsMatches = this.data.match.filter(
+				(match) => match.groupId === group.id,
+			);
+			if (groupsMatches.length === 0) return false;
+
+			const everyRoundPaired = this.data.round
+				.filter((round) => round.groupId === group.id)
+				.every((round) =>
+					groupsMatches.some((match) => match.roundId === round.id),
+				);
+			if (everyRoundPaired) return true;
+
+			return !Engine.groupHasActiveTeams(this.data, {
+				groupId: group.id,
+				standings: this.standings,
+				settings: this.settings,
+			});
+		});
 	}
 
-	get standings(): Standing[] {
+	protected calculateStandings(): Standing[] {
 		return this.computeStandings({ includeUnfinishedGroups: false });
 	}
 
-	get liveStandings(): Standing[] {
+	protected calculateLiveStandings(): Standing[] {
 		return this.computeStandings({ includeUnfinishedGroups: true });
 	}
 
@@ -309,7 +330,7 @@ export class SwissBracket extends Bracket {
 
 					// they are different teams and are tied, let's check who won
 
-					const finishedMatchBetweenTeams = matches.find((match) => {
+					const finishedMatchesBetweenTeams = matches.filter((match) => {
 						const isBetweenTeams =
 							(match.opponent1?.id === team.id &&
 								match.opponent2?.id === team2.id) ||
@@ -321,19 +342,18 @@ export class SwissBracket extends Bracket {
 						return isBetweenTeams && isFinished;
 					});
 
-					// they did not play each other
-					if (!finishedMatchBetweenTeams) continue;
+					for (const finishedMatchBetweenTeams of finishedMatchesBetweenTeams) {
+						const wonTheirMatch =
+							(finishedMatchBetweenTeams.opponent1!.id === team.id &&
+								finishedMatchBetweenTeams.winnerSide === "opponent1") ||
+							(finishedMatchBetweenTeams.opponent2!.id === team.id &&
+								finishedMatchBetweenTeams.winnerSide === "opponent2");
 
-					const wonTheirMatch =
-						(finishedMatchBetweenTeams.opponent1!.id === team.id &&
-							finishedMatchBetweenTeams.winnerSide === "opponent1") ||
-						(finishedMatchBetweenTeams.opponent2!.id === team.id &&
-							finishedMatchBetweenTeams.winnerSide === "opponent2");
-
-					if (wonTheirMatch) {
-						team.winsAgainstTied++;
-					} else {
-						team.lossesAgainstTied++;
+						if (wonTheirMatch) {
+							team.winsAgainstTied++;
+						} else {
+							team.lossesAgainstTied++;
+						}
 					}
 				}
 			}
@@ -435,9 +455,15 @@ export class SwissBracket extends Bracket {
 			);
 		}
 
+		const effectiveSeed = this.effectiveSeedResolver();
 		const sorted = placements.sort((a, b) => {
 			if (a.placement < b.placement) return -1;
 			if (a.placement > b.placement) return 1;
+
+			const aEffectiveSeed = effectiveSeed(a.team.id);
+			const bEffectiveSeed = effectiveSeed(b.team.id);
+			if (aEffectiveSeed < bEffectiveSeed) return -1;
+			if (aEffectiveSeed > bEffectiveSeed) return 1;
 
 			if (a.groupId < b.groupId) return -1;
 			if (a.groupId > b.groupId) return 1;

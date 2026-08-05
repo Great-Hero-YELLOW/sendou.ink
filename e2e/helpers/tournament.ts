@@ -47,6 +47,24 @@ export const RR_TO_SE: BracketProgression = [
 	},
 ];
 
+/** With 16 teams: 4 round robin groups of 4 where every team advances to a 16 team
+ * single elimination — the format shape of GitHub issue #2607. */
+export const RR_TOP_4_TO_SE: BracketProgression = [
+	{
+		type: "round_robin",
+		name: "Groups stage",
+		requiresCheckIn: false,
+		settings: {},
+	},
+	{
+		type: "single_elimination",
+		name: "Final stage",
+		requiresCheckIn: false,
+		settings: { thirdPlaceMatch: false },
+		sources: [{ bracketIdx: 0, placements: [1, 2, 3, 4] }],
+	},
+];
+
 export const RR_TO_SE_WITH_UNDERGROUND: BracketProgression = [
 	...RR_TO_SE,
 	{
@@ -108,6 +126,23 @@ export const SWISS_TO_TOP_CUT: BracketProgression = [
 		requiresCheckIn: false,
 		settings: { thirdPlaceMatch: false },
 		sources: [{ bracketIdx: 0, placements: [1, 2, 3, 4] }],
+	},
+];
+
+/** Teams advance at 2 wins and are eliminated at 4 losses (roundCount - advanceThreshold + 1). */
+export const SWISS_EARLY_ADVANCE_TO_TOP_CUT: BracketProgression = [
+	{
+		type: "swiss",
+		name: "Swiss",
+		requiresCheckIn: false,
+		settings: { groupCount: 1, roundCount: 5, advanceThreshold: 2 },
+	},
+	{
+		type: "single_elimination",
+		name: "Top Cut",
+		requiresCheckIn: false,
+		settings: { thirdPlaceMatch: false },
+		sources: [{ bracketIdx: 0, placements: [] }],
 	},
 ];
 

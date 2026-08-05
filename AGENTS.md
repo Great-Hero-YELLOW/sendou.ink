@@ -44,6 +44,12 @@
 
 - new routes need to be added to `routes.ts`
 
+## Search params
+
+- all URL search param handling goes through `app/modules/search-params/`, see [search-params.md](./docs/dev/search-params.md) for the conventions
+- never use raw `useSearchParams` or `searchParams.get()`; declare params once per feature in a `<feature>-search-params.ts` definition (every param has a default, decode never fails). Enforced by the `no-raw-search-params` Biome plugin
+- every definition gets a round-trip test via `assertRoundTrips`
+
 ## Styling
 
 - use CSS modules
@@ -57,8 +63,9 @@
 
 ## SQL
 
-- database is Sqlite3 used with the Kysely library
+- database is Sqlite3, driven by Node's built-in `node:sqlite` through a custom Kysely dialect (`app/db/node-sqlite-dialect.ts`)
 - database code should only be written in Repository files, see [repositories.md](./docs/dev/repositories.md) for their conventions
+- migrations are Kysely migrations in `/migrations`, scaffolded with `pnpm run migrate:new "description"` and applied with `pnpm run migrate up`, see [how-to.md](./docs/dev/how-to.md)
 - down migrations are not needed, only up migrations
 - every database id is of type number
 - if we are working on a branch by default we should add to the migration this branch added instead of creating a brand new one

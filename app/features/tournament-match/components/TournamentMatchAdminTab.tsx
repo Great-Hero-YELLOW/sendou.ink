@@ -17,9 +17,8 @@ import { SubmitButton } from "~/components/SubmitButton";
 import { useUser } from "~/features/auth/core/user";
 import { useTournament } from "~/features/tournament/routes/to.$id";
 import type { MatchStatus } from "~/features/tournament-bracket/core/engine";
-import type { TournamentDataTeam } from "~/features/tournament-bracket/core/Tournament.server";
 import type { TournamentMatchLoaderData } from "../loaders/to.$id.matches.$mid.server";
-import { useMatch } from "../match-page-context";
+import { type MatchPageTeam, useMatch } from "../match-page-context";
 import { OrganizerMatchMapListDialog } from "./OrganizerMatchMapListDialog";
 import styles from "./TournamentMatchAdminTab.module.css";
 
@@ -38,9 +37,7 @@ export function TournamentMatchAdminTab({
 
 	const isOrganizer = tournament.isOrganizer(user);
 	const canReopen =
-		isOrganizer &&
-		data.matchIsOver &&
-		tournament.matchCanBeReopened(data.match.id);
+		isOrganizer && data.matchIsOver && data.bracketContext.canBeReopened;
 	const canEndSet =
 		isOrganizer && !data.matchIsOver && data.match.startedAt !== null;
 
@@ -140,11 +137,14 @@ function CastChannelChipRadio({
 	const fetcher = useFetcher();
 	const previousStateRef = React.useRef(fetcher.state);
 
+	// the action can still reject (e.g. "Not an organizer or streamer"), so the
+	// success toast waits for the round trip; on failure the action's data stays
+	// unset and only the error toast shows
 	React.useEffect(() => {
 		if (
 			previousStateRef.current !== "idle" &&
 			fetcher.state === "idle" &&
-			!(fetcher.data as { error?: unknown } | undefined)?.error
+			fetcher.data === null
 		) {
 			toastQueue.add(
 				{
@@ -253,11 +253,7 @@ function ReopenMatchButton() {
 	);
 }
 
-function EndSetPopover({
-	teams,
-}: {
-	teams: [TournamentDataTeam, TournamentDataTeam];
-}) {
+function EndSetPopover({ teams }: { teams: [MatchPageTeam, MatchPageTeam] }) {
 	const { t } = useTranslation(["tournament"]);
 	const [selectedWinner, setSelectedWinner] = React.useState<
 		number | null | undefined
@@ -341,14 +337,11 @@ function EditReportedScoresSection({
 	teams,
 }: {
 	data: TournamentMatchLoaderData;
-	teams: [TournamentDataTeam, TournamentDataTeam];
+	teams: [MatchPageTeam, MatchPageTeam];
 }) {
 	const { t } = useTranslation(["tournament"]);
-	const tournament = useTournament();
 
-	const withKo = tournament.bracketByIdxOrDefault(
-		tournament.matchIdToBracketIdx(data.match.id) ?? 0,
-	).collectsKos;
+	const withKo = data.bracketContext.collectsKos;
 
 	return (
 		<div className={styles.editSection}>
@@ -376,25 +369,26 @@ function EditReportedScoreRow({
 }: {
 	index: number;
 	result: TournamentMatchLoaderData["results"][number];
-	teams: [TournamentDataTeam, TournamentDataTeam];
+	teams: [MatchPageTeam, MatchPageTeam];
 	withKo: boolean;
 }) {
 	const { t } = useTranslation(["common", "game-misc", "tournament"]);
 	const tournament = useTournament();
 	const fetcher = useFetcher();
 	const [editing, setEditing] = React.useState(false);
-	const previousFetcherStateRef = React.useRef(fetcher.state);
 
-	React.useEffect(() => {
-		if (
-			previousFetcherStateRef.current !== "idle" &&
-			fetcher.state === "idle" &&
-			!(fetcher.data as { error?: unknown } | undefined)?.error
-		) {
+	// close the form once our own submit round trip succeeds (action returns
+	// null); on failure the action redirects with an error toast and data stays
+	// unset, keeping the form open
+	const [previousFetcherState, setPreviousFetcherState] = React.useState(
+		fetcher.state,
+	);
+	if (previousFetcherState !== fetcher.state) {
+		setPreviousFetcherState(fetcher.state);
+		if (fetcher.state === "idle" && fetcher.data === null && editing) {
 			setEditing(false);
 		}
-		previousFetcherStateRef.current = fetcher.state;
-	}, [fetcher.state, fetcher.data]);
+	}
 
 	const isKo = Boolean(result.ko);
 
@@ -448,7 +442,7 @@ function EditReportedScoreForm({
 }: {
 	fetcher: ReturnType<typeof useFetcher>;
 	result: TournamentMatchLoaderData["results"][number];
-	teams: [TournamentDataTeam, TournamentDataTeam];
+	teams: [MatchPageTeam, MatchPageTeam];
 	withKo: boolean;
 	minMembersPerTeam: number;
 	onCancel: () => void;

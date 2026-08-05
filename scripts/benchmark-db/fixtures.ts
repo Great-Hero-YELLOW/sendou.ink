@@ -1,6 +1,7 @@
 import { sub } from "date-fns";
 import { db } from "~/db/sql";
 import type { Tables } from "~/db/tables";
+import type { SkillTeamIdentifier } from "~/features/mmr/mmr-utils";
 import type {
 	MainWeaponId,
 	ModeShort,
@@ -21,12 +22,16 @@ export interface Fixtures {
 	skillBatch: {
 		season: number;
 		userIds: number[];
-		identifiers: string[];
+		identifiers: SkillTeamIdentifier[];
 	} | null;
 	heavyGroupMatchId: number | null;
 	heavyGroupIds: [number, number] | null;
 	heavyStageModeCombo: { stageId: StageId; mode: ModeShort } | null;
 	heavyTournamentId: number | null;
+	/** Tournament with the most matches. Unlike `heavyTournamentId` (most teams) this one is guaranteed to have brackets. */
+	heaviestBracketTournamentId: number | null;
+	/** Finalized tournament with the most persisted results. */
+	heavyResultsTournamentId: number | null;
 	heavyTournamentMatchId: number | null;
 	tournamentMatchGameResultId: number | null;
 	heavyTournamentTeamId: number | null;
@@ -120,6 +125,8 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		heavyGroupIds: await resolveHeavyGroupIds(heavyGroupMatchId),
 		heavyStageModeCombo: await resolveHeavyStageModeCombo(),
 		heavyTournamentId,
+		heaviestBracketTournamentId: await resolveHeaviestBracketTournamentId(),
+		heavyResultsTournamentId: await resolveHeavyResultsTournamentId(),
 		heavyTournamentMatchId: await resolveHeavyTournamentMatchId(),
 		tournamentMatchGameResultId: await resolveTournamentMatchGameResultId(),
 		heavyTournamentTeamId:
@@ -330,7 +337,9 @@ async function resolveSkillBatch() {
 	return {
 		season: seasonRow.season,
 		userIds: userRows.map((row) => row.userId as number),
-		identifiers: identifierRows.map((row) => row.identifier as string),
+		identifiers: identifierRows.map(
+			(row) => row.identifier as SkillTeamIdentifier,
+		),
 	};
 }
 
@@ -377,6 +386,38 @@ async function resolveHeavyStageModeCombo() {
 async function resolveHeavyTournamentId() {
 	const row = await db
 		.selectFrom("TournamentTeam")
+		.select(({ fn }) => ["tournamentId", fn.countAll<number>().as("count")])
+		.groupBy("tournamentId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.tournamentId ?? null;
+}
+
+async function resolveHeaviestBracketTournamentId() {
+	const row = await db
+		.selectFrom("TournamentMatch")
+		.innerJoin(
+			"TournamentStage",
+			"TournamentStage.id",
+			"TournamentMatch.stageId",
+		)
+		.select(({ fn }) => [
+			"TournamentStage.tournamentId",
+			fn.countAll<number>().as("count"),
+		])
+		.groupBy("TournamentStage.tournamentId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.tournamentId ?? null;
+}
+
+async function resolveHeavyResultsTournamentId() {
+	const row = await db
+		.selectFrom("TournamentResult")
 		.select(({ fn }) => ["tournamentId", fn.countAll<number>().as("count")])
 		.groupBy("tournamentId")
 		.orderBy("count", "desc")
@@ -655,8 +696,8 @@ async function resolveHeavyOrg() {
 		.executeTakeFirst();
 	if (!latestEvent) return null;
 
-	const latestEventDate = databaseTimestampToDate(latestEvent.startTime);
-	const windowStart = latestEvent.startTime - 90 * 24 * 60 * 60;
+	const latestEventDate = databaseTimestampToDate(latestEvent.startsAt);
+	const windowStart = latestEvent.startsAt - 90 * 24 * 60 * 60;
 
 	return {
 		id: orgRow.id,
@@ -666,7 +707,7 @@ async function resolveHeavyOrg() {
 		eventMonth: latestEventDate.getUTCMonth(),
 		eventYear: latestEventDate.getUTCFullYear(),
 		windowStart,
-		windowEnd: latestEvent.startTime,
+		windowEnd: latestEvent.startsAt,
 	};
 }
 

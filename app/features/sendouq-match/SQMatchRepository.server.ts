@@ -1,4 +1,4 @@
-import { add } from "date-fns";
+import { add, startOfYear } from "date-fns";
 import type { ExpressionBuilder, NotNull, Transaction } from "kysely";
 import { jsonArrayFrom, jsonObjectFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
@@ -440,7 +440,42 @@ export async function findSeasonCanceledMatchesByUserId({
 				// dummy skills used to close match when it's canceled have season -1
 				.on("Skill.season", "=", -1),
 		)
-		.select(["GroupMatch.id", "GroupMatch.createdAt"])
+		.select((eb) => [
+			"GroupMatch.id",
+			"GroupMatch.createdAt",
+			// requester's report first (it always has the smaller id)
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMatchCancelReport")
+					.innerJoin(
+						"User as Author",
+						"Author.id",
+						"GroupMatchCancelReport.authorUserId",
+					)
+					.select((innerEb) => [
+						"GroupMatchCancelReport.reason",
+						"Author.username as authorUsername",
+						jsonArrayFrom(
+							innerEb
+								.selectFrom("GroupMatchCancelReportPlayer")
+								.innerJoin(
+									"User",
+									"User.id",
+									"GroupMatchCancelReportPlayer.userId",
+								)
+								.select(["User.id", "User.username"])
+								.whereRef(
+									"GroupMatchCancelReportPlayer.cancelReportId",
+									"=",
+									"GroupMatchCancelReport.id",
+								)
+								.orderBy("User.username", "asc"),
+						).as("nominatedPlayers"),
+					])
+					.whereRef("GroupMatchCancelReport.groupMatchId", "=", "GroupMatch.id")
+					.orderBy("GroupMatchCancelReport.id", "asc"),
+			).as("cancelReports"),
+		])
 		.where("GroupMember.userId", "=", userId)
 		.where("GroupMatch.createdAt", ">=", dateToDatabaseTimestamp(starts))
 		.where(
@@ -450,6 +485,98 @@ export async function findSeasonCanceledMatchesByUserId({
 		)
 		.orderBy("GroupMatch.createdAt", "desc")
 		.execute();
+}
+
+/** Returns both teams' cancel reports of a match with the nominated player ids, requester's report first. */
+export async function findCancelReportsByGroupMatchId(groupMatchId: number) {
+	return db
+		.selectFrom("GroupMatchCancelReport")
+		.select((eb) => [
+			"GroupMatchCancelReport.groupId",
+			"GroupMatchCancelReport.authorUserId",
+			"GroupMatchCancelReport.reason",
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMatchCancelReportPlayer")
+					.select("GroupMatchCancelReportPlayer.userId")
+					.whereRef(
+						"GroupMatchCancelReportPlayer.cancelReportId",
+						"=",
+						"GroupMatchCancelReport.id",
+					),
+			).as("nominatedPlayers"),
+		])
+		.where("GroupMatchCancelReport.groupMatchId", "=", groupMatchId)
+		.orderBy("GroupMatchCancelReport.id", "asc")
+		.execute();
+}
+
+/**
+ * Counts per user how many canceled matches they have been nominated in as a cause,
+ * both within the given season and within the current calendar year. Only finalized
+ * cancellations count; a match where both teams nominated the user counts once.
+ */
+export async function findCancelNominationCountsByUserIds({
+	userIds,
+	season,
+}: {
+	userIds: number[];
+	season: number;
+}) {
+	const seasonRange = Seasons.nthToDateRange(season);
+	const yearStarts = startOfYear(new Date());
+	const from = new Date(
+		Math.min(seasonRange.starts.getTime(), yearStarts.getTime()),
+	);
+
+	const rows = await db
+		.selectFrom("GroupMatchCancelReportPlayer")
+		.innerJoin(
+			"GroupMatchCancelReport",
+			"GroupMatchCancelReport.id",
+			"GroupMatchCancelReportPlayer.cancelReportId",
+		)
+		.innerJoin(
+			"GroupMatch",
+			"GroupMatch.id",
+			"GroupMatchCancelReport.groupMatchId",
+		)
+		.innerJoin("Skill", (join) =>
+			join
+				.onRef("Skill.groupMatchId", "=", "GroupMatch.id")
+				// dummy skills used to close match when it's canceled have season -1
+				.on("Skill.season", "=", -1),
+		)
+		.select([
+			"GroupMatchCancelReportPlayer.userId",
+			"GroupMatch.id as groupMatchId",
+			"GroupMatch.createdAt",
+		])
+		.where("GroupMatchCancelReportPlayer.userId", "in", userIds)
+		.where("GroupMatch.createdAt", ">=", dateToDatabaseTimestamp(from))
+		.execute();
+
+	const rowsByUserId = R.groupBy(rows, (row) => row.userId);
+
+	return userIds.map((userId) => {
+		const userMatches = R.uniqueBy(
+			rowsByUserId[userId] ?? [],
+			(row) => row.groupMatchId,
+		);
+
+		return {
+			userId,
+			seasonCount: userMatches.filter(
+				(row) =>
+					row.createdAt >= dateToDatabaseTimestamp(seasonRange.starts) &&
+					row.createdAt <=
+						dateToDatabaseTimestamp(add(seasonRange.ends, { days: 1 })),
+			).length,
+			yearCount: userMatches.filter(
+				(row) => row.createdAt >= dateToDatabaseTimestamp(yearStarts),
+			).length,
+		};
+	});
 }
 
 export function insert({
@@ -645,6 +772,16 @@ export async function cancelMatch({
 			await SQGroupRepository.setAsInactive(match.groupAlpha.id, trx);
 			await SQGroupRepository.setAsInactive(match.groupBravo.id, trx);
 			await lockMatchWithoutSkillChange(match.id, trx);
+			await trx
+				.updateTable("GroupMatch")
+				.set({ cancelRequestedByUserId: null })
+				.where("id", "=", matchId)
+				.execute();
+			// a pending cancel request's report is one-sided, staff canceling overrides it
+			await trx
+				.deleteFrom("GroupMatchCancelReport")
+				.where("groupMatchId", "=", matchId)
+				.execute();
 		});
 		return { status: "CANCEL_CONFIRMED", shouldRefreshCaches: true };
 	}
@@ -707,28 +844,51 @@ export type RequestCancelResult =
 export async function requestCancelMatch({
 	matchId,
 	requestedByUserId,
+	reason,
+	nominatedUserIds,
 }: {
 	matchId: number;
 	requestedByUserId: number;
+	reason: string;
+	nominatedUserIds: number[];
 }): Promise<RequestCancelResult> {
 	const match = await findById(matchId);
 	invariant(match, "Match not found");
 
-	if (match.isLocked) {
-		return { status: "ALREADY_LOCKED" };
-	}
+	const requesterGroupId = buildMembers(match).find(
+		(m) => m.id === requestedByUserId,
+	)?.groupId;
+	invariant(requesterGroupId, "Requester is not a member of any group");
 
-	if (match.cancelRequestedByUserId) {
-		return { status: "ALREADY_REQUESTED" };
-	}
+	return db.transaction().execute<RequestCancelResult>(async (trx) => {
+		const cancelState = await findCancelState(matchId, trx);
 
-	await db
-		.updateTable("GroupMatch")
-		.set({ cancelRequestedByUserId: requestedByUserId })
-		.where("id", "=", matchId)
-		.execute();
+		if (cancelState.isLocked) {
+			return { status: "ALREADY_LOCKED" };
+		}
 
-	return { status: "REQUESTED" };
+		if (cancelState.cancelRequestedByUserId) {
+			return { status: "ALREADY_REQUESTED" };
+		}
+
+		await trx
+			.updateTable("GroupMatch")
+			.set({ cancelRequestedByUserId: requestedByUserId })
+			.where("id", "=", matchId)
+			.execute();
+		await insertCancelReport(
+			{
+				groupMatchId: matchId,
+				groupId: requesterGroupId,
+				authorUserId: requestedByUserId,
+				reason,
+				nominatedUserIds,
+			},
+			trx,
+		);
+
+		return { status: "REQUESTED" };
+	});
 }
 
 export type AcceptCancelResult =
@@ -740,37 +900,44 @@ export type AcceptCancelResult =
 export async function acceptCancelMatch({
 	matchId,
 	acceptedByUserId,
+	reason,
+	nominatedUserIds,
 }: {
 	matchId: number;
 	acceptedByUserId: number;
+	reason: string;
+	nominatedUserIds: number[];
 }): Promise<AcceptCancelResult> {
 	const match = await findById(matchId);
 	invariant(match, "Match not found");
 
-	if (match.isLocked) {
-		return { status: "ALREADY_LOCKED" };
-	}
-
-	if (!match.cancelRequestedByUserId) {
-		return { status: "NO_CANCEL_REQUEST" };
-	}
-
 	const members = buildMembers(match);
-	const requesterGroupId = members.find(
-		(m) => m.id === match.cancelRequestedByUserId,
-	)?.groupId;
-	invariant(requesterGroupId, "Requester is not a member of any group");
 
 	const accepterGroupId = members.find(
 		(m) => m.id === acceptedByUserId,
 	)?.groupId;
 	invariant(accepterGroupId, "Accepter is not a member of any group");
 
-	if (accepterGroupId === requesterGroupId) {
-		return { status: "NOT_ALLOWED" };
-	}
+	return db.transaction().execute<AcceptCancelResult>(async (trx) => {
+		const cancelState = await findCancelState(matchId, trx);
 
-	await db.transaction().execute(async (trx) => {
+		if (cancelState.isLocked) {
+			return { status: "ALREADY_LOCKED" };
+		}
+
+		if (!cancelState.cancelRequestedByUserId) {
+			return { status: "NO_CANCEL_REQUEST" };
+		}
+
+		const requesterGroupId = members.find(
+			(m) => m.id === cancelState.cancelRequestedByUserId,
+		)?.groupId;
+		invariant(requesterGroupId, "Requester is not a member of any group");
+
+		if (accepterGroupId === requesterGroupId) {
+			return { status: "NOT_ALLOWED" };
+		}
+
 		await SQGroupRepository.setAsInactive(requesterGroupId, trx);
 		await SQGroupRepository.setAsInactive(accepterGroupId, trx);
 		await lockMatchWithoutSkillChange(match.id, trx);
@@ -779,9 +946,19 @@ export async function acceptCancelMatch({
 			.set({ cancelAcceptedByUserId: acceptedByUserId })
 			.where("id", "=", matchId)
 			.execute();
-	});
+		await insertCancelReport(
+			{
+				groupMatchId: matchId,
+				groupId: accepterGroupId,
+				authorUserId: acceptedByUserId,
+				reason,
+				nominatedUserIds,
+			},
+			trx,
+		);
 
-	return { status: "ACCEPTED" };
+		return { status: "ACCEPTED" };
+	});
 }
 
 export type RefuseCancelResult =
@@ -819,11 +996,17 @@ export async function refuseCancelMatch({
 		return { status: "NOT_ALLOWED" };
 	}
 
-	await db
-		.updateTable("GroupMatch")
-		.set({ cancelRequestedByUserId: null })
-		.where("id", "=", matchId)
-		.execute();
+	await db.transaction().execute(async (trx) => {
+		await trx
+			.updateTable("GroupMatch")
+			.set({ cancelRequestedByUserId: null })
+			.where("id", "=", matchId)
+			.execute();
+		await trx
+			.deleteFrom("GroupMatchCancelReport")
+			.where("groupMatchId", "=", matchId)
+			.execute();
+	});
 
 	return { status: "REFUSED" };
 }
@@ -1089,7 +1272,7 @@ async function finalizeMatch({
 	winners: ("ALPHA" | "BRAVO")[];
 	winnerGroupId: number;
 	loserGroupId: number;
-	confirmedByUserId: number;
+	confirmedByUserId: number | null;
 	preFinalize?: (trx: Transaction<DB>) => Promise<unknown>;
 }) {
 	const { newSkills, differences } = await calculateMatchSkills({
@@ -1117,6 +1300,11 @@ async function finalizeMatch({
 			})
 			.where("id", "=", match.id)
 			.execute();
+		// a pending cancel request's report is obsolete once the match finishes normally
+		await trx
+			.deleteFrom("GroupMatchCancelReport")
+			.where("groupMatchId", "=", match.id)
+			.execute();
 		await PlayerStatRepository.upsertMapResults(
 			summarizeMaps({ match, members, winners }),
 			trx,
@@ -1135,6 +1323,91 @@ async function finalizeMatch({
 			trx,
 		);
 	});
+}
+
+/** Matches created before the given cutoff whose score was never confirmed and that no cancellation has locked. */
+export function findUnfinishedMatchesCreatedBefore(cutoff: Date) {
+	return db
+		.selectFrom("GroupMatch")
+		.select(["GroupMatch.id", "GroupMatch.chatCode"])
+		.where("GroupMatch.confirmedAt", "is", null)
+		.where("GroupMatch.createdAt", "<", dateToDatabaseTimestamp(cutoff))
+		.where(({ not, exists, selectFrom }) =>
+			not(
+				exists(
+					selectFrom("Skill")
+						.select("Skill.id")
+						.whereRef("Skill.groupMatchId", "=", "GroupMatch.id"),
+				),
+			),
+		)
+		.execute();
+}
+
+export type ResolveUnfinishedMatchResult =
+	| { status: "CANCELED" }
+	| { status: "CONFIRMED" }
+	| { status: "ALREADY_LOCKED" };
+
+/**
+ * Resolves a match the teams never finished: cancels it if the score is not
+ * decisive, otherwise confirms the one team's report on the other's behalf.
+ * Leaves `confirmedByUserId` empty as no user acted.
+ */
+export async function resolveUnfinishedMatch(
+	matchId: number,
+): Promise<ResolveUnfinishedMatchResult> {
+	const match = await findById(matchId);
+	invariant(match, "Match not found");
+
+	if (match.isLocked || match.confirmedAt) {
+		return { status: "ALREADY_LOCKED" };
+	}
+
+	const { mapsToWin, alphaWins, isDecisive } = SendouQMatch.score(match);
+
+	if (!isDecisive) {
+		await db.transaction().execute(async (trx) => {
+			await trx
+				.updateTable("GroupMatchMap")
+				.set({ winnerGroupId: null })
+				.where("matchId", "=", matchId)
+				.execute();
+			await SQGroupRepository.setAsInactive(match.groupAlpha.id, trx);
+			await SQGroupRepository.setAsInactive(match.groupBravo.id, trx);
+			await lockMatchWithoutSkillChange(match.id, trx);
+			await trx
+				.updateTable("GroupMatch")
+				.set({ cancelRequestedByUserId: null })
+				.where("id", "=", matchId)
+				.execute();
+		});
+		return { status: "CANCELED" };
+	}
+
+	const winnerGroupId =
+		alphaWins >= mapsToWin ? match.groupAlpha.id : match.groupBravo.id;
+	const loserGroupId =
+		alphaWins >= mapsToWin ? match.groupBravo.id : match.groupAlpha.id;
+
+	const winners: ("ALPHA" | "BRAVO")[] = match.mapList
+		.filter((m) => m.winnerGroupId !== null)
+		.map((m) => (m.winnerGroupId === match.groupAlpha.id ? "ALPHA" : "BRAVO"));
+
+	await finalizeMatch({
+		match,
+		members: buildMembers(match),
+		winners,
+		winnerGroupId,
+		loserGroupId,
+		confirmedByUserId: null,
+		preFinalize: async (trx) => {
+			await SQGroupRepository.setAsInactive(match.groupAlpha.id, trx);
+			await SQGroupRepository.setAsInactive(match.groupBravo.id, trx);
+		},
+	});
+
+	return { status: "CONFIRMED" };
 }
 
 export async function undoMatchReport({
@@ -1253,6 +1526,55 @@ export async function undoMapReport({
 	});
 
 	return { status: "SUCCESS" };
+}
+
+/** Cancel request state read inside the writing transaction so concurrent requests can't both pass the guards. */
+function findCancelState(matchId: number, trx: Transaction<DB>) {
+	return trx
+		.selectFrom("GroupMatch")
+		.select(({ exists, selectFrom }) => [
+			"GroupMatch.cancelRequestedByUserId",
+			exists(
+				selectFrom("Skill")
+					.select("Skill.id")
+					.where("Skill.groupMatchId", "=", matchId),
+			).as("isLocked"),
+		])
+		.where("GroupMatch.id", "=", matchId)
+		.executeTakeFirstOrThrow();
+}
+
+async function insertCancelReport(
+	{
+		groupMatchId,
+		groupId,
+		authorUserId,
+		reason,
+		nominatedUserIds,
+	}: {
+		groupMatchId: number;
+		groupId: number;
+		authorUserId: number;
+		reason: string;
+		nominatedUserIds: number[];
+	},
+	trx: Transaction<DB>,
+) {
+	const report = await trx
+		.insertInto("GroupMatchCancelReport")
+		.values({ groupMatchId, groupId, authorUserId, reason })
+		.returning("id")
+		.executeTakeFirstOrThrow();
+
+	await trx
+		.insertInto("GroupMatchCancelReportPlayer")
+		.values(
+			nominatedUserIds.map((userId) => ({
+				cancelReportId: report.id,
+				userId,
+			})),
+		)
+		.execute();
 }
 
 function buildMembers(

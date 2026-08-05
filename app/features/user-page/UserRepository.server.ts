@@ -48,6 +48,19 @@ export async function findCountriesByUserIds(userIds: number[]) {
 	return new Map(rows.map((row) => [row.id, row.country]));
 }
 
+/** Plus tiers of the given users keyed by user id, users without a tier absent. */
+export async function findPlusTiersByUserIds(userIds: number[]) {
+	if (userIds.length === 0) return new Map<number, number>();
+
+	const rows = await db
+		.selectFrom("PlusTier")
+		.select(["PlusTier.userId", "PlusTier.tier"])
+		.where("PlusTier.userId", "in", userIds)
+		.execute();
+
+	return new Map(rows.map((row) => [row.userId, row.tier]));
+}
+
 export async function findBuildFieldsByIdentifier(identifier: string) {
 	const row = await userByIdentifierQuery(identifier)
 		.select(({ eb }) => [
@@ -293,8 +306,6 @@ export async function upsertWidgets(
 ) {
 	return db.transaction().execute(async (trx) => {
 		await trx.deleteFrom("UserWidget").where("userId", "=", userId).execute();
-
-		if (widgets.length === 0) return;
 
 		await trx
 			.insertInto("UserWidget")
@@ -1106,19 +1117,17 @@ export function updateOwnProfile(args: UpdateProfileArgs) {
 				.execute();
 		}
 
-		if (args.weapons.length > 0) {
-			await trx
-				.insertInto("UserWeapon")
-				.values(
-					args.weapons.map((weapon, i) => ({
-						userId,
-						weaponSplId: weapon.weaponSplId,
-						isFavorite: weapon.isFavorite,
-						order: i + 1,
-					})),
-				)
-				.execute();
-		}
+		await trx
+			.insertInto("UserWeapon")
+			.values(
+				args.weapons.map((weapon, i) => ({
+					userId,
+					weaponSplId: weapon.weaponSplId,
+					isFavorite: weapon.isFavorite ?? 0,
+					order: i + 1,
+				})),
+			)
+			.execute();
 
 		return trx
 			.updateTable("User")
@@ -1220,17 +1229,15 @@ export function updateOwnResultHighlights(args: UpdateResultHighlightsArgs) {
 			.where("userId", "=", userId)
 			.execute();
 
-		if (args.resultTeamIds.length > 0) {
-			await trx
-				.insertInto("UserResultHighlight")
-				.values(
-					args.resultTeamIds.map((teamId) => ({
-						userId,
-						teamId,
-					})),
-				)
-				.execute();
-		}
+		await trx
+			.insertInto("UserResultHighlight")
+			.values(
+				args.resultTeamIds.map((teamId) => ({
+					userId,
+					teamId,
+				})),
+			)
+			.execute();
 
 		await trx
 			.updateTable("TournamentResult")

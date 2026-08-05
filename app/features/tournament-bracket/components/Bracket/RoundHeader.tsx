@@ -1,10 +1,10 @@
 import clsx from "clsx";
 import { differenceInMinutes } from "date-fns";
-import * as React from "react";
 import { LocaleTime } from "~/components/LocaleTime";
 import type { TournamentRoundMaps } from "~/db/tables-json";
 import { useTournament } from "~/features/tournament/routes/to.$id";
 import { resolveLeagueRoundStartDate } from "~/features/tournament/tournament-utils";
+import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
 import type { Unpacked } from "~/utils/types";
 import * as Deadline from "../../core/Deadline";
@@ -13,6 +13,7 @@ import styles from "./bracket.module.css";
 
 export function RoundHeader({
 	roundId,
+	bracketIdx,
 	name,
 	bestOf,
 	showInfos,
@@ -21,6 +22,7 @@ export function RoundHeader({
 	matches = [],
 }: {
 	roundId: number;
+	bracketIdx: number;
 	name: string;
 	bestOf?: number;
 	showInfos?: boolean;
@@ -28,7 +30,7 @@ export function RoundHeader({
 	roundStartedAt?: number | null;
 	matches?: Array<Unpacked<TournamentData["data"]["match"]>>;
 }) {
-	const leagueRoundStartDate = useLeagueWeekStart(roundId);
+	const leagueRoundStartDate = useLeagueWeekStart(bracketIdx, roundId);
 
 	const countPrefix = maps?.type === "PLAY_ALL" ? "Play all " : "Bo";
 
@@ -95,15 +97,9 @@ function RoundTimer({
 	bestOf: number;
 	matches: Array<Unpacked<TournamentData["data"]["match"]>>;
 }) {
-	const [now, setNow] = React.useState(new Date());
-
-	React.useEffect(() => {
-		const interval = setInterval(() => {
-			setNow(new Date());
-		}, 60000);
-
-		return () => clearInterval(interval);
-	}, []);
+	const now = useAutoRerender("minute", {
+		alignTo: databaseTimestampToDate(startedAt),
+	});
 
 	const elapsedMinutes = differenceInMinutes(
 		now,
@@ -145,13 +141,14 @@ function RoundTimer({
 	return <div style={{ color: statusColor }}>{displayText}</div>;
 }
 
-function useLeagueWeekStart(roundId: number) {
+function useLeagueWeekStart(bracketIdx: number, roundId: number) {
 	const tournament = useTournament();
 
-	const bracketIdx = tournament.brackets.findIndex((b) =>
-		b.data.round.some((r) => r.id === roundId),
-	);
-	if (bracketIdx !== 0) return null;
+	if (bracketIdx !== 0 || !tournament.isLeagueDivision) return null;
 
-	return resolveLeagueRoundStartDate(tournament, roundId);
+	return resolveLeagueRoundStartDate(
+		tournament,
+		tournament.bracketByIdx(bracketIdx) ?? undefined,
+		roundId,
+	);
 }

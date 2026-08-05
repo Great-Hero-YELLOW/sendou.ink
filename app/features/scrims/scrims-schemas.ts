@@ -26,7 +26,6 @@ import {
 	filterOutNullishMembers,
 	id,
 	noDuplicates,
-	safeJSONParse,
 	timeString,
 } from "~/utils/zod";
 import { associationIdentifierSchema } from "../associations/associations-schemas";
@@ -122,7 +121,7 @@ export const divsSchema = z
 		return divs;
 	});
 
-const scrimsFiltersSchema = z.object({
+export const scrimsFiltersSchema = z.object({
 	weekdayTimes: timeRangeSchema.nullable().catch(null),
 	weekendTimes: timeRangeSchema.nullable().catch(null),
 	divs: divsSchema.nullable().catch(null),
@@ -160,12 +159,6 @@ export const scrimsFiltersFormSchema = z.object({
 		endLabel: "labels.end",
 	}),
 	divs: divsFormField,
-});
-
-export const scrimsFiltersSearchParamsObject = z.object({
-	filters: z
-		.preprocess(safeJSONParse, scrimsFiltersSchema)
-		.catch({ weekdayTimes: null, weekendTimes: null, divs: null }),
 });
 
 const persistScrimFiltersSchema = z.object({
@@ -361,19 +354,18 @@ export const scrimsNewFormSchema = z
 			label: "labels.scrimMapsTournament",
 		}),
 	})
+	// a tournament pick is only meaningful when maps come from a tournament, so
+	// drop any stale selection instead of erroring on a field that is not rendered
+	.overwrite((post) =>
+		post.maps !== "TOURNAMENT" && post.mapsTournamentId
+			? { ...post, mapsTournamentId: null }
+			: post,
+	)
 	.superRefine((post, ctx) => {
 		if (post.maps === "TOURNAMENT" && !post.mapsTournamentId) {
 			ctx.addIssue({
 				path: ["mapsTournamentId"],
 				message: "forms:errors.tournamentMustBeSelected",
-				code: z.ZodIssueCode.custom,
-			});
-		}
-
-		if (post.maps !== "TOURNAMENT" && post.mapsTournamentId) {
-			ctx.addIssue({
-				path: ["mapsTournamentId"],
-				message: "forms:errors.tournamentOnlyWhenMapsIsTournament",
 				code: z.ZodIssueCode.custom,
 			});
 		}

@@ -1,10 +1,13 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { z } from "zod";
 import { requireUser } from "~/features/auth/core/user.server";
-import { tournamentFromDB } from "~/features/tournament-bracket/core/Tournament.server";
+import {
+	requireTournamentVisible,
+	tournamentDataCached,
+	tournamentTeamsFullCached,
+} from "~/features/tournament-bracket/core/Tournament.server";
 import type { SerializeFrom } from "~/utils/remix";
-import { parseSearchParams } from "~/utils/remix.server";
-import { id } from "~/utils/zod";
+import { badRequestIfFalsy } from "~/utils/remix.server";
+import { tournamentImportTeamsSearchParams } from "../tournament-admin-search-params";
 
 export type ImportTeamsLoaderData = SerializeFrom<typeof loader>;
 
@@ -15,18 +18,22 @@ export type ImportTeamsLoaderData = SerializeFrom<typeof loader>;
 export const loader = async ({ request }: LoaderFunctionArgs) => {
 	const user = requireUser();
 
-	const { fromTournamentId } = parseSearchParams({
-		request,
-		schema: z.object({ fromTournamentId: id }),
-	});
+	const fromTournamentId = badRequestIfFalsy(
+		tournamentImportTeamsSearchParams.parse(request).fromTournamentId,
+	);
 
-	const fromTournament = await tournamentFromDB({
+	const { ctx } = await tournamentDataCached({
+		tournamentId: fromTournamentId,
+	});
+	requireTournamentVisible({ ctx, user });
+
+	const fromTournamentTeams = await tournamentTeamsFullCached({
 		tournamentId: fromTournamentId,
 		user,
 	});
 
 	return {
-		teams: fromTournament.ctx.teams.map((team) => ({
+		teams: fromTournamentTeams.map((team) => ({
 			id: team.id,
 			name: team.name,
 			avatarImgId: team.avatarImgId,

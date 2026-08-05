@@ -43,6 +43,7 @@ import { Layout, NPROGRESS_ANCHOR_ID } from "./components/layout";
 import { getUser } from "./features/auth/core/user.server";
 import { userMiddleware } from "./features/auth/core/user-middleware.server";
 import { ChatProvider } from "./features/chat/ChatProvider";
+import { isMatchResultsScopedRevalidation } from "./features/chat/revalidation-scope";
 import { getSidenavSession } from "./features/layout/core/sidenav-session.server";
 import { sessionIdMiddleware } from "./features/session-id/session-id-middleware.server";
 import {
@@ -64,6 +65,7 @@ import {
 } from "./modules/i18n/i18next.server";
 import { useChangeLanguage } from "./modules/i18n/useChangeLanguage";
 import { isSupporter } from "./modules/permissions/utils";
+import { SearchParamsProvider } from "./modules/search-params/hooks";
 import { IS_E2E_TEST_RUN } from "./utils/e2e";
 import { allI18nNamespaces } from "./utils/i18n";
 import { isRevalidation, metaTags, type SerializeFrom } from "./utils/remix";
@@ -90,6 +92,7 @@ import "nprogress/nprogress.css";
 NProgress.configure({ parent: `#${NPROGRESS_ANCHOR_ID}` });
 
 export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
+	if (isMatchResultsScopedRevalidation(args)) return false;
 	if (isRevalidation(args)) return true;
 
 	if (args.formData?.get("revalidateRoot") === "true") return true;
@@ -97,6 +100,7 @@ export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
 	const json = args.json as Record<string, unknown> | undefined;
 	if (json?.revalidateRoot === true) return true;
 
+	// biome-ignore lint/plugin: presence check only, before any route's definition has parsed the URL
 	if (args.nextUrl.searchParams.has("lng")) return true;
 
 	return false;
@@ -235,16 +239,18 @@ function Document({
 			<body>
 				{IS_E2E_TEST_RUN && <HydrationTestIndicator />}
 				<React.StrictMode>
-					<RouterProvider navigate={navigate} useHref={useExternalAwareHref}>
-						<I18nProvider locale={language}>
-							<SendouToastRegion />
-							<UnsavedChangesGuard />
-							<MyFuse data={data} />
-							<ChatProvider user={data?.user}>
-								<Layout data={data}>{children}</Layout>
-							</ChatProvider>
-						</I18nProvider>
-					</RouterProvider>
+					<SearchParamsProvider>
+						<RouterProvider navigate={navigate} useHref={useExternalAwareHref}>
+							<I18nProvider locale={language}>
+								<SendouToastRegion />
+								<UnsavedChangesGuard />
+								<MyFuse data={data} />
+								<ChatProvider user={data?.user}>
+									<Layout data={data}>{children}</Layout>
+								</ChatProvider>
+							</I18nProvider>
+						</RouterProvider>
+					</SearchParamsProvider>
 				</React.StrictMode>
 				<ScrollRestoration />
 				<Scripts />
@@ -267,6 +273,7 @@ function useExternalAwareHref(href: string) {
 }
 
 function useTriggerToasts() {
+	// biome-ignore lint/plugin: app-wide toast params written by server redirects, belonging to no one feature
 	const [searchParams] = useSearchParams();
 	const navigate = useNavigate();
 
@@ -314,31 +321,36 @@ function useLoadingIndicator() {
 }
 
 function useSidebarRevalidation() {
-	const revalidator = useRevalidator();
+	const { revalidate, state } = useRevalidator();
+
+	// read through a ref so a revalidation elsewhere in the app does not
+	// re-run the effect and restart the interval before it ever fires
+	const stateRef = React.useRef(state);
+	stateRef.current = state;
 
 	useEffect(() => {
 		const TEN_MINUTES = 10 * 60 * 1000;
 
-		const revalidate = () => {
-			if (revalidator.state === "idle") {
-				revalidator.revalidate();
+		const revalidateIfIdle = () => {
+			if (stateRef.current === "idle") {
+				revalidate();
 			}
 		};
 
 		const handleVisibilityChange = () => {
 			if (document.visibilityState === "visible") {
-				revalidate();
+				revalidateIfIdle();
 			}
 		};
 
 		document.addEventListener("visibilitychange", handleVisibilityChange);
-		const interval = setInterval(revalidate, TEN_MINUTES);
+		const interval = setInterval(revalidateIfIdle, TEN_MINUTES);
 
 		return () => {
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			clearInterval(interval);
 		};
-	}, [revalidator]);
+	}, [revalidate]);
 }
 
 function usePreloadTranslation() {

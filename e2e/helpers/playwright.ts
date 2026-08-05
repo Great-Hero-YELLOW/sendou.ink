@@ -43,6 +43,11 @@ export function e2eWorkerPort(workerIndex: number) {
 	return port;
 }
 
+/** The port a test can listen on to receive the given worker's Discord webhook calls. */
+export function e2eWebhookPort(workerIndex: number) {
+	return e2eWorkerPort(workerIndex) + 2000;
+}
+
 type WorkerFixtures = {
 	workerPort: number;
 	workerBaseURL: string;
@@ -205,6 +210,18 @@ export async function expectIsHydrated(page: Page) {
 
 export function impersonate(page: Page, userId = ADMIN_ID) {
 	return retryPost(page, "impersonate", `/auth/impersonate?id=${userId}`);
+}
+
+/** Runs the named server Routine (normally cron-driven) in the worker's server process. */
+export async function runRoutine(page: Page, name: string) {
+	const response = await retryPost(page, "runRoutine", "/run-routine", {
+		form: { name },
+	});
+	if (!response?.ok()) {
+		throw new Error(
+			`Running routine ${name} failed with status ${response?.status()}`,
+		);
+	}
 }
 
 /**
