@@ -22,12 +22,11 @@ import { containerClassName } from "~/components/Main";
 import { Redirect } from "~/components/Redirect";
 import { DANGEROUS_CAN_ACCESS_DEV_CONTROLS } from "~/features/admin/core/dev-controls";
 import { useUser } from "~/features/auth/core/user";
-import { useTournament } from "~/features/tournament/routes/to.$id";
-import { useHasRole } from "~/modules/permissions/hooks";
+import { tournamentEditPage } from "~/features/calendar/calendar-urls";
+import { useTournament } from "~/features/tournament/tournament-context";
 import {
 	calendarEventPage,
 	tournamentAdminPage,
-	tournamentEditPage,
 	tournamentPage,
 } from "~/utils/urls";
 import styles from "./to.$id.admin.module.css";
@@ -43,7 +42,6 @@ export default function TournamentAdminLayout() {
 	const tournament = useTournament();
 	const outletContext = useOutletContext();
 	const user = useUser();
-	const isTournamentAdder = useHasRole("TOURNAMENT_ADDER");
 	const location = useLocation();
 
 	const showReopen = Boolean(
@@ -51,16 +49,10 @@ export default function TournamentAdminLayout() {
 			tournament.ctx.isFinalized &&
 			tournament.isAdmin(user),
 	);
-	const showEditBrackets =
-		tournament.isAdmin(user) &&
-		tournament.hasStarted &&
-		!tournament.ctx.isFinalized;
 	const showStaffTab = tournament.isAdmin(user);
-	const showBracketsTab = tournament.ctx.isFinalized
-		? showReopen
-		: !tournament.isLeagueSignup || showEditBrackets;
+	const showBracketsTab = tournament.ctx.isFinalized ? showReopen : true;
 	const showStreamTab = !tournament.ctx.isFinalized;
-	const showSeedsTab = !tournament.hasStarted && !tournament.isLeagueSignup;
+	const showSeedsTab = !tournament.hasStarted;
 
 	if (!tournament.isOrganizer(user)) {
 		return <Redirect to={tournamentPage(tournament.ctx.id)} />;
@@ -75,8 +67,7 @@ export default function TournamentAdminLayout() {
 
 	return (
 		<div className={clsx("stack lg", containerClassName("wide"))}>
-			{tournament.canEditEventInfo(user, { isTournamentAdder }) &&
-			!tournament.hasStarted ? (
+			{tournament.canEditEventInfo(user) && !tournament.hasStarted ? (
 				<div className="stack horizontal items-end">
 					<LinkButton
 						to={tournamentEditPage(tournament.ctx.eventId)}
@@ -87,24 +78,22 @@ export default function TournamentAdminLayout() {
 					>
 						Edit event info
 					</LinkButton>
-					{!tournament.isLeagueSignup ? (
-						<FormWithConfirm
-							dialogHeading={t("calendar:actions.delete.confirm", {
-								name: tournament.ctx.name,
-							})}
-							action={calendarEventPage(tournament.ctx.eventId)}
-							submitButtonTestId="delete-submit-button"
+					<FormWithConfirm
+						dialogHeading={t("calendar:actions.delete.confirm", {
+							name: tournament.ctx.name,
+						})}
+						action={calendarEventPage(tournament.ctx.eventId)}
+						submitButtonTestId="delete-submit-button"
+					>
+						<SendouButton
+							className="ml-auto"
+							size="small"
+							variant="minimal-destructive"
+							type="submit"
 						>
-							<SendouButton
-								className="ml-auto"
-								size="small"
-								variant="minimal-destructive"
-								type="submit"
-							>
-								{t("calendar:actions.delete")}
-							</SendouButton>
-						</FormWithConfirm>
-					) : null}
+							{t("calendar:actions.delete")}
+						</SendouButton>
+					</FormWithConfirm>
 				</div>
 			) : null}
 			<SendouTabs

@@ -2,14 +2,14 @@ import clsx from "clsx";
 import { differenceInMinutes } from "date-fns";
 import { LocaleTime } from "~/components/LocaleTime";
 import type { TournamentRoundMaps } from "~/db/tables-json";
-import { useTournament } from "~/features/tournament/routes/to.$id";
+import { useTournament } from "~/features/tournament/tournament-context";
 import { resolveLeagueRoundStartDate } from "~/features/tournament/tournament-utils";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
 import type { Unpacked } from "~/utils/types";
 import * as Deadline from "../../core/Deadline";
 import type { TournamentData } from "../../core/Tournament.server";
-import styles from "./bracket.module.css";
+import styles from "./RoundHeader.module.css";
 
 export function RoundHeader({
 	roundId,
@@ -30,7 +30,7 @@ export function RoundHeader({
 	roundStartedAt?: number | null;
 	matches?: Array<Unpacked<TournamentData["data"]["match"]>>;
 }) {
-	const leagueRoundStartDate = useLeagueWeekStart(bracketIdx, roundId);
+	const leagueRoundStartDate = useLeagueRoundStartDate(bracketIdx, roundId);
 
 	const countPrefix = maps?.type === "PLAY_ALL" ? "Play all " : "Bo";
 
@@ -141,10 +141,10 @@ function RoundTimer({
 	return <div style={{ color: statusColor }}>{displayText}</div>;
 }
 
-function useLeagueWeekStart(bracketIdx: number, roundId: number) {
+function useLeagueRoundStartDate(bracketIdx: number, roundId: number) {
 	const tournament = useTournament();
 
-	if (bracketIdx !== 0 || !tournament.isLeagueDivision) return null;
+	if (!tournament.isLeague) return null;
 
 	return resolveLeagueRoundStartDate(
 		tournament,

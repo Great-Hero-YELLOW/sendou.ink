@@ -1,5 +1,4 @@
 import { reactRouter } from "@react-router/dev/vite";
-import { sentryReactRouter } from "@sentry/react-router";
 import MagicString from "magic-string";
 import { defineConfig, loadEnv } from "vite";
 import babel from "vite-plugin-babel";
@@ -17,19 +16,21 @@ export default defineConfig((config) => {
 		},
 		plugins: [
 			{
-				// Wraps CSS modules in @layer components so utility classes always win.
+				// Wraps CSS modules in a @layer so utility classes always win and, more
+				// generally, so that the more specific of two modules styling the same
+				// element wins no matter what order Vite happens to emit the chunks in:
+				// `elements` (headless library wrappers) < `components` (shared
+				// components) < `features` (feature code and composed component groups).
 				// The layer order declaration is prepended to each module because in Vite
 				// dev mode, module <style> tags are injected before global stylesheets —
-				// without it the implicit first @layer components would get lowest priority.
+				// without it the implicit first layer would get lowest priority.
 				name: "css-modules-layer",
 				enforce: "pre",
 				transform(code, id) {
 					if (!id.endsWith(".module.css")) return;
 					const layerOrder =
-						"@layer reset, base, elements, components, utilities;";
-					const layer = id.includes("/components/elements/")
-						? "elements"
-						: "components";
+						"@layer reset, base, elements, components, features, utilities;";
+					const layer = cssModuleLayer(id);
 					const magicCode = new MagicString(code);
 					magicCode.prepend(`${layerOrder}\n@layer ${layer} {\n`);
 					magicCode.append("\n}");
@@ -41,8 +42,8 @@ export default defineConfig((config) => {
 				},
 			},
 			reactRouter(),
-			// React Compiler and Sentry are skipped in dev where their per-module
-			// transform cost outweighs their value.
+			// React Compiler is skipped in dev where its per-module transform cost
+			// outweighs its value.
 			...(isBuild
 				? [
 						babel({
@@ -52,34 +53,17 @@ export default defineConfig((config) => {
 								plugins: [["babel-plugin-react-compiler", {}]],
 							},
 						}),
-						sentryReactRouter(
-							{
-								org: process.env.SENTRY_ORG,
-								project: process.env.SENTRY_PROJECT,
-								authToken: process.env.SENTRY_AUTH_TOKEN,
-								telemetry: false,
-								unstable_sentryVitePluginOptions: {
-									applicationKey: "sendou-ink",
-									// tree-shakes SDK features we don't use (Replay, debug logging)
-									// out of the dynamically imported client bundle
-									bundleSizeOptimizations: {
-										excludeDebugStatements: true,
-										excludeReplayCanvas: true,
-										excludeReplayShadowDom: true,
-										excludeReplayIframe: true,
-										excludeReplayWorker: true,
-									},
-								},
-							},
-							config,
-						),
 					]
 				: []),
 		],
 
 		test: {
 			globalSetup: ["./scripts/ensure-test-db.ts"],
-			projects: ["./vitest.unit.config.ts", "./vitest.browser.config.ts"],
+			projects: [
+				"./vitest.unit.config.ts",
+				"./vitest.browser.config.ts",
+				"./vitest.scanner.config.ts",
+			],
 		},
 		define: {
 			__GIT_COMMIT__: JSON.stringify(process.env.RENDER_GIT_COMMIT ?? ""),
@@ -90,18 +74,17 @@ export default defineConfig((config) => {
 
 				return undefined;
 			},
-			sourcemap: true,
 		},
 		resolve: {
 			tsconfigPaths: true,
 		},
 		optimizeDeps: {
-			exclude: ["@sentry/react-router"],
 			// Dependencies which are only imported by specific route modules.
 			// Pre-bundling them at startup avoids mid-session re-optimization
 			// and full page reloads on first navigations.
 			include: [
 				"@date-fns/tz",
+				"@techstark/opencv-js",
 				"@dnd-kit/core",
 				"@dnd-kit/modifiers",
 				"@dnd-kit/sortable",
@@ -128,14 +111,14 @@ export default defineConfig((config) => {
 				"date-fns/locale/ru",
 				"date-fns/locale/zh-CN",
 				"edmonds-blossom-fixed",
+				"fflate",
 				"i18next-browser-languagedetector",
 				"i18next-http-backend",
 				"kysely",
-				"kysely/helpers/sqlite",
 				"markdown-to-jsx",
+				"mediabunny",
 				"nanoid",
 				"openskill",
-				"pako",
 				"partysocket",
 				"picocad2-web",
 				"qrcode.react",
@@ -148,9 +131,16 @@ export default defineConfig((config) => {
 				"remix-i18next",
 				"sql-formatter",
 				"swr/immutable",
+				"valibot",
 				"web-haptics/react",
-				"zod",
 			],
 		},
 	};
 });
+
+function cssModuleLayer(id: string) {
+	if (id.includes("/app/components/elements/")) return "elements";
+	if (/\/app\/components\/[^/]+\.module\.css$/.test(id)) return "components";
+
+	return "features";
+}

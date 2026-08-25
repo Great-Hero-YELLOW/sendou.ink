@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as v from "valibot";
 import {
 	TOURNAMENT_ORGANIZATION,
 	TOURNAMENT_ORGANIZATION_ROLES,
@@ -17,8 +17,8 @@ import {
 	toggle,
 	userSearch,
 } from "~/form/fields";
+import { _action, id, superRefine } from "~/utils/schema";
 import { mySlugify } from "~/utils/urls";
-import { _action, id } from "~/utils/zod";
 
 const orgNameField = textField({
 	label: "labels.name",
@@ -30,65 +30,82 @@ const orgNameField = textField({
 	},
 });
 
-export const newOrganizationSchema = z.object({
+export const newOrganizationSchema = v.object({
 	name: orgNameField,
 });
 
-export const organizationEditFormSchema = z.object({
-	name: orgNameField,
-	logo: image({ label: "labels.logo", autoValidate: true }),
-	description: textAreaOptional({
-		label: "labels.description",
-		maxLength: TOURNAMENT_ORGANIZATION.DESCRIPTION_MAX_LENGTH,
-	}),
-	members: array({
-		label: "labels.members",
-		bottomText: "bottomTexts.orgMembersInfo",
-		max: 32,
-		field: fieldset({
-			fields: z.object({
-				userId: userSearch({ label: "labels.user" }),
-				role: select({
-					label: "labels.orgMemberRole",
-					items: TOURNAMENT_ORGANIZATION_ROLES.map((role) => ({
-						value: role,
-						label: `options.orgRole.${role}` as const,
-					})),
-				}),
-				roleDisplayName: textFieldOptional({
-					label: "labels.orgMemberRoleDisplayName",
-					maxLength: 32,
+export const organizationEditFormSchema = v.pipe(
+	v.object({
+		name: orgNameField,
+		logo: image({ label: "labels.logo", autoValidate: true }),
+		description: textAreaOptional({
+			label: "labels.description",
+			maxLength: TOURNAMENT_ORGANIZATION.DESCRIPTION_MAX_LENGTH,
+		}),
+		members: array({
+			label: "labels.members",
+			bottomText: "bottomTexts.orgMembersInfo",
+			max: 32,
+			field: fieldset({
+				fields: v.object({
+					userId: userSearch({ label: "labels.user" }),
+					role: select({
+						label: "labels.orgMemberRole",
+						items: TOURNAMENT_ORGANIZATION_ROLES.map((role) => ({
+							value: role,
+							label: `options.orgRole.${role}` as const,
+						})),
+					}),
+					roleDisplayName: textFieldOptional({
+						label: "labels.orgMemberRoleDisplayName",
+						maxLength: 32,
+					}),
 				}),
 			}),
 		}),
-	}),
-	socials: array({
-		label: "labels.orgSocialLinks",
-		max: 10,
-		field: textField({ validate: "url", maxLength: 100 }),
-	}),
-	series: array({
-		label: "labels.orgSeries",
-		max: 10,
-		field: fieldset({
-			fields: z.object({
-				name: textField({
-					label: "labels.orgSeriesName",
-					minLength: 1,
-					maxLength: 32,
+		socials: array({
+			label: "labels.orgSocialLinks",
+			max: 10,
+			field: textField({ validate: "url", maxLength: 100 }),
+		}),
+		series: array({
+			label: "labels.orgSeries",
+			max: 10,
+			field: fieldset({
+				fields: v.object({
+					name: textField({
+						label: "labels.orgSeriesName",
+						minLength: 1,
+						maxLength: 32,
+					}),
+					description: textAreaOptional({
+						label: "labels.description",
+						maxLength: TOURNAMENT_ORGANIZATION.DESCRIPTION_MAX_LENGTH,
+					}),
+					showLeaderboard: toggle({ label: "labels.orgSeriesShowLeaderboard" }),
 				}),
-				description: textAreaOptional({
-					label: "labels.description",
-					maxLength: TOURNAMENT_ORGANIZATION.DESCRIPTION_MAX_LENGTH,
-				}),
-				showLeaderboard: toggle({ label: "labels.orgSeriesShowLeaderboard" }),
 			}),
 		}),
+		badges: badges({ label: "labels.orgBadges", maxCount: 50 }),
 	}),
-	badges: badges({ label: "labels.orgBadges", maxCount: 50 }),
-});
+	superRefine((data, ctx) => {
+		const seenUserIds = new Set<number>();
 
-export const banUserActionSchema = z.object({
+		for (const [index, member] of data.members.entries()) {
+			if (seenUserIds.has(member.userId)) {
+				ctx.addIssue({
+					message: "forms:errors.duplicateOrgMember",
+					path: ["members", index, "userId"],
+				});
+				continue;
+			}
+
+			seenUserIds.add(member.userId);
+		}
+	}),
+);
+
+export const banUserActionSchema = v.object({
 	_action: stringConstant("BAN_USER"),
 	userId: userSearch({ label: "labels.player" }),
 	privateNote: textAreaOptional({
@@ -104,27 +121,27 @@ export const banUserActionSchema = z.object({
 	}),
 });
 
-const unbanUserActionSchema = z.object({
+const unbanUserActionSchema = v.object({
 	_action: _action("UNBAN_USER"),
 	userId: id,
 });
 
-export const updateIsEstablishedSchema = z.object({
+export const updateIsEstablishedSchema = v.object({
 	_action: stringConstant("UPDATE_IS_ESTABLISHED"),
 	isEstablished: toggle({
 		label: "labels.isEstablished",
 	}),
 });
 
-const deleteOrganizationActionSchema = z.object({
+const deleteOrganizationActionSchema = v.object({
 	_action: _action("DELETE_ORGANIZATION"),
 });
 
-const leaveOrganizationActionSchema = z.object({
+const leaveOrganizationActionSchema = v.object({
 	_action: _action("LEAVE_ORGANIZATION"),
 });
 
-export const orgPageActionSchema = z.union([
+export const orgPageActionSchema = v.union([
 	banUserActionSchema,
 	unbanUserActionSchema,
 	updateIsEstablishedSchema,

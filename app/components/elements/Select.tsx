@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronsUpDown, Search, X } from "lucide-react";
+import { X } from "lucide-react";
 import * as React from "react";
 import type {
 	AutocompleteProps,
@@ -8,17 +8,10 @@ import type {
 } from "react-aria-components";
 import {
 	Autocomplete,
-	Button,
 	Header,
-	Input,
 	Label,
-	ListBox,
-	ListBoxItem,
 	ListBoxSection,
 	ListLayout,
-	Popover,
-	SearchField,
-	Select,
 	SelectStateContext,
 	SelectValue,
 	useFilter,
@@ -29,6 +22,16 @@ import { SendouBottomTexts } from "~/components/elements/BottomTexts";
 import { SendouButton } from "~/components/elements/Button";
 import { Image } from "../Image";
 import styles from "./Select.module.css";
+import {
+	SelectShell,
+	SelectShellItem,
+	SelectShellListBox,
+	SelectShellPopover,
+	SelectShellSearchField,
+	SelectShellTrigger,
+} from "./SelectShell";
+
+const ROW_HEIGHT = 33;
 
 export interface SendouSelectProps<T extends object>
 	extends Omit<SelectProps<T>, "children"> {
@@ -48,6 +51,8 @@ export interface SendouSelectProps<T extends object>
 	onSearchInputChange?: (value: string) => void;
 	clearable?: boolean;
 	filter?: AutocompleteProps<object>["filter"];
+	/** Measured height of the items, for when they are taller than a single line of text. */
+	estimatedRowHeight?: number;
 }
 
 /**
@@ -78,6 +83,8 @@ export function SendouSelect<T extends object>({
 	clearable = false,
 	className,
 	filter,
+	estimatedRowHeight,
+	onOpenChange,
 	...props
 }: SendouSelectProps<T>) {
 	const { t } = useTranslation(["common"]);
@@ -86,6 +93,8 @@ export function SendouSelect<T extends object>({
 	const isControlled = !!onSearchInputChange;
 
 	const handleOpenChange = (isOpen: boolean) => {
+		onOpenChange?.(isOpen);
+
 		if (!isControlled) return;
 
 		if (!isOpen) {
@@ -94,16 +103,21 @@ export function SendouSelect<T extends object>({
 	};
 
 	const listBox = (
-		<Virtualizer layout={ListLayout} layoutOptions={{ rowHeight: 33 }}>
-			<ListBox
+		<Virtualizer
+			layout={ListLayout}
+			layoutOptions={
+				estimatedRowHeight ? { estimatedRowHeight } : { rowHeight: ROW_HEIGHT }
+			}
+		>
+			<SelectShellListBox
 				items={items}
-				className={clsx(styles.listBox, "scrollbar")}
+				className="scrollbar"
 				renderEmptyState={() => (
 					<div className={styles.noResults}>{t("common:noResults")}</div>
 				)}
 			>
 				{children}
-			</ListBox>
+			</SelectShellListBox>
 		</Virtualizer>
 	);
 
@@ -113,21 +127,18 @@ export function SendouSelect<T extends object>({
 	const filterable = !!search || isControlled || !!filter;
 
 	return (
-		<Select
+		<SelectShell
 			{...props}
-			className={clsx(className, styles.select)}
+			className={className}
 			onOpenChange={handleOpenChange}
 		>
 			{label ? <Label className={styles.label}>{label}</Label> : null}
-			<Button className={styles.button}>
+			<SelectShellTrigger>
 				<SelectValue className={styles.selectValue} />
-				<span aria-hidden="true">
-					<ChevronsUpDown className={styles.icon} />
-				</span>
-			</Button>
+			</SelectShellTrigger>
 			{clearable ? <SelectClearButton /> : null}
 			<SendouBottomTexts bottomText={bottomText} errorText={errorText} />
-			<Popover className={clsx(popoverClassName, styles.popover)}>
+			<SelectShellPopover className={popoverClassName}>
 				{filterable ? (
 					<Autocomplete
 						filter={filter ? filter : isControlled ? undefined : contains}
@@ -135,45 +146,25 @@ export function SendouSelect<T extends object>({
 						onInputChange={onSearchInputChange}
 					>
 						{search ? (
-							<SearchField
-								aria-label="Search"
-								autoFocus
-								className={styles.searchField}
-							>
-								<Search aria-hidden className={styles.icon} />
-								<Input
-									placeholder={search.placeholder}
-									className={clsx(styles.searchInput, "in-container")}
-								/>
-								<Button className={styles.searchClearButton}>
-									<X className={styles.icon} />
-								</Button>
-							</SearchField>
+							<SelectShellSearchField
+								placeholder={search.placeholder}
+								inputClassName="in-container"
+							/>
 						) : null}
 						{listBox}
 					</Autocomplete>
 				) : (
 					listBox
 				)}
-			</Popover>
-		</Select>
+			</SelectShellPopover>
+		</SelectShell>
 	);
 }
 
 interface SendouSelectItemProps extends ListBoxItemProps {}
 
 export function SendouSelectItem(props: SendouSelectItemProps) {
-	return (
-		<ListBoxItem
-			{...props}
-			className={({ isFocused, isSelected }) =>
-				clsx(styles.item, {
-					[styles.itemFocused]: isFocused,
-					[styles.itemSelected]: isSelected,
-				})
-			}
-		/>
-	);
+	return <SelectShellItem {...props} className={styles.item} />;
 }
 
 interface SendouSelectItemSectionProps {

@@ -27,9 +27,15 @@ import { Main } from "~/components/Main";
 import { Pagination } from "~/components/Pagination";
 import { Placement } from "~/components/Placement";
 import { TierPill } from "~/components/TierPill";
+import { UserLink } from "~/components/UserLink";
 import { useUser } from "~/features/auth/core/user";
 import { BadgeDisplay } from "~/features/badges/components/BadgeDisplay";
 import { BannedUsersList } from "~/features/tournament-organization/components/BannedPlayersList";
+import {
+	tournamentOrganizationEditPage,
+	tournamentOrganizationPage,
+	tournamentOrganizationStatsPage,
+} from "~/features/tournament-organization/tournament-organization-urls";
 import {
 	Trophy,
 	TrophyContextProvider,
@@ -50,21 +56,17 @@ import {
 	BLANK_IMAGE_URL,
 	calendarEventPage,
 	navIconUrl,
-	tournamentOrganizationEditPage,
-	tournamentOrganizationPage,
-	tournamentOrganizationStatsPage,
 	tournamentPage,
 	trophyTournamentsPage,
-	userPage,
 } from "~/utils/urls";
 import { action } from "../actions/org.$slug.server";
 import { EventCalendar } from "../components/EventCalendar";
 import { SocialLinksList } from "../components/SocialLinksList";
 import { loader } from "../loaders/org.$slug.server";
-import styles from "../tournament-organization.module.css";
 import { TOURNAMENT_SERIES_EVENTS_PER_PAGE } from "../tournament-organization-constants";
 import { updateIsEstablishedSchema } from "../tournament-organization-schemas";
 import { tournamentOrganizationSearchParams } from "../tournament-organization-search-params";
+import styles from "./org.$slug.module.css";
 
 export { action, loader };
 
@@ -359,19 +361,14 @@ function MembersList() {
 		<div className="stack sm text-sm">
 			{data.organization.members.map((member) => {
 				return (
-					<Link
-						key={member.id}
-						to={userPage(member)}
-						className="stack horizontal xs items-center text-main-forced w-max"
-					>
-						<Avatar user={member} size="xs" />
+					<UserLink key={member.id} user={member} size="xs">
 						<div>
 							<div>{member.username}</div>
 							<div className="text-lighter text-xs">
 								{member.roleDisplayName ?? t(`org:roles.${member.role}`)}
 							</div>
 						</div>
-					</Link>
+					</UserLink>
 				);
 			})}
 		</div>
@@ -713,13 +710,7 @@ function EventLeaderboardRow({
 }) {
 	return (
 		<div className={styles.leaderboardListRow}>
-			<Link
-				to={userPage(entry.user)}
-				className="stack horizontal sm items-center font-semi-bold text-main-forced"
-			>
-				<Avatar size="xs" user={entry.user} />
-				{entry.user.username}
-			</Link>
+			<UserLink user={entry.user} size="xs" className="font-semi-bold" />
 			<div className="stack sm horizontal items-center text-lighter font-semi-bold">
 				<span className="text-main-forced">{entry.points}p</span>{" "}
 				<Placement placement={1} /> ×{entry.placements.first}

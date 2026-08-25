@@ -5,25 +5,20 @@ import {
 	requireUser,
 } from "~/features/auth/core/user.server";
 import { notify } from "~/features/notifications/core/notify.server";
+import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import { clearTrophiesCache } from "~/features/trophies/loaders/trophies.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { parseFormData } from "~/form/parse.server";
+import { requirePermission } from "~/modules/permissions/guards.server";
 import { errorToastIfFalsy, parseRequestPayload } from "~/utils/remix.server";
 import { assertUnreachable } from "~/utils/types";
 import * as TrophyRepository from "../TrophyRepository.server";
-import {
-	TROPHY_APPROVALS_REQUIRED,
-	TROPHY_PENDING_PER_USER_LIMIT,
-} from "../trophies-constants";
+import { TROPHY_PENDING_PER_USER_LIMIT } from "../trophies-constants";
 import {
 	pendingTrophyActionSchema,
 	trophyFormSchema,
 } from "../trophies-schemas";
-import {
-	canEditTrophy,
-	canReviewTrophies,
-	compressTrophyModel,
-} from "../trophies-utils";
+import { canReviewTrophies, compressTrophyModel } from "../trophies-utils";
 
 export const action: ActionFunction = async ({ request }) => {
 	const user = requireUser();
@@ -53,10 +48,7 @@ export const action: ActionFunction = async ({ request }) => {
 		if (data._action === "UPDATE") {
 			const trophy = await TrophyRepository.findById(data.targetTrophyId);
 			errorToastIfFalsy(trophy, "Trophy not found");
-			errorToastIfFalsy(
-				canEditTrophy(user, { managerId: trophy.manager?.id ?? null }),
-				"Not allowed",
-			);
+			requirePermission(trophy, "EDIT");
 
 			const nameExists = await TrophyRepository.existsByName({
 				name: data.name,
@@ -124,6 +116,8 @@ export const action: ActionFunction = async ({ request }) => {
 			errorToastIfFalsy(isOwner || canReview, "Not allowed");
 
 			await TrophyRepository.deletePending(data.pendingTrophyId);
+
+			await resolveSubmittedNotification(pending.name);
 			return null;
 		}
 		case "DECLINE": {
@@ -135,7 +129,7 @@ export const action: ActionFunction = async ({ request }) => {
 			errorToastIfFalsy(pending, "Pending trophy not found");
 			errorToastIfFalsy(!pending.declinedAt, "Trophy is already declined");
 			errorToastIfFalsy(
-				pending.approvals.length < TROPHY_APPROVALS_REQUIRED,
+				!pending.acceptedAt,
 				"Cannot decline an accepted trophy",
 			);
 
@@ -156,6 +150,8 @@ export const action: ActionFunction = async ({ request }) => {
 				});
 			}
 
+			await resolveSubmittedNotification(pending.name);
+
 			return null;
 		}
 		case "APPROVE": {
@@ -170,10 +166,7 @@ export const action: ActionFunction = async ({ request }) => {
 				!pending.declinedAt,
 				"Cannot approve a declined trophy",
 			);
-			errorToastIfFalsy(
-				pending.approvals.length < TROPHY_APPROVALS_REQUIRED,
-				"Trophy is already accepted",
-			);
+			errorToastIfFalsy(!pending.acceptedAt, "Trophy is already accepted");
 			errorToastIfFalsy(
 				!pending.approvals.some((a) => a.userId === user.id),
 				"Already approved",
@@ -196,6 +189,15 @@ export const action: ActionFunction = async ({ request }) => {
 						},
 					});
 				}
+
+				await resolveSubmittedNotification(pending.name);
+			} else {
+				// still needs approvals from the other reviewers
+				await resolveNotifications({
+					userIds: [user.id],
+					type: "TROPHY_SUBMITTED",
+					meta: { trophyName: pending.name },
+				});
 			}
 
 			return null;
@@ -205,6 +207,14 @@ export const action: ActionFunction = async ({ request }) => {
 		}
 	}
 };
+
+function resolveSubmittedNotification(trophyName: string) {
+	return resolveNotifications({
+		userIds: [ADMIN_ID, ...QA_IDS],
+		type: "TROPHY_SUBMITTED",
+		meta: { trophyName },
+	});
+}
 
 async function notifyReviewersOfSubmission({
 	trophyName,

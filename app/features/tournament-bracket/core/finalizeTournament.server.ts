@@ -13,7 +13,7 @@ import { logger } from "~/utils/logger";
 import type {
 	TournamentBadgeReceivers,
 	TournamentTrophyReceiver,
-} from "../tournament-bracket-schemas.server";
+} from "../tournament-bracket-schemas";
 import { summaryRatingTargets, tournamentSummary } from "./summarizer.server";
 import type { Tournament } from "./Tournament";
 import { clearTournamentDataCache } from "./Tournament.server";
@@ -125,8 +125,8 @@ async function updateSeriesTierHistory(tournament: Tournament) {
 }
 
 function resolveFinalizationSeason(tournament: Tournament) {
-	// league divisions might be running for many weeks
-	const attributionDate = tournament.isLeagueDivision
+	// leagues might be running for many weeks
+	const attributionDate = tournament.isLeague
 		? new Date()
 		: tournament.ctx.startsAt;
 	const season = Seasons.current(attributionDate);

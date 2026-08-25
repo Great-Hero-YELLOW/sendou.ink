@@ -1,6 +1,5 @@
 import type { ActionFunction } from "react-router";
 import { db } from "~/db/sql";
-import { requireUser } from "~/features/auth/core/user.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
@@ -8,15 +7,22 @@ import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamR
 import * as Engine from "~/features/tournament-bracket/core/engine";
 import { executeBracketOperation } from "~/features/tournament-bracket/core/executeBracketOperation.server";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
+import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	clearTournamentDataCache,
+	requireTournamentOrganizer,
 	tournamentFromDB,
+	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import {
 	matchPageParamsSchema,
 	matchSchema,
-} from "~/features/tournament-bracket/tournament-bracket-schemas.server";
-import { tournamentWebsocketRoom } from "~/features/tournament-bracket/tournament-bracket-utils";
+} from "~/features/tournament-bracket/tournament-bracket-schemas";
+import {
+	showsOneGroupAtATime,
+	tournamentBracketWebsocketRoom,
+	tournamentWebsocketRoom,
+} from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import invariant from "~/utils/invariant";
@@ -36,8 +42,11 @@ import type { FindMatchById } from "../TournamentMatchRepository.server";
 import { tournamentMatchWebsocketRoom } from "../tournament-match-utils";
 
 export const action: ActionFunction = async ({ params, request }) => {
-	const user = requireUser();
-	const { mid: matchId, id: tournamentId } = parseParams({
+	const { tournament, tournamentId, user } = await tournamentFromParams(
+		params,
+		{ for: "action" },
+	);
+	const { mid: matchId } = parseParams({
 		params,
 		schema: matchPageParamsSchema,
 	});
@@ -53,8 +62,6 @@ export const action: ActionFunction = async ({ params, request }) => {
 		request,
 		schema: matchSchema,
 	});
-
-	const tournament = await tournamentFromDB({ tournamentId, user });
 
 	const validateCanReportScore = () => {
 		const isMemberOfATeamInTheMatch = match.players.some(
@@ -221,7 +228,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "UPDATE_REPORTED_SCORE": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 			errorToastIfFalsy(!tournament.ctx.isFinalized, "Tournament is finalized");
 
 			const result = await TournamentMatchRepository.findResultById(
@@ -452,7 +459,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "REOPEN_MATCH": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 			errorToastIfFalsy(
 				tournament.matchCanBeReopened(match.id),
 				"Match can't be reopened, bracket has progressed",
@@ -572,7 +579,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "END_SET": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 			errorToastIfFalsy(
 				match.opponentOne?.id && match.opponentTwo?.id,
 				"Teams are missing",
@@ -673,7 +680,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 	// update RunningTournaments to make sure sidebar is not showing stale matches at the end
 	// of the tournament in case the TO is not finalizing the tournament right away
 	if (setIsOver) {
-		const refreshedTournament = await tournamentFromDB({ tournamentId, user });
+		const refreshedTournament = await tournamentFromDB(tournamentId);
 		// the teams that just advanced now populate following matches, so their
 		// "waiting for teams" pages need to revalidate too
 		followingMatchIds = refreshedTournament
@@ -708,7 +715,9 @@ export const action: ActionFunction = async ({ params, request }) => {
 	if (emitTournamentUpdate) {
 		ChatSystemMessage.send([
 			{
-				room: tournamentWebsocketRoom(tournament.ctx.id),
+				room: onlyMatchResultsChanged
+					? matchResultsRoom(tournament, match)
+					: tournamentWebsocketRoom(tournament.ctx.id),
 				type: "TOURNAMENT_UPDATED",
 				revalidateOnly: true,
 				revalidateScope,
@@ -718,6 +727,31 @@ export const action: ActionFunction = async ({ params, request }) => {
 
 	return null;
 };
+
+/**
+ * Room of the brackets page views that render this match, i.e. the ones a change of its
+ * results can be seen in. Falls back to the whole tournament's room if the match's bracket
+ * can not be resolved.
+ */
+function matchResultsRoom(
+	tournament: Tournament,
+	match: NonNullable<FindMatchById>,
+) {
+	const bracketIdx = tournament.matchIdToBracketIdx(match.id);
+
+	if (typeof bracketIdx !== "number") {
+		logger.error("matchResultsRoom: Bracket not found");
+		return tournamentWebsocketRoom(tournament.ctx.id);
+	}
+
+	const { type } = tournament.ctx.settings.bracketProgression[bracketIdx];
+
+	return tournamentBracketWebsocketRoom({
+		tournamentId: tournament.ctx.id,
+		bracketIdx,
+		groupId: showsOneGroupAtATime(type) ? match.groupId : null,
+	});
+}
 
 function canReportTournamentScore({
 	match,

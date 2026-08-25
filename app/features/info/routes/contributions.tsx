@@ -50,7 +50,7 @@ const TRANSLATORS: Array<{
 		language: "es-ES",
 	},
 	{
-		translators: ["Hachi Shibaru", "KaiserOfNone", "Mario64iscool2"],
+		translators: ["Hachi Shibaru", "KaiserOfNone", "Mario64iscool2", "Lasky"],
 		language: "es-US",
 	},
 	{
@@ -124,9 +124,9 @@ export default function ContributionsPage() {
 					</a>
 				</li>
 				<li>Lean - {t("contributions:lean")}</li>
+				<li>BUGSLAP - {t("contributions:bugslap")}</li>
 				<li>borzoic - {t("contributions:borzoic")}</li>
 				<li>TORIPNG - {t("contributions:toripng")}</li>
-				<li>BUGSLAP - {t("contributions:toripng")}</li>
 				<li>uberu - {t("contributions:uberu")}</li>
 				<li>yaga - {t("contributions:yaga")}</li>
 				<li>Centritide - {t("contributions:centritide")}</li>

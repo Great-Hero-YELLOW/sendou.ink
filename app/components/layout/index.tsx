@@ -1,7 +1,6 @@
 import clsx from "clsx";
 import { isToday, isTomorrow } from "date-fns";
 import {
-	Bell,
 	Calendar,
 	ChevronRight,
 	LogIn,
@@ -12,7 +11,6 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import {
-	Button,
 	Dialog,
 	DialogTrigger,
 	Modal,
@@ -25,6 +23,7 @@ import { Config } from "~/config";
 import { useUser } from "~/features/auth/core/user";
 import { useChatContext } from "~/features/chat/useChatContext";
 import { FriendMenu } from "~/features/friends/components/FriendMenu";
+import { useLayoutData } from "~/features/layout/LayoutDataProvider";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
 import { useHydrated } from "~/hooks/useHydrated";
 import { useLayoutSize } from "~/hooks/useMainContentWidth";
@@ -43,21 +42,18 @@ import {
 } from "~/utils/urls";
 import { Avatar, generateIdenticon } from "../Avatar";
 import { SendouButton } from "../elements/Button";
-import { SendouPopover } from "../elements/Popover";
 import { FuseZone } from "../fuse/Fuse";
 import { Image } from "../Image";
 import { MobileNav } from "../MobileNav";
 import { NotificationDot } from "../NotificationDot";
 import { ListLink, SideNav, SideNavFooter, SideNavHeader } from "../SideNav";
-import sideNavStyles from "../SideNav.module.css";
 import { StreamListItems } from "../StreamListItems";
 import { ChatSidebar } from "./ChatSidebar";
 import { Footer } from "./Footer";
 import styles from "./index.module.css";
 import { LogInButtonContainer } from "./LogInButtonContainer";
 import { authErrorSearchParams } from "./layout-search-params";
-import { NotificationContent, useNotifications } from "./NotificationPopover";
-import notificationPopoverStyles from "./NotificationPopover.module.css";
+import { NotificationPopover, useNotifications } from "./NotificationPopover";
 import { TopNavMenus } from "./TopNavMenus";
 import { TopRightButtons } from "./TopRightButtons";
 
@@ -274,8 +270,8 @@ export function Layout({
 	}
 
 	const user = useUser();
-	const { unseenIds } = useNotifications();
-	const sidebarData = data?.sidebar;
+	const { showUnseenDot } = useNotifications();
+	const { sidebar: sidebarData } = useLayoutData();
 	const events = sidebarData?.events ?? [];
 	const friends = sidebarData?.friends ?? [];
 	const unseenFriendRequests = useUnseenFriendRequests(
@@ -402,7 +398,7 @@ export function Layout({
 			>
 				{sideNavChildren}
 			</SideNav>
-			<MobileNav sidebarData={data?.sidebar} />
+			<MobileNav sidebarData={sidebarData} />
 			<div className={styles.container}>
 				<header
 					ref={headerRef}
@@ -420,7 +416,7 @@ export function Layout({
 					>
 						<SideNavCollapseButton
 							className={styles.sideNavModalTrigger}
-							showNotificationDot={!sideNavModalOpen && unseenIds.length > 0}
+							showNotificationDot={!sideNavModalOpen && showUnseenDot}
 							badgeCount={!sideNavModalOpen ? unseenFriendRequests : 0}
 							testId="sidenav-modal-trigger"
 						/>
@@ -457,7 +453,7 @@ export function Layout({
 					<SideNavCollapseButton
 						onToggle={() => setSideNavCollapsed(!sideNavCollapsed)}
 						className={styles.sideNavCollapseButton}
-						showNotificationDot={sideNavCollapsed && unseenIds.length > 0}
+						showNotificationDot={sideNavCollapsed && showUnseenDot}
 						badgeCount={sideNavCollapsed ? unseenFriendRequests : 0}
 						testId="sidenav-collapse-button"
 					/>
@@ -670,56 +666,35 @@ function SideNavUserPanel() {
 	const { t } = useTranslation();
 	const location = useLocation();
 	const user = useUser();
-	const { notifications, unseenIds } = useNotifications();
+	const { notifications, unseenIds, showUnseenDot } = useNotifications();
 
 	if (user) {
 		return (
 			<>
-				<Link to={userPage(user)} className={sideNavStyles.sideNavFooterUser}>
+				<Link to={userPage(user)} className={styles.sideNavFooterUser}>
 					<Avatar user={user} size="xs" />
-					<span className={sideNavStyles.sideNavFooterUsername}>
-						{user.username}
-					</span>
+					<span className={styles.sideNavFooterUsername}>{user.username}</span>
 				</Link>
-				<div className={sideNavStyles.sideNavFooterActions}>
+				<div className={styles.sideNavFooterActions}>
 					{notifications ? (
 						<div
-							className={sideNavStyles.sideNavFooterNotification}
+							className={styles.sideNavFooterNotification}
 							key={location.pathname}
 						>
-							{unseenIds.length > 0 ? (
+							{showUnseenDot ? (
 								<NotificationDot
-									className={sideNavStyles.sideNavFooterUnseenDot}
+									className={styles.sideNavFooterUnseenDot}
+									testId="notifications-bell-dot"
 								/>
 							) : null}
-							<SendouPopover
-								trigger={
-									<Button
-										className={sideNavStyles.sideNavFooterButton}
-										data-testid="notifications-button"
-									>
-										<Bell />
-									</Button>
-								}
-								popoverClassName={clsx(
-									notificationPopoverStyles.popoverContainer,
-									{
-										[notificationPopoverStyles.noNotificationsContainer]:
-											notifications.length === 0,
-									},
-								)}
-							>
-								<NotificationContent
-									notifications={notifications}
-									unseenIds={unseenIds}
-								/>
-							</SendouPopover>
+							<NotificationPopover
+								notifications={notifications}
+								unseenIds={unseenIds}
+								triggerClassName={styles.sideNavFooterButton}
+							/>
 						</div>
 					) : null}
-					<Link
-						to={SETTINGS_PAGE}
-						className={sideNavStyles.sideNavFooterButton}
-					>
+					<Link to={SETTINGS_PAGE} className={styles.sideNavFooterButton}>
 						<Settings />
 					</Link>
 				</div>
@@ -734,8 +709,8 @@ function SideNavUserPanel() {
 					{t("header.login.discord")}
 				</SendouButton>
 			</LogInButtonContainer>
-			<div className={sideNavStyles.sideNavFooterActions}>
-				<Link to={SETTINGS_PAGE} className={sideNavStyles.sideNavFooterButton}>
+			<div className={styles.sideNavFooterActions}>
+				<Link to={SETTINGS_PAGE} className={styles.sideNavFooterButton}>
 					<Settings />
 				</Link>
 			</div>

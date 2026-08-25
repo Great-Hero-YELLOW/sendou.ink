@@ -1,9 +1,11 @@
 import { addDays, addHours, setHours, setMinutes, startOfHour } from "date-fns";
 import { NZAP_TEST_ID } from "~/db/seed/constants";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
+import { serializeLutiDiv } from "~/features/scrims/scrims-utils";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { toDBBoolean } from "~/utils/sql";
+import { scrimPage } from "~/utils/urls";
 import type { Factories } from "./helpers/factories";
 import {
 	expect,
@@ -13,6 +15,7 @@ import {
 	test,
 } from "./helpers/playwright";
 import { AnythingAdder } from "./pages/layout/anything-adder";
+import { NotificationPopover } from "./pages/layout/notification-popover";
 import { NewScrimPostPage } from "./pages/scrims/new-scrim-post-page";
 import { ScrimPage } from "./pages/scrims/scrim-page";
 import { ScrimsPage } from "./pages/scrims/scrims-page";
@@ -56,6 +59,32 @@ test.describe("Scrims", () => {
 		await expect(scrims.locators.deleteButtons).toHaveCount(0);
 	});
 
+	test("reuses a pick-up saved from an earlier scrim post", async ({
+		page,
+		factories,
+	}) => {
+		await createNamedUsers(factories, PICKUP_NAMES);
+
+		await impersonate(page, NZAP_TEST_ID);
+
+		const newPost = new NewScrimPostPage(page);
+		await newPost.goto();
+		await newPost.selectPickupUsers(PICKUP_NAMES);
+		await newPost.save();
+
+		await newPost.goto();
+		await newPost.selectSavedPickup(PICKUP_NAMES);
+
+		for (const [index, userName] of PICKUP_NAMES.entries()) {
+			await expect(newPost.pickupUser(index + 2)).toContainText(userName);
+		}
+
+		await newPost.save();
+
+		const scrims = new ScrimsPage(page);
+		await expect(scrims.locators.deleteButtons).toHaveCount(2);
+	});
+
 	test("requests an existing scrim post & cancels the request", async ({
 		page,
 		factories,
@@ -86,14 +115,76 @@ test.describe("Scrims", () => {
 		await expect(scrims.locators.requestButtons).toHaveCount(2);
 	});
 
+	test("filters by div and sets the filter as default", async ({
+		page,
+		factories,
+	}) => {
+		await factories.ScrimPostFactory.create({
+			users: await createGroup(factories),
+			maxDiv: serializeLutiDiv("1"),
+			minDiv: serializeLutiDiv("2"),
+		});
+
+		await impersonate(page, NZAP_TEST_ID);
+
+		const scrims = new ScrimsPage(page);
+		await scrims.goto();
+		await scrims.openTab("available");
+
+		await expect(scrims.locators.requestButtons).toHaveCount(1);
+
+		// a div range the post's own range falls outside of
+		await scrims.filterByDivs({ max: "5", min: "6" });
+
+		await expect(scrims.locators.requestButtons).toHaveCount(0);
+
+		await scrims.saveFiltersAsDefault();
+		await scrims.goto();
+		await scrims.openTab("available");
+
+		// remembers selection via user preferences
+		await expect(scrims.locators.requestButtons).toHaveCount(0);
+
+		await scrims.removeDivsFilter();
+
+		// removing the filter sticks instead of falling back to the saved default
+		await expect(scrims.locators.requestButtons).toHaveCount(1);
+
+		await scrims.reload();
+
+		await expect(scrims.locators.requestButtons).toHaveCount(1);
+	});
+
 	test("accepts a request", async ({ page, factories }) => {
-		await createPostWithRequest(factories, { ownerUserId: ADMIN_ID });
+		const post = await createPostWithRequest(factories, {
+			ownerUserId: ADMIN_ID,
+			requesterUserId: NZAP_TEST_ID,
+		});
+		await factories.NotificationFactory.create({
+			notification: {
+				type: "SCRIM_NEW_REQUEST",
+				meta: {
+					fromUserId: NZAP_TEST_ID,
+					fromUsername: "N-ZAP",
+					scrimPostId: post.id,
+				},
+			},
+			users: [{ userId: ADMIN_ID }],
+		});
 
 		await impersonate(page, ADMIN_ID);
 
 		const scrims = new ScrimsPage(page);
 		await scrims.goto();
+
+		const notifications = new NotificationPopover(page);
+		await expect(notifications.locators.bellDot).toBeVisible();
+
 		await scrims.acceptFirstRequest();
+
+		// accepting settled the post, resolving the request notification without
+		// the bell having been opened
+		await expect(notifications.locators.bellDot).toBeHidden();
 
 		await scrims.openTab("booked");
 		await expect(scrims.locators.contactLinks).toHaveCount(1);
@@ -101,6 +192,15 @@ test.describe("Scrims", () => {
 		const scrim = await scrims.openFirstBookedScrim();
 
 		await expect(scrim.locators.subtitle).toBeVisible();
+
+		// the requester got notified of the scheduled scrim, linking to its page
+		await impersonate(page, NZAP_TEST_ID);
+		await navigate({ page, url: "/" });
+
+		await notifications.open();
+		await notifications.openNotification("New scrim scheduled vs.");
+
+		await expect(page).toHaveURL(scrimPage(post.id));
 	});
 
 	test("auto-cancels overlapping pending scrims when a scrim is booked", async ({
@@ -212,6 +312,15 @@ test.describe("Scrims", () => {
 		// back as the author, who sees the post and the request details
 		await impersonate(page, ADMIN_ID);
 		await scrims.goto();
+
+		const notifications = new NotificationPopover(page);
+		await notifications.open();
+
+		await expect(
+			notifications.notification("N-ZAP requested a scrim"),
+		).toBeVisible();
+
+		await notifications.close();
 
 		await expect(scrims.post("+2h")).toBeVisible();
 		await expect(scrims.locators.tournamentPopover).toBeVisible();

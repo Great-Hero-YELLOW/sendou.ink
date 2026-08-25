@@ -21,6 +21,17 @@ try {
 }
 export const E2E_BASE_PORT = Number(process.env.PORT || 5173) + 500;
 
+interface RouterProbe {
+	wentBusy: boolean;
+	observer: MutationObserver;
+}
+
+declare global {
+	interface Window {
+		__routerProbe?: RouterProbe;
+	}
+}
+
 export const MOBILE_VIEWPORT = { width: 375, height: 667 };
 export const TABLET_VIEWPORT = { width: 768, height: 1024 };
 
@@ -187,6 +198,30 @@ export async function selectTournament({
 	await item.first().click();
 }
 
+/** Fills a React Aria datetime field's segments, targeting them by the field's label. */
+export async function fillDateTimeField({
+	scope,
+	label,
+	date,
+}: {
+	scope: Locator;
+	label: string;
+	date: Date;
+}) {
+	const fillSegment = (segment: string, value: string) =>
+		scope
+			.getByRole("spinbutton", { name: new RegExp(`^${segment}, ${label}`) })
+			.fill(value);
+
+	const hours = date.getHours();
+	await fillSegment("year", String(date.getFullYear()));
+	await fillSegment("month", String(date.getMonth() + 1));
+	await fillSegment("day", String(date.getDate()));
+	await fillSegment("hour", String(hours % 12 || 12));
+	await fillSegment("minute", String(date.getMinutes()).padStart(2, "0"));
+	await fillSegment("AM/PM", hours >= 12 ? "PM" : "AM");
+}
+
 /** page.goto that waits for the page to be hydrated before proceeding */
 export async function navigate({ page, url }: { page: Page; url: string }) {
 	await flushIfDirty(page);
@@ -199,17 +234,55 @@ export async function navigate({ page, url }: { page: Page; url: string }) {
 		// Extract just the path and search params, let Playwright use the correct baseURL
 		targetUrl = urlObj.pathname + urlObj.search;
 	}
-	await page.goto(targetUrl);
+	// domcontentloaded instead of the default load event: module scripts have
+	// executed by then, and the hydration wait below covers the rest — no need
+	// to also wait for images and other subresources
+	await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 	await expectIsHydrated(page);
 }
 
 /** Waits and expects the page to be hydrated (click handlers etc. ready for testing) */
 export async function expectIsHydrated(page: Page) {
-	await expect(page.getByTestId("hydrated")).toHaveCount(1);
+	// waitFor reacts within a frame of the marker appearing, where the expect
+	// poll would wait out its current back-off interval first
+	await page
+		.getByTestId("hydrated")
+		.waitFor({ state: "attached", timeout: 5_000 });
 }
 
 export function impersonate(page: Page, userId = ADMIN_ID) {
 	return retryPost(page, "impersonate", `/auth/impersonate?id=${userId}`);
+}
+
+/**
+ * Makes the worker's server resolve every season as over, so tests can cover the
+ * season boundary. Undone before the next test starts.
+ */
+export async function endSeason(page: Page) {
+	const response = await retryPost(page, "endSeason", "/end-season");
+	if (!response?.ok()) {
+		throw new Error(
+			`Ending the season failed with status ${response?.status()}`,
+		);
+	}
+}
+
+/**
+ * Makes the worker's server resolve Plus Server voting as active, so tests can
+ * cover the voting window. Undone before the next test starts.
+ */
+export async function setPlusVotingActive(page: Page, active: boolean) {
+	const response = await retryPost(
+		page,
+		"setPlusVotingActive",
+		"/set-plus-voting-active",
+		{ form: { active: String(active) } },
+	);
+	if (!response?.ok()) {
+		throw new Error(
+			`Setting plus voting active failed with status ${response?.status()}`,
+		);
+	}
 }
 
 /** Runs the named server Routine (normally cron-driven) in the worker's server process. */
@@ -241,7 +314,14 @@ async function retryPost(
 
 	for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 		try {
-			return await page.request.post(url, { timeout: 7_500, ...options });
+			// maxRedirects 0: impersonate answers with a redirect to the admin
+			// page, and following it would server-render a page nobody reads —
+			// the Set-Cookie lands in the context jar either way
+			return await page.request.post(url, {
+				timeout: 7_500,
+				maxRedirects: 0,
+				...options,
+			});
 		} catch (error) {
 			if (attempt === MAX_ATTEMPTS) throw error;
 		}
@@ -250,14 +330,27 @@ async function retryPost(
 	throw new Error(`${name}: unreachable`);
 }
 
-export async function submit(page: Page, testId?: string) {
+/** Clicks a submit button and waits for the POST it fires. Takes a locator when
+ * the test id alone is ambiguous, e.g. one button per card on a list page. */
+export async function submit(page: Page, target?: string | Locator) {
+	const button =
+		typeof target === "object"
+			? target
+			: page.getByTestId(target ?? "submit-button");
+
 	await waitForPOSTResponse(page, async () => {
-		await page.getByTestId(testId ?? "submit-button").click();
+		await button.click();
 	});
 
-	// Toast flash params are stripped right after via a replace navigation
-	// (without revalidation); wait for it so it can't abort a later click.
-	await expect(page).not.toHaveURL(/__(?:success|error)=/);
+	// An action's toast redirect adds flash params that a replace navigation
+	// strips right after (without revalidation), remounting every form on the
+	// page twice. Waiting on the rendered search rather than the browser's URL
+	// covers the commit those remounts land in, which trails the history entry
+	// — otherwise the second remount tears down whatever the test opens next.
+	await page.waitForSelector(
+		'[data-testid="hydrated"]:not([data-location-search*="__success"]):not([data-location-search*="__error"])',
+		{ state: "attached", timeout: 5_000 },
+	);
 }
 
 export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
@@ -265,6 +358,8 @@ export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
 
 	const MAX_ATTEMPTS = 3;
 	const PER_ATTEMPT_TIMEOUT = 10_000;
+
+	await armRouterProbe(page);
 
 	// React Aria buttons fire their handler on press end. Occasionally a click
 	// registers the press start (the button goes `:active`) but the press never
@@ -286,6 +381,23 @@ export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
 		}
 	}
 
+	// React commits the submission before the POST leaves the browser, but on a
+	// loaded machine it can lag behind the response; without waiting for it the
+	// idle of the *previous* render reads as the action having settled.
+	if (!(await routerWentBusy(page))) {
+		await page
+			.waitForFunction(
+				() => window.__routerProbe?.wentBusy !== false,
+				undefined,
+				{
+					timeout: 2_000,
+					polling: 50,
+				},
+			)
+			// a POST that no fetcher or navigation drives never turns the router busy
+			.catch(() => {});
+	}
+
 	// The POST's revalidation (and any redirect it drives) is still in flight;
 	// an interaction landing mid-flight aborts it, and routes that opt out of
 	// revalidation on navigation (e.g. to.$id) then keep the stale data.
@@ -294,15 +406,62 @@ export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
 	return response!;
 }
 
+/**
+ * Starts recording whether the router turns busy. A fast action holds the busy
+ * marker for a frame or two, which a polled wait misses outright; the flag a
+ * `MutationObserver` sets survives the marker flipping back.
+ */
+async function armRouterProbe(page: Page) {
+	await page.evaluate(() => {
+		window.__routerProbe?.observer.disconnect();
+
+		const marker = document.querySelector('[data-testid="hydrated"]');
+		if (!marker) return;
+
+		const probe: RouterProbe = {
+			wentBusy: false,
+			observer: new MutationObserver(() => {
+				if (marker.getAttribute("data-router-idle") !== "true") {
+					probe.wentBusy = true;
+				}
+			}),
+		};
+		probe.observer.observe(marker, {
+			attributes: true,
+			attributeFilter: ["data-router-idle"],
+		});
+
+		window.__routerProbe = probe;
+	});
+}
+
+/** A missing probe means a document navigation wiped it, which only a busy router does. */
+function routerWentBusy(page: Page) {
+	return page.evaluate(() => window.__routerProbe?.wentBusy !== false);
+}
+
 /** Waits until no navigation, revalidation or fetcher is in flight. */
 async function expectRouterIdle(page: Page) {
 	// A submit's redirect plus the target page's loaders can exceed the default
 	// expect timeout when the full suite is loading all workers.
-	await expect(page.getByTestId("hydrated")).toHaveAttribute(
-		"data-router-idle",
-		"true",
-		{ timeout: 15_000 },
-	);
+	try {
+		await page.waitForSelector(
+			'[data-testid="hydrated"][data-router-idle="true"]',
+			{ state: "attached", timeout: 15_000 },
+		);
+	} catch (error) {
+		// data-router-busy names what is still in flight, which the attribute
+		// assertion's own message does not
+		const busy = await page
+			.getByTestId("hydrated")
+			.getAttribute("data-router-busy")
+			.catch(() => null);
+
+		throw new Error(
+			`Router never went idle at ${page.url()} (in flight: ${busy ?? "unknown"})`,
+			{ cause: error },
+		);
+	}
 }
 
 /** Asserts the page rendered rather than the error boundary catching something. */

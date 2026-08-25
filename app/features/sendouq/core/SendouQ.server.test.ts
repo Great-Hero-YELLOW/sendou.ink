@@ -4,12 +4,17 @@ import { backdate } from "~/db/seed/core/backdate";
 import * as SkillFactory from "~/db/seed/factories/SkillFactory";
 import * as SQGroupFactory from "~/db/seed/factories/SQGroupFactory";
 import * as SQMatchFactory from "~/db/seed/factories/SQMatchFactory";
+import * as TeamFactory from "~/db/seed/factories/TeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
+import type { UserMapModePreferences } from "~/db/tables-json";
 import { MATCHES_COUNT_NEEDED_FOR_LEADERBOARD } from "~/features/leaderboards/leaderboards-constants";
 import {
 	freshUserSkills,
 	refreshUserSkills,
 } from "~/features/mmr/tiered.server";
+import * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
+import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
+import invariant from "~/utils/invariant";
 import * as SQGroupRepository from "../SQGroupRepository.server";
 import { refreshSendouQInstance, SendouQ } from "./SendouQ.server";
 
@@ -60,6 +65,40 @@ const alignLatestActionAt = async (groupIds: number[]) => {
 
 const inviteCodeOf = (position: number) =>
 	SendouQ.findOwnGroup(users.id(position))!.inviteCode;
+
+const preferring = (mode: ModeShort): UserMapModePreferences => ({
+	modes: [{ mode, preference: "PREFER" }],
+	pool: [],
+});
+
+/** Gives the user a match profile that prefers one mode and is neutral on the rest. */
+const prefer = (position: number, mode: ModeShort) =>
+	UserFactory.grant(users.id(position), {
+		matchProfile: { mapModePreferences: preferring(mode) },
+	});
+
+/** Gives the user a match profile with a pool of stages for one mode. */
+const pooling = (
+	position: number,
+	mode: ModeShort,
+	stages: StageId[],
+	preference: "PREFER" | "AVOID" = "PREFER",
+) =>
+	UserFactory.grant(users.id(position), {
+		matchProfile: {
+			mapModePreferences: {
+				modes: [{ mode, preference }],
+				pool: [{ mode, stages }],
+			},
+		},
+	});
+
+/** Puts the users in a team whose own preferences prefer one mode. */
+const createTeam = (memberPositions: number[], mode: ModeShort) =>
+	TeamFactory.create(
+		{ memberUserIds: userIds(memberPositions) },
+		{ mapModePreferences: preferring(mode) },
+	);
 
 /** Ranks a user: a higher `mu` is a higher ordinal, and with it a higher tier. */
 const createSkill = (position: number, mu: number) =>
@@ -138,28 +177,6 @@ describe("SendouQ", () => {
 			expect(group).toBeUndefined();
 		});
 
-		test("returns group with correct role when user is OWNER", async () => {
-			await createGroup([1, 2]);
-			await refreshSendouQInstance();
-
-			const group = SendouQ.findOwnGroup(users.id(1));
-
-			expect(group).toBeDefined();
-			const member = group?.members.find((m) => m.id === users.id(1));
-			expect(member?.role).toBe("OWNER");
-		});
-
-		test("returns group with correct role when user is REGULAR member", async () => {
-			await createGroup([1, 2]);
-			await refreshSendouQInstance();
-
-			const group = SendouQ.findOwnGroup(users.id(2));
-
-			expect(group).toBeDefined();
-			const member = group?.members.find((m) => m.id === users.id(2));
-			expect(member?.role).toBe("REGULAR");
-		});
-
 		test("returns correct group when multiple groups exist", async () => {
 			await createGroup([1, 2]);
 			await createGroup([3, 4]);
@@ -224,6 +241,49 @@ describe("SendouQ", () => {
 
 			expect(group).toBeDefined();
 			expect(group?.members[0].id).toBe(users.id(2));
+		});
+	});
+
+	describe("modePreferences", () => {
+		beforeEach(async () => {
+			await users.create(4);
+		});
+
+		test("counts each member's own preferences when the group is not a team's", async () => {
+			await prefer(1, "TC");
+
+			await createGroup([1, 2, 3, 4]);
+			await refreshSendouQInstance();
+
+			expect(SendouQ.findOwnGroup(users.id(1))!.modePreferences).toEqual([
+				"TC",
+			]);
+		});
+
+		test("counts the team's own preferences when the group is a team's", async () => {
+			for (const position of [1, 2, 3, 4]) {
+				await prefer(position, "TC");
+			}
+			await createTeam([1, 2, 3, 4], "RM");
+
+			await createGroup([1, 2, 3, 4]);
+			await refreshSendouQInstance();
+
+			expect(SendouQ.findOwnGroup(users.id(1))!.modePreferences).toEqual([
+				"RM",
+			]);
+		});
+
+		test("counts members' own preferences when only some of them share a team", async () => {
+			await prefer(1, "TC");
+			await createTeam([1, 2, 3], "RM");
+
+			await createGroup([1, 2, 3, 4]);
+			await refreshSendouQInstance();
+
+			expect(SendouQ.findOwnGroup(users.id(1))!.modePreferences).toEqual([
+				"TC",
+			]);
 		});
 	});
 
@@ -741,7 +801,94 @@ describe("SendouQ", () => {
 			});
 		});
 	});
+
+	describe("mapMatch", () => {
+		beforeEach(async () => {
+			await users.create(8);
+		});
+
+		test("counts players with the current map in their pool as its voters", async () => {
+			await pooling(1, "SZ", [1, 2]);
+			await pooling(5, "SZ", [3]);
+
+			const match = await mapMatchOn({ mode: "SZ", stageId: 1 });
+
+			expect(match.currentMap?.voters.map((voter) => voter.id)).toEqual([
+				users.id(1),
+			]);
+		});
+
+		test("leaves out a pool of a mode its owner avoids", async () => {
+			await pooling(1, "SZ", [1], "AVOID");
+
+			const match = await mapMatchOn({ mode: "SZ", stageId: 1 });
+
+			expect(match.currentMap?.voters).toEqual([]);
+		});
+
+		test("counts a team's group on the team's pool rather than its members' own", async () => {
+			await TeamFactory.create(
+				{ memberUserIds: userIds([1, 2, 3, 4]) },
+				{
+					mapModePreferences: {
+						modes: [{ mode: "SZ", preference: "PREFER" }],
+						pool: [{ mode: "SZ", stages: [1] }],
+					},
+				},
+			);
+			await pooling(1, "SZ", [2]);
+
+			const match = await mapMatchOn({ mode: "SZ", stageId: 1 });
+
+			expect(match.currentMap?.voters.map((voter) => voter.id)).toEqual(
+				userIds([1, 2, 3, 4]),
+			);
+		});
+
+		test("shows what the concluded match did to each player's SP", async () => {
+			for (const position of [1, 2, 3, 4, 5, 6, 7, 8]) {
+				await createSkill(position, 25);
+			}
+			const { id } = await playOutMatchBetween([1, 2, 3, 4], [5, 6, 7, 8]);
+			await refreshSendouQInstance();
+
+			const match = SendouQ.mapMatch((await SQMatchRepository.findById(id))!);
+
+			const winner = match.groupAlpha.members[0].skillDifference;
+			const loser = match.groupBravo.members[0].skillDifference;
+			invariant(winner?.calculated && loser?.calculated, "not calculated");
+
+			expect(winner.spDiff).toBeGreaterThan(0);
+			expect(loser.spDiff).toBeLessThan(0);
+			expect(match.groupAlpha.skillDifference?.calculated).toBe(false);
+		});
+
+		test("shows the tiers snapshotted when the match was made", async () => {
+			const match = await mapMatchOn({ mode: "SZ", stageId: 1 });
+
+			expect(match.groupAlpha.tier).toEqual({ name: "GOLD", isPlus: false });
+			expect(match.groupAlpha.members[0].tier).toEqual({
+				name: "GOLD",
+				isPlus: false,
+			});
+		});
+	});
 });
+
+/** The match page's view of a match played on one known map, its first four users against the rest. */
+const mapMatchOn = async (map: { mode: ModeShort; stageId: StageId }) => {
+	const { id } = await SQMatchFactory.create({
+		alphaUserIds: userIds([1, 2, 3, 4]),
+		bravoUserIds: userIds([5, 6, 7, 8]),
+		mapList: [{ ...map, source: "BOTH" }],
+	});
+	await refreshSendouQInstance();
+
+	const match = await SQMatchRepository.findById(id);
+	invariant(match, "Match not found");
+
+	return SendouQ.mapMatch(match);
+};
 
 /** Leaves both groups inactive with a freshly concluded match between them. */
 const playOutMatchBetween = (

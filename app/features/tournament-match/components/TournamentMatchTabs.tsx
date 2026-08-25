@@ -1,5 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { useFetcher } from "react-router";
+import {
+	resolveTimelineScoreboard,
+	resolveTimelineWeapons,
+} from "~/components/match-page/ingested-scoreboard";
 import { MatchResultTab } from "~/components/match-page/MatchResultTab";
 import { MatchRosterTab } from "~/components/match-page/MatchRosterTab";
 import { MatchTabs, TAB_KEYS } from "~/components/match-page/MatchTabs";
@@ -7,10 +10,13 @@ import type {
 	TimelineMap,
 	TimelinePickBanEvent,
 } from "~/components/match-page/MatchTimeline";
+import type { WeaponPoolWeapon } from "~/components/match-page/WeaponPool";
 import { useUser } from "~/features/auth/core/user";
-import { useTournament } from "~/features/tournament/routes/to.$id";
+import { useTournament } from "~/features/tournament/tournament-context";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
+import { matchSchema } from "~/features/tournament-bracket/tournament-bracket-schemas";
 import { tournamentTeamToActiveRosterUserIds } from "~/features/tournament-bracket/tournament-bracket-utils";
+import { useActionSubmit } from "~/hooks/useActionSubmit";
 import { databaseTimestampToJavascriptTimestamp } from "~/utils/dates";
 import { tournamentTeamPage } from "~/utils/urls";
 import type { TournamentMatchLoaderData } from "../loaders/to.$id.matches.$mid.server";
@@ -152,13 +158,28 @@ function resolveTimelineMaps(
 		const alphaRoster = resolveRoster(result.participants, opponentOneId);
 		const bravoRoster = resolveRoster(result.participants, opponentTwoId);
 
+		const ingestedScoreboard = data.ingestedScoreboards.find(
+			(scoreboard) => scoreboard.mapIndex === mapIndex,
+		);
+		const alphaIsWinner = result.winnerTeamId === opponentOneId;
+
 		const weaponFor = (userId: number) =>
 			data.reportedWeapons?.find(
 				(w) => w.mapIndex === mapIndex && w.userId === userId,
 			)?.weaponSplId ?? null;
 
-		const alphaWeapons = alphaRoster.map((u) => weaponFor(u.id));
-		const bravoWeapons = bravoRoster.map((u) => weaponFor(u.id));
+		const weaponsFor = (
+			roster: ReturnType<typeof resolveRoster>,
+			tournamentTeamId: number,
+		): WeaponPoolWeapon[] =>
+			resolveTimelineWeapons({
+				linkedWeapons: roster.map((u) => weaponFor(u.id)),
+				ingestedPlayers: ingestedScoreboard?.data.players ?? [],
+				tournamentTeamId,
+			});
+
+		const alphaWeapons = weaponsFor(alphaRoster, opponentOneId);
+		const bravoWeapons = weaponsFor(bravoRoster, opponentTwoId);
 		const hasAnyWeapon =
 			alphaWeapons.some((w) => w !== null) ||
 			bravoWeapons.some((w) => w !== null);
@@ -167,10 +188,7 @@ function resolveTimelineMaps(
 			stageId: result.stageId,
 			mode: result.mode,
 			timestamp: databaseTimestampToJavascriptTimestamp(result.createdAt),
-			winner:
-				result.winnerTeamId === opponentOneId
-					? ("ALPHA" as const)
-					: ("BRAVO" as const),
+			winner: alphaIsWinner ? ("ALPHA" as const) : ("BRAVO" as const),
 			rosters: {
 				alpha: alphaRoster,
 				bravo: bravoRoster,
@@ -179,6 +197,10 @@ function resolveTimelineMaps(
 				? { alpha: alphaWeapons, bravo: bravoWeapons }
 				: undefined,
 			ko: result.ko != null ? Boolean(result.ko) : undefined,
+			scoreboard: resolveTimelineScoreboard(
+				ingestedScoreboard?.data,
+				alphaIsWinner,
+			),
 		};
 	});
 }
@@ -302,7 +324,7 @@ function TournamentMatchRosterTab({
 	const { t } = useTranslation(["tournament"]);
 	const tournament = useTournament();
 	const user = useUser();
-	const fetcher = useFetcher();
+	const setActiveRoster = useActionSubmit(matchSchema);
 	const {
 		teams: [teamOne, teamTwo],
 	} = useMatch();
@@ -321,7 +343,7 @@ function TournamentMatchRosterTab({
 				teamTwo ? needsActiveRosterSelection(teamTwo) : false,
 			]}
 			onSubbedOutChange={handleSubbedOutChange}
-			isSubmitting={fetcher.state !== "idle"}
+			isSubmitting={setActiveRoster.state !== "idle"}
 			teams={[
 				teamOne ? rosterTeamData(teamOne) : tbdTeam,
 				teamTwo ? rosterTeamData(teamTwo) : tbdTeam,
@@ -387,13 +409,9 @@ function TournamentMatchRosterTab({
 			(userId) => !subbedOut.includes(userId),
 		);
 
-		fetcher.submit(
-			{
-				_action: "SET_ACTIVE_ROSTER",
-				roster: JSON.stringify(activeRoster),
-				teamId: String(teamId),
-			},
-			{ method: "post" },
-		);
+		setActiveRoster.submit("SET_ACTIVE_ROSTER", {
+			roster: activeRoster,
+			teamId,
+		});
 	}
 }

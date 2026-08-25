@@ -77,6 +77,7 @@ const generateMapsResult = ({
 	tiebreakerMaps = tiebreakerPicks,
 	modesIncluded = [...rankedModesShort],
 	followModeOrder = false,
+	recentlyPlayedMaps,
 }: Partial<TournamentMaplistInput> = {}) => {
 	return generateBalancedMapList({
 		count,
@@ -85,6 +86,7 @@ const generateMapsResult = ({
 		tiebreakerMaps,
 		modesIncluded,
 		followModeOrder,
+		recentlyPlayedMaps,
 	});
 };
 
@@ -796,6 +798,46 @@ describe("TournamentMapListGeneratorOneMode", () => {
 });
 
 describe("Recently played maps", () => {
+	test("One mode Bo7 avoids recently played maps when a full avoiding list exists", () => {
+		const team1Pool = new MapPool(
+			([1, 2, 3, 4, 5, 6] as const).map((stageId) => ({
+				mode: "SZ" as const,
+				stageId,
+			})),
+		);
+		const team2Pool = new MapPool(
+			([7, 8, 9, 10, 11, 12] as const).map((stageId) => ({
+				mode: "SZ" as const,
+				stageId,
+			})),
+		);
+		// the bo5 both teams played right before this match
+		const recentlyPlayedMaps = ([1, 7, 2, 8, 3] as const).map((stageId) => ({
+			mode: "SZ" as const,
+			stageId,
+		}));
+
+		const mapList = generateMaps({
+			count: 7,
+			seed: "1000",
+			teams: [
+				{ id: 1, maps: team1Pool },
+				{ id: 2, maps: team2Pool },
+			],
+			tiebreakerMaps: new MapPool([]),
+			modesIncluded: ["SZ"],
+			recentlyPlayedMaps,
+		});
+
+		const recentMapsInList = mapList.filter((map) =>
+			recentlyPlayedMaps.some(
+				(recent) => recent.mode === map.mode && recent.stageId === map.stageId,
+			),
+		);
+
+		expect(recentMapsInList).toEqual([]);
+	});
+
 	test("Avoids recently played maps when possible", () => {
 		const recentlyPlayedMaps = [
 			{ mode: "SZ" as const, stageId: 4 as const },
@@ -863,5 +905,27 @@ describe("Recently played maps", () => {
 		});
 
 		expect(mapList.length).toBe(5);
+	});
+});
+
+describe("Tiebreaker maps vs picked maps index collision", () => {
+	test("generates a full map list when team picks and tiebreakers share list indices", () => {
+		const result = generateMapsResult({
+			count: 3,
+			teams: [
+				{ id: 1, maps: new MapPool([{ mode: "SZ", stageId: 4 }]) },
+				{ id: 2, maps: new MapPool([{ mode: "SZ", stageId: 5 }]) },
+			],
+			tiebreakerMaps: new MapPool([
+				{ mode: "SZ", stageId: 6 },
+				{ mode: "SZ", stageId: 7 },
+			]),
+			modesIncluded: ["SZ"],
+		});
+
+		const mapList = unwrap(result);
+
+		expect(mapList.length).toBe(3);
+		expect(mapList[2].source).toBe("TIEBREAKER");
 	});
 });

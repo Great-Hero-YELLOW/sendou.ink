@@ -9,7 +9,7 @@ import { enUS } from "date-fns/locale/en-US";
 import type { MonthYear } from "~/features/plus-voting/core";
 import type { LanguageCode } from "~/modules/i18n/config";
 import { logger } from "./logger";
-import type { DayMonthYear } from "./zod";
+import type { DayMonthYear } from "./schema";
 
 // en-US ships with date-fns core as the default locale, so it costs no extra bytes
 const LOCALE_LOADERS: Record<LanguageCode, () => Promise<Locale>> = {
@@ -195,29 +195,6 @@ export function weekNumberToDateRange({
  */
 export function isValidDate(date: Date) {
 	return !Number.isNaN(date.getTime());
-}
-
-/** Returns date as a string with the format YYYY-MM-DDThh:mm in user's time zone */
-export function dateToYearMonthDayHourMinuteString(date: Date) {
-	const copiedDate = new Date(date.getTime());
-
-	if (!isValidDate(copiedDate)) {
-		throw new Error("tried to format string from invalid date");
-	}
-
-	const year = copiedDate.getFullYear();
-	const month = copiedDate.getMonth() + 1;
-	const day = copiedDate.getDate();
-	const hour = copiedDate.getHours();
-	const minute = copiedDate.getMinutes();
-
-	return `${year}-${prefixZero(month)}-${prefixZero(day)}T${prefixZero(
-		hour,
-	)}:${prefixZero(minute)}`;
-}
-
-function prefixZero(number: number) {
-	return number < 10 ? `0${number}` : number;
 }
 
 export function getDateAtNextFullHour(date: Date) {

@@ -6,7 +6,7 @@ import { Input } from "~/components/Input";
 import { Label } from "~/components/Label";
 import { Main } from "~/components/Main";
 import type { Tables } from "~/db/tables";
-import { TournamentOverrideProvider } from "~/features/tournament/routes/to.$id";
+import { TournamentProvider } from "~/features/tournament/tournament-context";
 import type { Bracket as BracketType } from "~/features/tournament-bracket/core/Bracket";
 import * as Engine from "~/features/tournament-bracket/core/engine";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
@@ -72,7 +72,7 @@ export default function BracketTestLayout() {
 		isOrganizer: () => false,
 		streamingParticipantIds: [] as number[],
 		streams: [] as unknown[],
-		isLeagueDivision: false,
+		isLeague: false,
 	};
 
 	const mockBracket = {
@@ -181,7 +181,7 @@ export default function BracketTestLayout() {
 					</SendouSwitch>
 				</div>
 			</div>
-			<TournamentOverrideProvider
+			<TournamentProvider
 				tournament={mockTournament as unknown as TournamentClass}
 			>
 				<Outlet
@@ -189,12 +189,11 @@ export default function BracketTestLayout() {
 						tournament: mockTournament,
 						bracketExpanded,
 						setBracketExpanded,
-						hasChildTournaments: false,
 						preparedMaps: null,
 						bracket: mockBracket,
 					}}
 				/>
-			</TournamentOverrideProvider>
+			</TournamentProvider>
 		</Main>
 	);
 }

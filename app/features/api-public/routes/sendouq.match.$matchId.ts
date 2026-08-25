@@ -1,12 +1,13 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
+import * as SendouQMatch from "~/features/sendouq-match/core/SendouQMatch";
 import * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
 import { getFixedTForLanguage } from "~/modules/i18n/i18next.server";
 import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
-import { id } from "~/utils/zod";
+import { id } from "~/utils/schema";
 import type { GetSendouqMatchResponse, MapListMap } from "../schema";
 
-const paramsSchema = z.object({
+const paramsSchema = v.object({
 	matchId: id,
 });
 
@@ -20,15 +21,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 
 	const t = await getFixedTForLanguage("en", ["game-misc"]);
 
-	const userIdToRank = (userId: number) => {
-		const memento = match.memento;
-		if (!memento) return null;
+	const userIdToRank = (member: (typeof match.groupAlpha.members)[number]) => {
+		const tier = SendouQMatch.memberTier(member);
 
-		const userMemento = memento.users[userId];
-
-		return userMemento.skill && userMemento.skill !== "CALCULATING"
-			? userMemento.skill.tier
-			: null;
+		return tier && tier !== "CALCULATING" ? tier : null;
 	};
 
 	const score = match.mapList.reduce(
@@ -65,7 +61,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			score: score[0],
 			players: match.groupAlpha.members.map((member) => ({
 				userId: member.id,
-				rank: userIdToRank(member.id),
+				rank: userIdToRank(member),
 			})),
 		},
 		teamBravo: {
@@ -73,7 +69,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			score: score[1],
 			players: match.groupBravo.members.map((member) => ({
 				userId: member.id,
-				rank: userIdToRank(member.id),
+				rank: userIdToRank(member),
 			})),
 		},
 	};

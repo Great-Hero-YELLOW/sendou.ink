@@ -7,10 +7,8 @@ import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
 import { useUser } from "~/features/auth/core/user";
 import { TournamentStream } from "~/features/tournament/components/TournamentStream";
-import {
-	useTournament,
-	useTournamentVods,
-} from "~/features/tournament/routes/to.$id";
+import { useTournamentVods } from "~/features/tournament/routes/to.$id";
+import { useTournament } from "~/features/tournament/tournament-context";
 import { matchEndedEarly } from "~/features/tournament-bracket/core/engine";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
@@ -24,8 +22,7 @@ import type { Bracket } from "../../core/Bracket";
 import * as Deadline from "../../core/Deadline";
 import type { TournamentData } from "../../core/Tournament.server";
 import type { VodsByTournamentId } from "../../TournamentMatchVodRepository.server";
-import parentStyles from "../../tournament-bracket.module.css";
-import styles from "./bracket.module.css";
+import styles from "./Match.module.css";
 
 type LineType = "none" | "straight" | "curve-up" | "curve-down";
 
@@ -61,7 +58,7 @@ export function Match(props: MatchProps) {
 	}
 
 	return (
-		<div className={styles.matchWrapper}>
+		<div className={styles.matchWrapper} data-testid="match-wrapper">
 			<MatchHeader {...props} />
 			<MatchContent {...props}>
 				<MatchRow {...props} side={1} />
@@ -118,7 +115,7 @@ function MatchHeader({ match, type, roundNumber, group }: MatchProps) {
 
 	return (
 		<div className={styles.matchHeader}>
-			<div className={styles.matchHeaderBox}>
+			<div className={styles.matchHeaderBox} data-testid="match-header-box">
 				{prefix()}
 				{roundNumber}.{match.number}
 			</div>
@@ -311,7 +308,9 @@ function MatchRow({
 			>
 				{displayedName}
 			</div>{" "}
-			<div className={styles.matchScore}>{score()}</div>
+			<div className={styles.matchScore} data-testid="match-score">
+				{score()}
+			</div>
 		</div>
 	);
 }
@@ -339,7 +338,7 @@ function MatchStreams({ match }: Pick<MatchProps, "match">) {
 
 	if (streamsOfThisMatch.length === 0) {
 		return (
-			<div className={parentStyles.streamPopover}>
+			<div className={styles.streamPopover}>
 				After all there seems to be no streams of this match. Check the{" "}
 				<Link to={tournamentStreamsPage(tournament.ctx.id)}>streams page</Link>{" "}
 				for all the available streams.
@@ -349,7 +348,7 @@ function MatchStreams({ match }: Pick<MatchProps, "match">) {
 
 	return (
 		<div
-			className={clsx("stack md justify-center", parentStyles.streamPopover)}
+			className={clsx("stack md justify-center", styles.streamPopover)}
 			data-testid="stream-popover"
 		>
 			{streamsOfThisMatch.map((stream) => (
@@ -369,7 +368,7 @@ interface MatchVodsProps {
 
 function MatchVods({ vods }: MatchVodsProps) {
 	return (
-		<div className={parentStyles.vodGrid}>
+		<div className={styles.vodGrid}>
 			{vods.map((vod) => {
 				const user = vod.user;
 
@@ -380,7 +379,7 @@ function MatchVods({ vods }: MatchVodsProps) {
 						target="_blank"
 						rel="noopener noreferrer"
 					>
-						<span className={parentStyles.vodUser}>
+						<span className={styles.vodUser}>
 							{user ? (
 								<>
 									<Avatar size="xxs" user={user} />
@@ -390,9 +389,7 @@ function MatchVods({ vods }: MatchVodsProps) {
 								<span className="font-semi-bold">{vod.account}</span>
 							)}
 						</span>
-						<span
-							className={clsx("text-theme-secondary", parentStyles.vodTeamName)}
-						>
+						<span className={clsx("text-theme-secondary", styles.vodTeamName)}>
 							{user ? vod.teamName : null}
 						</span>
 						<span className="text-lighter stack horizontal xs items-center">
@@ -409,7 +406,7 @@ function MatchVods({ vods }: MatchVodsProps) {
 function MatchTimer({ match, bracket }: Pick<MatchProps, "match" | "bracket">) {
 	const tournament = useTournament();
 
-	if (tournament.isLeagueDivision) return null;
+	if (tournament.isLeague) return null;
 	if (!match.startedAt) return null;
 
 	const isOver = Boolean(match.winnerSide);
@@ -496,7 +493,11 @@ function MatchLine({ lineType, verticalExtend }: MatchLineProps) {
 		: undefined;
 
 	return (
-		<div className={clsx(styles.matchLineContainer, lineClass)} style={style}>
+		<div
+			className={clsx(styles.matchLineContainer, lineClass)}
+			style={style}
+			data-line-type={lineType}
+		>
 			{lineType === "curve-down" ? (
 				<div className={styles.matchLineConnectorDown} style={style} />
 			) : null}

@@ -3,10 +3,16 @@
 
 	& input:not([type="radio"], [type="checkbox"]),
 	& textarea,
-	& select,
-	& .react-aria-Group,
-	& .react-aria-Select button,
-	& .react-aria-DatePicker {
+	& select {
+		width: 100%;
+	}
+}
+
+/* the entity-search fields: their trigger button has to fill the field's width */
+.searchRoot {
+	width: 100%;
+
+	& button[class] {
 		width: 100%;
 	}
 }

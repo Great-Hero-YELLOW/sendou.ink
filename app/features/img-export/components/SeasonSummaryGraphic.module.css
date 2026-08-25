@@ -1,3 +1,14 @@
+/*
+:where() keeps the box base at zero specificity so the single-class variants
+below win regardless of which CSS chunk loads last
+*/
+:where(.box) {
+	padding: var(--s-2) var(--s-3);
+	background-color: var(--graphic-row-bg);
+	border: 1.5px solid var(--graphic-row-border);
+	border-radius: var(--radius-box);
+}
+
 .seasonBadge {
 	font-size: var(--font-md);
 	font-weight: var(--weight-extra);
@@ -55,13 +66,7 @@
 }
 
 .bestStageRow {
-	background-image:
-		linear-gradient(to right, var(--graphic-row-bg) 35%, transparent 80%),
-		var(--best-stage-banner);
-	background-origin: border-box;
-	background-position: right center;
-	background-size: cover;
-	background-repeat: no-repeat;
+	--stage-banner-fade: var(--graphic-row-bg);
 }
 
 .bestStageName {
@@ -87,16 +92,6 @@
 	stroke-width: 2.5;
 	stroke-linecap: round;
 	stroke-linejoin: round;
-}
-
-.chartAreaTop {
-	stop-color: var(--graphic-accent);
-	stop-opacity: 0.3;
-}
-
-.chartAreaBottom {
-	stop-color: var(--graphic-accent);
-	stop-opacity: 0;
 }
 
 .chartGridLine {

@@ -10,6 +10,7 @@ import { containerClassName, Main } from "~/components/Main";
 import { Placeholder } from "~/components/Placeholder";
 import { isMatchResultsScopedRevalidation } from "~/features/chat/revalidation-scope";
 import { useChatContext } from "~/features/chat/useChatContext";
+import { TournamentProvider } from "~/features/tournament/tournament-context";
 import { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import { useHydrated } from "~/hooks/useHydrated";
 import type { SendouRouteHandle } from "~/utils/remix.server";
@@ -71,26 +72,6 @@ export const handle: SendouRouteHandle = {
 	},
 };
 
-const TournamentContext = React.createContext<Tournament>(null!);
-
-/**
- * Overrides the tournament of the subtree, used by the views that load bracket match data
- * of their own on top of what the layout ships.
- */
-export function TournamentOverrideProvider({
-	tournament,
-	children,
-}: {
-	tournament: Tournament;
-	children: React.ReactNode;
-}) {
-	return (
-		<TournamentContext.Provider value={tournament}>
-			{children}
-		</TournamentContext.Provider>
-	);
-}
-
 export default function TournamentLayoutShell() {
 	const isHydrated = useHydrated();
 
@@ -130,26 +111,21 @@ export function TournamentLayout() {
 	}
 	const content = (
 		<>
-			<TournamentNav
-				tournament={tournament}
-				streamsCount={data.streamsCount}
-				hasChildTournaments={data.hasChildTournaments}
-			/>
-			<TournamentContext.Provider value={tournament}>
+			<TournamentNav tournament={tournament} streamsCount={data.streamsCount} />
+			<TournamentProvider tournament={tournament}>
 				<Outlet
 					context={
 						{
 							tournament,
 							bracketExpanded,
 							setBracketExpanded,
-							hasChildTournaments: data.hasChildTournaments,
 							friendCodes: data.friendCodes,
 							preparedMaps: data.preparedMaps,
 							vods: data.vods ?? [],
 						} satisfies TournamentContext
 					}
 				/>
-			</TournamentContext.Provider>
+			</TournamentProvider>
 		</>
 	);
 
@@ -166,26 +142,17 @@ type TournamentContext = {
 	tournament: Tournament;
 	bracketExpanded: boolean;
 	setBracketExpanded: (expanded: boolean) => void;
-	hasChildTournaments: boolean;
 	friendCode?: string;
 	friendCodes?: TournamentLoaderData["friendCodes"];
 	preparedMaps: TournamentLoaderData["preparedMaps"];
 	vods: NonNullable<TournamentLoaderData["vods"]>;
 };
 
-export function useTournament() {
-	return React.useContext(TournamentContext);
-}
-
 export function useBracketExpanded() {
 	const { bracketExpanded, setBracketExpanded } =
 		useOutletContext<TournamentContext>();
 
 	return { bracketExpanded, setBracketExpanded };
-}
-
-export function useHasChildTournaments() {
-	return useOutletContext<TournamentContext>().hasChildTournaments;
 }
 
 export function useTournamentFriendCodes() {

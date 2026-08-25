@@ -3,14 +3,14 @@ import * as BuildFactory from "~/db/seed/factories/BuildFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
 import * as XRankPlacementFactory from "~/db/seed/factories/XRankPlacementFactory";
 import { db } from "~/db/sql";
+import { buildToAbilityPoints } from "~/features/build-analyzer/core/ability-points";
 import type {
 	BuildAbilitiesTuple,
 	MainWeaponId,
 } from "~/modules/in-game-lists/types";
 import * as BuildRepository from "./BuildRepository.server";
 
-let owner: { id: number };
-let otherOwner: { id: number };
+const users = UserFactory.pool();
 
 // Splattershot (40) is the canonical base, Hero Shot Replica (45) is an alt skin
 // that should be folded to 40 by the canonical id mapping.
@@ -32,7 +32,7 @@ const EXPECTED_SIGNATURE = "ISM_38,ISS_19";
 const baseArgs = (
 	overrides: Partial<Parameters<typeof BuildRepository.insert>[0]> = {},
 ): Parameters<typeof BuildRepository.insert>[0] => ({
-	ownerId: owner.id,
+	ownerId: users.id(1),
 	title: "Test Build",
 	description: null,
 	modes: null,
@@ -92,7 +92,7 @@ const buildWeaponAbilitiesByBuildId = (buildId: number) =>
 
 describe("BuildRepository.insert — computeBuildData", () => {
 	beforeEach(async () => {
-		[owner, otherOwner] = await UserFactory.createMany(2);
+		await users.create(2);
 	});
 
 	describe("abilitiesSignature & ability sums", () => {
@@ -111,6 +111,26 @@ describe("BuildRepository.insert — computeBuildData", () => {
 			expect(sums).toHaveLength(2);
 			expect(sums).toContainEqual({ ability: "ISM", abilityPoints: 38 });
 			expect(sums).toContainEqual({ ability: "ISS", abilityPoints: 19 });
+		});
+
+		test("agrees with the analyzer's AP calculation for Ability Doubler builds", async () => {
+			const abilitiesWithDoubler: BuildAbilitiesTuple = [
+				["ISM", "ISM", "ISM", "ISM"],
+				["AD", "ISM", "ISM", "ISM"],
+				["SJ", "ISM", "ISM", "ISM"],
+			];
+			const { id } = await BuildRepository.insert(
+				baseArgs({ abilities: abilitiesWithDoubler }),
+			);
+
+			const sums = await buildAbilitySumsByBuildId(id);
+			const analyzerIsmAp =
+				buildToAbilityPoints(abilitiesWithDoubler).get("ISM");
+
+			expect(sums).toContainEqual({
+				ability: "ISM",
+				abilityPoints: analyzerIsmAp,
+			});
 		});
 
 		test("does not insert BuildAbilitySum rows for private builds", async () => {
@@ -210,7 +230,7 @@ describe("BuildRepository.insert — computeBuildData", () => {
 		});
 
 		test("subtracts 1 when the weapon is top500 for the owner", async () => {
-			await makeTop500(owner.id, SPLATTERSHOT);
+			await makeTop500(users.id(1), SPLATTERSHOT);
 
 			const { id } = await BuildRepository.insert(
 				baseArgs({ weaponSplIds: [SPLATTERSHOT, SPLATTERSHOT_NOUVEAU] }),
@@ -240,10 +260,10 @@ describe("BuildRepository.insert — computeBuildData", () => {
 	});
 
 	test("findAllByWeaponId.weapons[].isTop500 matches the sortValue formula", async () => {
-		await makeTop500(owner.id, SPLATTERSHOT);
+		await makeTop500(users.id(1), SPLATTERSHOT);
 
 		await createBuild({
-			ownerId: owner.id,
+			ownerId: users.id(1),
 			weaponSplIds: [SPLATTERSHOT, SPLATTERSHOT_NOUVEAU],
 		});
 
@@ -264,7 +284,7 @@ describe("BuildRepository.insert — computeBuildData", () => {
 
 	test("a multi-weapon build is returned by findAllByWeaponId for each of its weapons", async () => {
 		await createBuild({
-			ownerId: owner.id,
+			ownerId: users.id(1),
 			title: "Multi-weapon Build",
 			weaponSplIds: [SPLATTERSHOT, SPLATTERSHOT_NOUVEAU],
 		});
@@ -294,17 +314,17 @@ describe("BuildRepository.findAllPopularAbilitiesByWeaponId", () => {
 	];
 
 	beforeEach(async () => {
-		[owner, otherOwner] = await UserFactory.createMany(2);
+		await users.create(2);
 	});
 
 	test("counts each user at most once across signature buckets", async () => {
 		// Each user has two Splattershot builds with different signatures.
 		// Without per-user dedup, both users would inflate both buckets and
 		// the total count across rows would be 4 instead of <=2.
-		await createBuild({ ownerId: owner.id });
-		await createBuild({ ownerId: owner.id, abilities: SS_ABILITIES });
-		await createBuild({ ownerId: otherOwner.id });
-		await createBuild({ ownerId: otherOwner.id, abilities: SS_ABILITIES });
+		await createBuild({ ownerId: users.id(1) });
+		await createBuild({ ownerId: users.id(1), abilities: SS_ABILITIES });
+		await createBuild({ ownerId: users.id(2) });
+		await createBuild({ ownerId: users.id(2), abilities: SS_ABILITIES });
 
 		const rows =
 			await BuildRepository.findAllPopularAbilitiesByWeaponId(SPLATTERSHOT);
@@ -315,8 +335,8 @@ describe("BuildRepository.findAllPopularAbilitiesByWeaponId", () => {
 	});
 
 	test("only counts public builds", async () => {
-		await createBuild({ ownerId: owner.id });
-		await createBuild({ ownerId: otherOwner.id, isPrivate: 1 });
+		await createBuild({ ownerId: users.id(1) });
+		await createBuild({ ownerId: users.id(2), isPrivate: 1 });
 
 		const rows =
 			await BuildRepository.findAllPopularAbilitiesByWeaponId(SPLATTERSHOT);
@@ -326,9 +346,9 @@ describe("BuildRepository.findAllPopularAbilitiesByWeaponId", () => {
 	});
 
 	test("folds alt skins via canonicalWeaponSplId", async () => {
-		await createBuild({ ownerId: owner.id });
+		await createBuild({ ownerId: users.id(1) });
 		await createBuild({
-			ownerId: otherOwner.id,
+			ownerId: users.id(2),
 			weaponSplIds: [HERO_SHOT_REPLICA],
 		});
 

@@ -1,6 +1,8 @@
 import type { ActionFunction } from "react-router";
 import { redirect } from "react-router";
+import * as v from "valibot";
 import { requireUser } from "~/features/auth/core/user.server";
+import { requirePermission } from "~/modules/permissions/guards.server";
 import {
 	errorToastIfFalsy,
 	notFoundIfNullish,
@@ -8,10 +10,8 @@ import {
 } from "~/utils/remix.server";
 import { assertUnreachable } from "~/utils/types";
 import * as TeamRepository from "../TeamRepository.server";
-import {
-	teamParamsSchema,
-	teamProfilePageActionSchema,
-} from "../team-schemas.server";
+import { teamProfilePageActionSchema } from "../team-schemas";
+import { teamParamsSchema } from "../team-schemas.server";
 import { isTeamMember, isTeamOwner, resolveNewOwner } from "../team-utils";
 
 export const action: ActionFunction = async ({ request, params }) => {
@@ -21,7 +21,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 		schema: teamProfilePageActionSchema,
 	});
 
-	const { customUrl } = teamParamsSchema.parse(params);
+	const { customUrl } = v.parse(teamParamsSchema, params);
 	const team = notFoundIfNullish(
 		await TeamRepository.findByCustomUrl(customUrl),
 	);
@@ -55,10 +55,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 			break;
 		}
 		case "DELETE_TEAM": {
-			errorToastIfFalsy(
-				isTeamOwner({ user, team }) || user.roles.includes("ADMIN"),
-				"You are not the team owner",
-			);
+			requirePermission(team, "DELETE");
 
 			await TeamRepository.deleteById(team.id);
 			throw redirect("/");

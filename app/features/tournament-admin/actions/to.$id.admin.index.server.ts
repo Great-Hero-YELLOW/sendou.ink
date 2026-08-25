@@ -1,43 +1,37 @@
 import type { ActionFunction } from "react-router";
 import * as R from "remeda";
 import { db } from "~/db/sql";
-import { requireUser } from "~/features/auth/core/user.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
+import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import { endDroppedTeamMatches } from "~/features/tournament/tournament-utils.server";
 import * as BracketRepository from "~/features/tournament-bracket/BracketRepository.server";
+import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	clearTournamentDataCache,
-	tournamentFromDB,
+	requireTournamentOrganizer,
+	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { tournamentWebsocketRoom } from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
 import { tournamentMatchWebsocketRoom } from "~/features/tournament-match/tournament-match-utils";
 import invariant from "~/utils/invariant";
 import { logger } from "~/utils/logger";
-import {
-	errorToastIfFalsy,
-	parseParams,
-	parseRequestPayload,
-} from "~/utils/remix.server";
+import { errorToastIfFalsy, parseRequestPayload } from "~/utils/remix.server";
 import { assertUnreachable } from "~/utils/types";
-import { idObject } from "../../../utils/zod";
-import { adminTeamsActionSchema } from "../tournament-admin-schemas.server";
-import { requireTournamentOrganizer } from "../tournament-admin-utils.server";
+import { adminTeamsActionSchema } from "../tournament-admin-schemas";
 
 export const action: ActionFunction = async ({ request, params }) => {
-	const user = requireUser();
 	const data = await parseRequestPayload({
 		request,
 		schema: adminTeamsActionSchema,
 	});
 
-	const { id: tournamentId } = parseParams({
+	const { tournament, tournamentId, user } = await tournamentFromParams(
 		params,
-		schema: idObject,
-	});
-	const tournament = await tournamentFromDB({ tournamentId, user });
+		{ for: "action" },
+	);
 
 	switch (data._action) {
 		case "CHECK_IN": {
@@ -62,6 +56,15 @@ export const action: ActionFunction = async ({ request, params }) => {
 				// no sources = regular check in
 				bracketIdx: bracket.sources ? data.bracketIdx : undefined,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
+
+			if (!bracket.sources) {
+				await resolveNotifications({
+					userIds: team.memberUserIds,
+					type: "TO_CHECK_IN_OPENED",
+					meta: { tournamentId },
+				});
+			}
 
 			break;
 		}
@@ -83,6 +86,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 				// no sources = regular check in
 				bracketIdx: !bracket.sources ? null : data.bracketIdx,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 			logger.info(
 				`Checked out: tournament team id: ${data.teamId} - user id: ${user.id} - tournament id: ${tournamentId} - bracket idx: ${data.bracketIdx}`,
 			);
@@ -110,12 +114,8 @@ export const action: ActionFunction = async ({ request, params }) => {
 					type: "participant",
 					userId,
 				});
-
-				ShowcaseTournaments.updateCachedTournamentTeamCount({
-					tournamentId,
-					newTeamCount: tournament.ctx.teams.length - 1,
-				});
 			}
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			break;
 		}
@@ -162,7 +162,7 @@ async function dropTeamOut({
 	tournament,
 	teamId,
 }: {
-	tournament: Awaited<ReturnType<typeof tournamentFromDB>>;
+	tournament: Tournament;
 	teamId: number;
 }) {
 	const droppingTeam = tournament.teamById(teamId);

@@ -3,8 +3,8 @@ import type {
 	LoaderFunctionArgs,
 	Params,
 } from "react-router";
+import type * as v from "valibot";
 import { expect } from "vitest";
-import type { z } from "zod";
 import { REGULAR_USER_TEST_ID } from "~/db/seed/constants";
 import { actAs } from "~/db/seed/core/actAs";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
@@ -14,7 +14,15 @@ import {
 	getUserFromRequest,
 	userAsyncLocalStorage,
 } from "~/features/auth/core/user-context.server";
+import type { AnySchema } from "~/utils/schema";
 import { logger } from "./logger";
+
+/**
+ * The user a wrapped action/loader call runs as: one of the pinned seed users,
+ * or any user's id — scenario tests' users are participants and staff the test
+ * itself created, not fixed ids.
+ */
+export type TestUser = "admin" | "regular" | number;
 
 export function arrayContainsSameItems<T>(arr1: T[], arr2: T[]) {
 	return (
@@ -53,7 +61,7 @@ export function withNoUser<T>(fn: () => T): T {
  *
  * const someAction = wrappedAction<typeof someActionSchema>({ action });
  */
-export function wrappedAction<T extends z.ZodTypeAny>({
+export function wrappedAction<T extends AnySchema>({
 	action,
 	/** Is this action submitted as json (via SendouForm) */
 	isJsonSubmission = false,
@@ -62,11 +70,8 @@ export function wrappedAction<T extends z.ZodTypeAny>({
 	isJsonSubmission?: boolean;
 }) {
 	return async (
-		args: z.infer<T>,
-		{
-			user,
-			params = {},
-		}: { user?: "admin" | "regular"; params?: Params<string> } = {},
+		args: v.InferOutput<T>,
+		{ user, params = {} }: { user?: TestUser; params?: Params<string> } = {},
 	) => {
 		const body = isJsonSubmission
 			? JSON.stringify(args)
@@ -126,11 +131,14 @@ export function wrappedLoader<T>({
 	return async ({
 		user,
 		params = {},
+		url = "/path",
 	}: {
-		user?: "admin" | "regular";
+		user?: TestUser;
 		params?: Params<string>;
+		/** Path with its search params, built with the route's search params definition. */
+		url?: string;
 	} = {}) => {
-		const request = new Request("http://app.com/path", {
+		const request = new Request(new URL(url, "http://app.com"), {
 			method: "GET",
 			headers: [
 				...(await authHeader(user)),
@@ -182,14 +190,18 @@ export function assertResponseErrored(response: Response, message?: string) {
 	}
 }
 
-async function authHeader(
-	user?: "admin" | "regular",
-): Promise<[string, string][]> {
-	if (!user) return [];
+async function authHeader(user?: TestUser): Promise<[string, string][]> {
+	if (user === undefined) return [];
 
 	const session = await authSessionStorage.getSession();
 
-	session.set(SESSION_KEY, user === "admin" ? ADMIN_ID : REGULAR_USER_TEST_ID);
+	session.set(SESSION_KEY, testUserId(user));
 
 	return [["Cookie", await authSessionStorage.commitSession(session)]];
+}
+
+function testUserId(user: Exclude<TestUser, undefined>): number {
+	if (typeof user === "number") return user;
+
+	return user === "admin" ? ADMIN_ID : REGULAR_USER_TEST_ID;
 }

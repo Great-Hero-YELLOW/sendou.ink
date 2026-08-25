@@ -1,5 +1,4 @@
 import { sql } from "kysely";
-import { jsonArrayFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { Tables } from "~/db/tables";
@@ -18,6 +17,7 @@ import {
 	type CommonUser,
 	commonUserJsonObject,
 	commonUserSelect,
+	jsonArrayFrom,
 } from "~/utils/kysely.server";
 import { VODS_PAGE_BATCH_SIZE } from "./vods-constants";
 import type { VideoBeingAdded, Vod } from "./vods-types";
@@ -210,10 +210,19 @@ export async function findVodById(id: Tables["Video"]["id"]) {
 
 		const matches = await videoMatchQuery.execute();
 
+		const pov = resolvePov(matches);
+		const povUserId = typeof pov === "string" ? undefined : pov?.id;
+
 		return {
 			...video,
-			pov: resolvePov(matches),
+			pov,
 			matches: R.map(matches, R.omit(["players", "playerNames"])),
+			permissions: {
+				EDIT:
+					povUserId === undefined
+						? [video.submitterUserId]
+						: [video.submitterUserId, povUserId],
+			},
 		};
 	}
 	return null;
@@ -237,17 +246,25 @@ function resolvePov(
 
 export async function update(
 	args: VideoBeingAdded & {
-		submitterUserId: number;
 		isValidated: boolean;
 		id: number;
 	},
 ) {
-	return insert(args);
+	return save(args);
 }
 
 export async function insert(
 	args: VideoBeingAdded & {
 		submitterUserId: number;
+		isValidated: boolean;
+	},
+) {
+	return save(args);
+}
+
+async function save(
+	args: VideoBeingAdded & {
+		submitterUserId?: number;
 		isValidated: boolean;
 		id?: number;
 	},
@@ -262,7 +279,6 @@ export async function insert(
 			youtubePublishedAt: dayMonthYearToDatabaseTimestamp(args.date),
 			eventId: args.eventId ?? null,
 			youtubeId,
-			submitterUserId: args.submitterUserId,
 			validatedAt: args.isValidated
 				? dateToDatabaseTimestamp(new Date())
 				: null,
@@ -273,6 +289,7 @@ export async function insert(
 				.where("videoId", "=", args.id)
 				.execute();
 
+			// editing keeps the video's original submitter
 			await trx
 				.updateTable("UnvalidatedVideo")
 				.set(video)
@@ -280,9 +297,13 @@ export async function insert(
 				.execute();
 			videoId = args.id;
 		} else {
+			invariant(
+				typeof args.submitterUserId === "number",
+				"Submitter is required to add a video",
+			);
 			const result = await trx
 				.insertInto("UnvalidatedVideo")
-				.values(video)
+				.values({ ...video, submitterUserId: args.submitterUserId })
 				.returning("UnvalidatedVideo.id")
 				.executeTakeFirstOrThrow();
 			videoId = result.id;

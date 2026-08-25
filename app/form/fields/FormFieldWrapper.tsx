@@ -67,6 +67,8 @@ interface FormFieldWrapperProps {
 	id: string;
 	name?: string;
 	label?: string;
+	/** Extra element rendered next to the label, e.g. an `<InfoPopover />` explaining the field's syntax. */
+	labelPopover?: React.ReactNode;
 	required?: boolean;
 	error?: string;
 	bottomText?: string;
@@ -78,6 +80,7 @@ export function FormFieldWrapper({
 	id,
 	name,
 	label,
+	labelPopover,
 	required,
 	error,
 	bottomText,
@@ -86,22 +89,47 @@ export function FormFieldWrapper({
 }: FormFieldWrapperProps) {
 	const { translatedLabel } = useTranslatedTexts({ label });
 
+	const labelElement = translatedLabel ? (
+		<Label
+			htmlFor={id}
+			required={required}
+			valueLimits={valueLimits}
+			spaced={false}
+		>
+			{translatedLabel}
+		</Label>
+	) : null;
+
 	return (
 		<div className={styles.root}>
 			<div className="stack xs">
-				{translatedLabel ? (
-					<Label
-						htmlFor={id}
-						required={required}
-						valueLimits={valueLimits}
-						spaced={false}
-					>
-						{translatedLabel}
-					</Label>
-				) : null}
+				{labelElement && labelPopover ? (
+					<div className="stack horizontal xs items-center">
+						{labelElement}
+						{labelPopover}
+					</div>
+				) : (
+					labelElement
+				)}
 				{children}
 				<FormFieldMessages name={name} error={error} bottomText={bottomText} />
 			</div>
+		</div>
+	);
+}
+
+/**
+ * Wrapper for the entity-search fields (user, team, tournament), which render
+ * their own label through the search component instead of taking one here.
+ */
+export function SearchFormFieldWrapper({
+	children,
+}: {
+	children: React.ReactNode;
+}) {
+	return (
+		<div className={styles.searchRoot}>
+			<div className="stack xs">{children}</div>
 		</div>
 	);
 }

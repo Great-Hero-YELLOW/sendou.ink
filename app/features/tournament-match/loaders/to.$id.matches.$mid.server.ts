@@ -1,8 +1,8 @@
 import cachified from "@epic-web/cachified";
 import type { LoaderFunctionArgs } from "react-router";
-import { getUser } from "~/features/auth/core/user.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import { chatAccessible } from "~/features/chat/chat-utils";
+import * as ScannerIngestRepository from "~/features/scanner-ingest/ScannerIngestRepository.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
@@ -13,11 +13,10 @@ import {
 import { matchEndedEarly } from "~/features/tournament-bracket/core/engine";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import {
-	requireTournamentVisible,
-	tournamentFromDBCached,
+	tournamentFromParams,
 	tournamentTeamsFullCached,
 } from "~/features/tournament-bracket/core/Tournament.server";
-import { matchPageParamsSchema } from "~/features/tournament-bracket/tournament-bracket-schemas.server";
+import { matchPageParamsSchema } from "~/features/tournament-bracket/tournament-bracket-schemas";
 import { tournamentTeamToActiveRosterUserIds } from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
@@ -35,16 +34,14 @@ import * as TournamentMatchRepository from "../TournamentMatchRepository.server"
 export type TournamentMatchLoaderData = SerializeFrom<typeof loader>;
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
-	const { mid: matchId, id: tournamentId } = parseParams({
+	const { mid: matchId } = parseParams({
 		params,
 		schema: matchPageParamsSchema,
 	});
-	const user = getUser();
-	const tournament = await tournamentFromDBCached({
-		tournamentId,
-		user: undefined,
-	});
-	requireTournamentVisible({ ctx: tournament.ctx, user });
+	const { tournament, tournamentId, user } = await tournamentFromParams(
+		params,
+		{ for: "view" },
+	);
 
 	const teamsFull = await tournamentTeamsFullCached({ tournamentId, user });
 	const teamFullById = (tournamentTeamId: number) =>
@@ -71,6 +68,9 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 
 	const reportedWeapons =
 		await ReportedWeaponRepository.findByTournamentMatchId(matchId);
+
+	const ingestedScoreboards =
+		await ScannerIngestRepository.findScoreboardsByTournamentMatchId(matchId);
 
 	const matchIsOver = Boolean(match.winnerSide);
 
@@ -143,6 +143,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 							match.mapPickingStyle !== "TO"
 								? await TournamentTeamRepository.findRecentlyPlayedMapsByIds({
 										teamIds: [match.opponentOne.id, match.opponentTwo.id],
+										excludeMatchId: matchId,
 									}).catch((error) => {
 										logger.error("Failed to fetch recently played maps", error);
 										return [];
@@ -196,7 +197,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			url: tournamentMatchPage({ tournamentId, matchId }),
 			imageUrl: tournament.ctx.logoUrl,
 			participantUserIds: playerIds,
-			expiresAfter: tournament.isLeagueDivision ? { days: 30 } : { hours: 2 },
+			expiresAfter: tournament.isLeague ? { days: 30 } : { hours: 2 },
 		});
 	}
 
@@ -210,7 +211,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		tournament.ctx.isFinalized && !isSiteStaff && !isTournamentStaff
 			? true
 			: !chatAccessible({
-					expiresAfterDays: tournament.isLeagueDivision ? 30 : 7,
+					expiresAfterDays: tournament.isLeague ? 30 : 7,
 					comparedTo: tournament.ctx.startsAt,
 				});
 
@@ -238,7 +239,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		: null;
 
 	return {
-		...(await UserCardRepository.findAllByUserIds({
+		...(await UserCardRepository.findAllByUserIdsCached({
 			userIds: match.players.map((p) => p.id),
 			include: {
 				friendCode: isParticipant || isSiteStaff || isTournamentStaff,
@@ -251,6 +252,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		},
 		results,
 		reportedWeapons,
+		ingestedScoreboards,
 		mapList,
 		teams: [match.opponentOne?.id, match.opponentTwo?.id].flatMap(
 			(tournamentTeamId) => {

@@ -16,7 +16,6 @@ export const tournamentCtxTeam = (
 		startingBracketIdx: null,
 		abDivision: null,
 		hasMapPool: false,
-		inviteCode: null,
 		memberUserIds: [],
 		ownerUserId: null,
 		activeRosterUserIds: [],
@@ -63,8 +62,6 @@ export const testTournament = ({
 		organization: null,
 		tier: null,
 		tentativeTier: null,
-		parentTournamentId: null,
-		parentTournamentName: null,
 		hasRules: false,
 		logoUrl: "/test.avif",
 		discordUrl: null,
@@ -89,6 +86,13 @@ export const testTournament = ({
 			],
 		},
 		castedMatchesInfo: null,
+		permissions: {
+			ADMIN: [1],
+			ORGANIZE: [1],
+			MANAGE_MATCHES: [1],
+			EDIT_EVENT_INFO: [1],
+			EDIT_IN_GAME_NAMES: [],
+		},
 		teams: nTeams(participant.length, Math.min(...participant)),
 		author: {
 			customUrl: null,
@@ -272,6 +276,40 @@ export const progressions = {
 			],
 		},
 	],
+	league: [
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+			name: "Division 1",
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Division 1 Playoffs",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [1, 2],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+			name: "Division 2",
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Division 2 Playoffs",
+			sources: [
+				{
+					bracketIdx: 2,
+					placements: [1, 2],
+				},
+			],
+		},
+	],
 	swissOneGroup: [
 		{
 			...DEFAULT_PROGRESSION_ARGS,
@@ -331,6 +369,169 @@ export const progressions = {
 				{
 					bracketIdx: 0,
 					placements: [-1],
+				},
+			],
+		},
+	],
+	multiSourceTopCut: [
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Redemption",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [3, 4],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Top Cut",
+			sources: [
+				{
+					bracketIdx: 1,
+					placements: [1, 2],
+				},
+				{
+					bracketIdx: 0,
+					placements: [1, 2],
+				},
+			],
+		},
+	],
+	multiSourceTopCutWithConsolation: [
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Redemption",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [3, 4],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Top Cut",
+			sources: [
+				{
+					bracketIdx: 1,
+					placements: [1, 2],
+				},
+				{
+					bracketIdx: 0,
+					placements: [1, 2],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Consolation",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [5, 6, 7, 8],
+				},
+			],
+		},
+	],
+	poolsToBracketsViaIntermediateBrackets: [
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+			name: "Day 1 Pools",
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Redemption",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [2, 3, 4],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Alpha",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [1],
+				},
+				{
+					bracketIdx: 1,
+					placements: [1, 2, 3, 4, 5, 6, 7, 8],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Beta",
+			sources: [
+				{
+					bracketIdx: 1,
+					placements: [9, 10, 11, 12],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Gamma",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [5, 6],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Delta",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [7, 8],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "round_robin",
+			name: "Epsilon Seeding",
+			sources: [
+				{
+					bracketIdx: 0,
+					placements: [9, 10, 11],
+				},
+			],
+		},
+		{
+			...DEFAULT_PROGRESSION_ARGS,
+			type: "single_elimination",
+			name: "Epsilon",
+			sources: [
+				{
+					bracketIdx: 6,
+					placements: [1, 2, 3, 4],
 				},
 			],
 		},

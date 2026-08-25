@@ -20,6 +20,7 @@ import { TwitchIcon } from "~/components/icons/Twitch";
 import { YouTubeIcon } from "~/components/icons/YouTube";
 import { useUser } from "~/features/auth/core/user";
 import { BadgeDisplay } from "~/features/badges/components/BadgeDisplay";
+import { topSearchPlayerPage } from "~/features/top-search/top-search-urls";
 import { TrophyDisplay } from "~/features/trophies/components/TrophyDisplay";
 import { UserCard } from "~/features/user-card/components/UserCard";
 import { modesShort } from "~/modules/in-game-lists/modes";
@@ -28,21 +29,14 @@ import invariant from "~/utils/invariant";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { rawSensToString } from "~/utils/strings";
 import { assertUnreachable } from "~/utils/types";
-import {
-	bskyUrl,
-	modeImageUrl,
-	navIconUrl,
-	teamPage,
-	topSearchPlayerPage,
-} from "~/utils/urls";
+import { bskyUrl, modeImageUrl, navIconUrl, teamPage } from "~/utils/urls";
 import { MutualFriends } from "../components/MutualFriends";
 import type { UserPageNavItem } from "../components/UserPageIconNav";
 import { UserPageIconNav } from "../components/UserPageIconNav";
 import { Widget } from "../components/Widget";
 import { loader } from "../loaders/u.$identifier.index.server";
 import type { UserPageLoaderData } from "../loaders/u.$identifier.server";
-import styles from "../user-page.module.css";
-import newStyles from "./u.$identifier.module.css";
+import styles from "./u.$identifier.index.module.css";
 
 export { loader };
 
@@ -90,15 +84,15 @@ function NewUserInfoPage() {
 	const isOwnPage = layoutData.user.id === user?.id;
 
 	return (
-		<div className={newStyles.container}>
+		<div className={styles.container}>
 			<div className="stack sm">
-				<div className={newStyles.header}>
+				<div className={styles.header}>
 					<UserCard userId={layoutData.user.id}>
 						<Avatar user={layoutData.user} size="xmd" loading="eager" />
 					</UserCard>
-					<div className={newStyles.userInfo}>
-						<div className={newStyles.nameGroup}>
-							<h1 className={newStyles.username}>
+					<div className={styles.userInfo}>
+						<div className={styles.nameGroup}>
+							<h1 className={styles.username}>
 								<UserCard userId={layoutData.user.id}>
 									{layoutData.user.username}
 								</UserCard>
@@ -112,14 +106,14 @@ function NewUserInfoPage() {
 							/>
 						</div>
 					</div>
-					<div className={newStyles.desktopIconNav}>
+					<div className={styles.desktopIconNav}>
 						<UserPageIconNav items={navItems} />
 					</div>
 				</div>
 				<MutualFriends mutualFriends={layoutData.mutualFriends} />
 			</div>
 			{isOwnPage ? (
-				<div className={newStyles.editButtons}>
+				<div className={styles.editButtons}>
 					<LinkButton
 						to={href("/u/:identifier/edit-widgets", {
 							identifier:
@@ -145,29 +139,29 @@ function NewUserInfoPage() {
 				</div>
 			) : null}
 
-			<div className={newStyles.mobileIconNav}>
+			<div className={styles.mobileIconNav}>
 				<UserPageIconNav items={navItems} />
 			</div>
 
-			<div className={clsx(newStyles.sideCarousel, "scrollbar")}>
+			<div className={clsx(styles.sideCarousel, "scrollbar")}>
 				{sideWidgets.map((widget) => (
 					<Widget key={widget.id} widget={widget} user={layoutData.user} />
 				))}
 			</div>
 
-			<div className={newStyles.mainStack}>
+			<div className={styles.mainStack}>
 				{mainWidgets.map((widget) => (
 					<Widget key={widget.id} widget={widget} user={layoutData.user} />
 				))}
 			</div>
 
-			<div className={newStyles.grid}>
-				<div className={newStyles.main}>
+			<div className={styles.grid}>
+				<div className={styles.main}>
 					{mainWidgets.map((widget) => (
 						<Widget key={widget.id} widget={widget} user={layoutData.user} />
 					))}
 				</div>
-				<div className={newStyles.side}>
+				<div className={styles.side}>
 					{sideWidgets.map((widget) => (
 						<Widget key={widget.id} widget={widget} user={layoutData.user} />
 					))}
@@ -188,7 +182,7 @@ export function OldUserInfoPage() {
 	}
 
 	return (
-		<div className={styles.container}>
+		<div className={styles.oldPageContainer}>
 			<div className="stack sm">
 				<div className={styles.avatarContainer}>
 					<UserCard userId={layoutData.user.id}>
@@ -550,7 +544,7 @@ function ProfileSubtitle({
 	if (parts.length === 0) return null;
 
 	return (
-		<div className={newStyles.subtitle}>
+		<div className={styles.subtitle}>
 			{parts.map((part, i) => (
 				<span key={i} className="stack horizontal xs items-center">
 					{i > 0 ? <span>·</span> : null}

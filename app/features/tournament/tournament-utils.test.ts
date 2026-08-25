@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, test } from "vitest";
 import type { CastedMatchesInfo } from "~/db/tables-json";
 import * as Seasons from "../mmr/core/Seasons";
 import type { ParsedBracket } from "../tournament-bracket/core/Progression";
@@ -16,7 +16,7 @@ import {
 	updatedCastedMatchesInfo,
 } from "./tournament-utils";
 
-const createTeam = (
+const teamForOrdering = (
 	id: number,
 	options: {
 		seed?: number | null;
@@ -39,170 +39,147 @@ const createTeam = (
 
 const MIN_MEMBERS = 4;
 
-describe("compareTeamsForOrdering", () => {
-	describe("full teams priority", () => {
-		it("places full teams before not-full teams", () => {
-			const fullTeam = createTeam(1, { members: 4 });
-			const notFullTeam = createTeam(2, { members: 3 });
-
-			const result = compareTeamsForOrdering(
-				fullTeam,
-				notFullTeam,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("places not-full teams after full teams", () => {
-			const notFullTeam = createTeam(1, { members: 3 });
-			const fullTeam = createTeam(2, { members: 4 });
-
-			const result = compareTeamsForOrdering(
-				notFullTeam,
-				fullTeam,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeGreaterThan(0);
-		});
-	});
-
-	describe("seed priority", () => {
-		it("orders by seed when both have seeds", () => {
-			const team1 = createTeam(1, { seed: 1 });
-			const team2 = createTeam(2, { seed: 2 });
-
-			const result = compareTeamsForOrdering(team1, team2, MIN_MEMBERS);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("places seeded team before unseeded team when unseeded has no skill", () => {
-			const seededTeam = createTeam(1, { seed: 5 });
-			const unseededTeam = createTeam(2);
-
-			const result = compareTeamsForOrdering(
-				seededTeam,
-				unseededTeam,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("compares by skill ordinal when both full teams have skill but only one has seed", () => {
-			const seededLowSkill = createTeam(1, {
-				seed: 5,
-				avgSeedingSkillOrdinal: 100,
-			});
-			const unseededHighSkill = createTeam(2, { avgSeedingSkillOrdinal: 300 });
-
-			const result = compareTeamsForOrdering(
-				seededLowSkill,
-				unseededHighSkill,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeGreaterThan(0);
-		});
-
-		it("places seeded team first when only seeded team has skill ordinal", () => {
-			const seededWithSkill = createTeam(1, {
-				seed: 5,
-				avgSeedingSkillOrdinal: 100,
-			});
-			const unseededNoSkill = createTeam(2);
-
-			const result = compareTeamsForOrdering(
-				seededWithSkill,
-				unseededNoSkill,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("places seeded team first when not-full team has higher skill", () => {
-			const seededFull = createTeam(1, {
-				seed: 5,
-				avgSeedingSkillOrdinal: 100,
-			});
-			const unseededNotFull = createTeam(2, {
-				members: 3,
+/**
+ * Every ordering rule, stated as the order callers actually see: what
+ * `sortTeamsBySeeding` produces. `compareTeamsForOrdering` is only checked
+ * against its antisymmetry contract over the same rows.
+ */
+const ORDERING_RULES: {
+	rule: string;
+	teams: TeamForOrdering[];
+	expectedIds: number[];
+}[] = [
+	{
+		rule: "the starting bracket decides before skill does",
+		teams: [
+			teamForOrdering(1, {
+				startingBracketIdx: 1,
 				avgSeedingSkillOrdinal: 500,
-			});
-
-			const result = compareTeamsForOrdering(
-				seededFull,
-				unseededNotFull,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeLessThan(0);
-		});
-	});
-
-	describe("skill ordinal priority", () => {
-		it("orders by skill ordinal when no seeds (higher skill first)", () => {
-			const highSkill = createTeam(1, { avgSeedingSkillOrdinal: 300 });
-			const lowSkill = createTeam(2, { avgSeedingSkillOrdinal: 100 });
-
-			const result = compareTeamsForOrdering(highSkill, lowSkill, MIN_MEMBERS);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("places team with skill before team without skill", () => {
-			const withSkill = createTeam(1, { avgSeedingSkillOrdinal: 100 });
-			const withoutSkill = createTeam(2, { avgSeedingSkillOrdinal: null });
-
-			const result = compareTeamsForOrdering(
-				withSkill,
-				withoutSkill,
-				MIN_MEMBERS,
-			);
-
-			expect(result).toBeLessThan(0);
-		});
-
-		it("places rated team before unrated team even when unrated was created earlier", () => {
-			const rated = createTeam(1, {
+			}),
+			teamForOrdering(2, {
+				startingBracketIdx: 0,
 				avgSeedingSkillOrdinal: 100,
-				createdAt: 200,
-			});
-			const unrated = createTeam(2, {
-				avgSeedingSkillOrdinal: null,
-				createdAt: 100,
-			});
+			}),
+			teamForOrdering(3, {
+				startingBracketIdx: 0,
+				avgSeedingSkillOrdinal: 200,
+			}),
+		],
+		expectedIds: [3, 2, 1],
+	},
+	{
+		rule: "an unset starting bracket is the same as bracket 0",
+		teams: [
+			teamForOrdering(1, { seed: 1, startingBracketIdx: null }),
+			teamForOrdering(2, { seed: 2, startingBracketIdx: 0 }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "two seeded teams go in seed order",
+		teams: [teamForOrdering(1, { seed: 1 }), teamForOrdering(2, { seed: 2 })],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "seeded teams keep their order while an unseeded one slots in by skill",
+		teams: [
+			teamForOrdering(1, { seed: 2 }),
+			teamForOrdering(2, { seed: 1 }),
+			teamForOrdering(3, { avgSeedingSkillOrdinal: 500 }),
+		],
+		expectedIds: [3, 2, 1],
+	},
+	{
+		rule: "a full team goes before a not-full one",
+		teams: [
+			teamForOrdering(1, { members: 4 }),
+			teamForOrdering(2, { members: 3 }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "a seeded team goes before an unseeded one of equal skill",
+		teams: [teamForOrdering(1, { seed: 5 }), teamForOrdering(2)],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "an unseeded team of higher skill goes before a lower-skilled seeded one",
+		teams: [
+			teamForOrdering(1, { seed: 5, avgSeedingSkillOrdinal: 100 }),
+			teamForOrdering(2, { avgSeedingSkillOrdinal: 300 }),
+		],
+		expectedIds: [2, 1],
+	},
+	{
+		rule: "a seeded team goes before a not-full unseeded one however high its skill",
+		teams: [
+			teamForOrdering(1, { seed: 5, avgSeedingSkillOrdinal: 100 }),
+			teamForOrdering(2, { members: 3, avgSeedingSkillOrdinal: 500 }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "higher skill goes first when neither team is seeded",
+		teams: [
+			teamForOrdering(1, { avgSeedingSkillOrdinal: 300 }),
+			teamForOrdering(2, { avgSeedingSkillOrdinal: 100 }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "a rated team goes before an unrated one",
+		teams: [
+			teamForOrdering(1, { avgSeedingSkillOrdinal: 100 }),
+			teamForOrdering(2, { avgSeedingSkillOrdinal: null }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "a rated team goes before an unrated one that registered earlier",
+		teams: [
+			teamForOrdering(2, { avgSeedingSkillOrdinal: null, createdAt: 100 }),
+			teamForOrdering(1, { avgSeedingSkillOrdinal: 100, createdAt: 200 }),
+		],
+		expectedIds: [1, 2],
+	},
+	{
+		rule: "registration time breaks a tie",
+		teams: [
+			teamForOrdering(1, { createdAt: 100 }),
+			teamForOrdering(2, { createdAt: 200 }),
+		],
+		expectedIds: [1, 2],
+	},
+];
 
-			const sorted = sortTeamsBySeeding([unrated, rated], MIN_MEMBERS);
-
-			expect(sorted.map((t) => t.id)).toEqual([1, 2]);
-		});
-	});
-
-	describe("createdAt tiebreaker", () => {
-		it("orders by createdAt when all else is equal", () => {
-			const olderTeam = createTeam(1, { createdAt: 100 });
-			const newerTeam = createTeam(2, { createdAt: 200 });
-
-			const result = compareTeamsForOrdering(olderTeam, newerTeam, MIN_MEMBERS);
-
-			expect(result).toBeLessThan(0);
-		});
+describe("compareTeamsForOrdering", () => {
+	test.each(ORDERING_RULES)("is antisymmetric where $rule", ({ teams }) => {
+		for (const a of teams) {
+			for (const b of teams) {
+				expect(
+					Math.sign(compareTeamsForOrdering(a, b, MIN_MEMBERS)) +
+						Math.sign(compareTeamsForOrdering(b, a, MIN_MEMBERS)),
+				).toBe(0);
+			}
+		}
 	});
 });
 
 describe("sortTeamsBySeeding", () => {
-	it("sorts teams correctly with mixed properties", () => {
+	test.each(ORDERING_RULES)("$rule", ({ teams, expectedIds }) => {
+		const sorted = sortTeamsBySeeding(teams, MIN_MEMBERS);
+
+		expect(sorted.map((team) => team.id)).toEqual(expectedIds);
+	});
+
+	test("sorts teams correctly with mixed properties", () => {
 		const teams = [
-			createTeam(1, { members: 3, avgSeedingSkillOrdinal: 500 }),
-			createTeam(2, { seed: 2 }),
-			createTeam(3, { avgSeedingSkillOrdinal: 300 }),
-			createTeam(4, { seed: 1 }),
-			createTeam(5, { avgSeedingSkillOrdinal: 400 }),
-			createTeam(6, { members: 3 }),
+			teamForOrdering(1, { members: 3, avgSeedingSkillOrdinal: 500 }),
+			teamForOrdering(2, { seed: 2 }),
+			teamForOrdering(3, { avgSeedingSkillOrdinal: 300 }),
+			teamForOrdering(4, { seed: 1 }),
+			teamForOrdering(5, { avgSeedingSkillOrdinal: 400 }),
+			teamForOrdering(6, { members: 3 }),
 		];
 
 		const sorted = sortTeamsBySeeding(teams, MIN_MEMBERS);
@@ -210,10 +187,69 @@ describe("sortTeamsBySeeding", () => {
 		expect(sorted.map((t) => t.id)).toEqual([5, 3, 4, 2, 1, 6]);
 	});
 
-	it("does not mutate original array", () => {
+	test("keeps manually seeded teams in seed order when unseeded teams are present", () => {
+		const seededSkills = [31, 18, 20, 37, 2, 46, 19, 37];
+		const seededTeams = seededSkills.map((skill, i) =>
+			teamForOrdering(i + 1, { seed: i + 1, avgSeedingSkillOrdinal: skill }),
+		);
+		// input mirrors the DB query order (seed ASC = NULL seeds first in SQLite)
 		const teams = [
-			createTeam(2, { avgSeedingSkillOrdinal: 100 }),
-			createTeam(1, { avgSeedingSkillOrdinal: 200 }),
+			teamForOrdering(9, { avgSeedingSkillOrdinal: 40 }),
+			teamForOrdering(10, { avgSeedingSkillOrdinal: 31 }),
+			...seededTeams,
+		];
+
+		const sorted = sortTeamsBySeeding(teams, MIN_MEMBERS);
+
+		expect(
+			sorted.filter((team) => team.seed !== null).map((team) => team.seed),
+		).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+	});
+
+	test("returns the same order regardless of input order", () => {
+		const seedOne = teamForOrdering(1, { seed: 1, avgSeedingSkillOrdinal: 5 });
+		const seedTwo = teamForOrdering(2, { seed: 2, avgSeedingSkillOrdinal: 30 });
+		const seedThree = teamForOrdering(3, {
+			seed: 3,
+			avgSeedingSkillOrdinal: 20,
+		});
+		const seedFour = teamForOrdering(4, {
+			seed: 4,
+			avgSeedingSkillOrdinal: 25,
+		});
+		const unseeded = teamForOrdering(5, { avgSeedingSkillOrdinal: 28 });
+
+		const sortedA = sortTeamsBySeeding(
+			[seedOne, seedTwo, seedThree, seedFour, unseeded],
+			MIN_MEMBERS,
+		);
+		const sortedB = sortTeamsBySeeding(
+			[seedOne, seedThree, seedFour, unseeded, seedTwo],
+			MIN_MEMBERS,
+		);
+
+		expect(sortedA.map((team) => team.id)).toEqual(
+			sortedB.map((team) => team.id),
+		);
+	});
+
+	test("slots an unseeded team below every seeded team with a higher skill ordinal", () => {
+		const seedOne = teamForOrdering(1, { seed: 1, avgSeedingSkillOrdinal: 5 });
+		const seedTwo = teamForOrdering(2, { seed: 2, avgSeedingSkillOrdinal: 30 });
+		const unseeded = teamForOrdering(5, { avgSeedingSkillOrdinal: 28 });
+
+		const sorted = sortTeamsBySeeding(
+			[unseeded, seedOne, seedTwo],
+			MIN_MEMBERS,
+		);
+
+		expect(sorted.map((team) => team.id)).toEqual([1, 2, 5]);
+	});
+
+	test("does not mutate original array", () => {
+		const teams = [
+			teamForOrdering(2, { avgSeedingSkillOrdinal: 100 }),
+			teamForOrdering(1, { avgSeedingSkillOrdinal: 200 }),
 		];
 
 		sortTeamsBySeeding(teams, MIN_MEMBERS);
@@ -223,15 +259,15 @@ describe("sortTeamsBySeeding", () => {
 });
 
 describe("findTeamInsertPosition", () => {
-	it("inserts at beginning when new team should be first", () => {
-		const team1 = createTeam(1, { avgSeedingSkillOrdinal: 100 });
-		const team2 = createTeam(2, { avgSeedingSkillOrdinal: 200 });
+	test("inserts at beginning when new team should be first", () => {
+		const team1 = teamForOrdering(1, { avgSeedingSkillOrdinal: 100 });
+		const team2 = teamForOrdering(2, { avgSeedingSkillOrdinal: 200 });
 		const teamMap = new Map([
 			[1, team1],
 			[2, team2],
 		]);
 		const existingOrder = [2, 1];
-		const newTeam = createTeam(3, { avgSeedingSkillOrdinal: 300 });
+		const newTeam = teamForOrdering(3, { avgSeedingSkillOrdinal: 300 });
 
 		const position = findTeamInsertPosition(
 			existingOrder,
@@ -243,15 +279,15 @@ describe("findTeamInsertPosition", () => {
 		expect(position).toBe(0);
 	});
 
-	it("inserts at end when new team should be last", () => {
-		const team1 = createTeam(1, { avgSeedingSkillOrdinal: 100 });
-		const team2 = createTeam(2, { avgSeedingSkillOrdinal: 200 });
+	test("inserts at end when new team should be last", () => {
+		const team1 = teamForOrdering(1, { avgSeedingSkillOrdinal: 100 });
+		const team2 = teamForOrdering(2, { avgSeedingSkillOrdinal: 200 });
 		const teamMap = new Map([
 			[1, team1],
 			[2, team2],
 		]);
 		const existingOrder = [2, 1];
-		const newTeam = createTeam(3, { avgSeedingSkillOrdinal: 50 });
+		const newTeam = teamForOrdering(3, { avgSeedingSkillOrdinal: 50 });
 
 		const position = findTeamInsertPosition(
 			existingOrder,
@@ -263,17 +299,17 @@ describe("findTeamInsertPosition", () => {
 		expect(position).toBe(2);
 	});
 
-	it("inserts in middle based on comparison", () => {
-		const team1 = createTeam(1, { avgSeedingSkillOrdinal: 100 });
-		const team2 = createTeam(2, { avgSeedingSkillOrdinal: 300 });
-		const team3 = createTeam(3, { avgSeedingSkillOrdinal: 200 });
+	test("inserts in middle based on comparison", () => {
+		const team1 = teamForOrdering(1, { avgSeedingSkillOrdinal: 100 });
+		const team2 = teamForOrdering(2, { avgSeedingSkillOrdinal: 300 });
+		const team3 = teamForOrdering(3, { avgSeedingSkillOrdinal: 200 });
 		const teamMap = new Map([
 			[1, team1],
 			[2, team2],
 			[3, team3],
 		]);
 		const existingOrder = [2, 3, 1];
-		const newTeam = createTeam(4, { avgSeedingSkillOrdinal: 150 });
+		const newTeam = teamForOrdering(4, { avgSeedingSkillOrdinal: 150 });
 
 		const position = findTeamInsertPosition(
 			existingOrder,
@@ -285,10 +321,10 @@ describe("findTeamInsertPosition", () => {
 		expect(position).toBe(2);
 	});
 
-	it("handles empty existing order", () => {
+	test("handles empty existing order", () => {
 		const teamMap = new Map<number, TeamForOrdering>();
 		const existingOrder: number[] = [];
-		const newTeam = createTeam(1, { avgSeedingSkillOrdinal: 100 });
+		const newTeam = teamForOrdering(1, { avgSeedingSkillOrdinal: 100 });
 
 		const position = findTeamInsertPosition(
 			existingOrder,
@@ -300,11 +336,11 @@ describe("findTeamInsertPosition", () => {
 		expect(position).toBe(0);
 	});
 
-	it("skips missing teams in map", () => {
-		const team1 = createTeam(1, { avgSeedingSkillOrdinal: 100 });
+	test("skips missing teams in map", () => {
+		const team1 = teamForOrdering(1, { avgSeedingSkillOrdinal: 100 });
 		const teamMap = new Map([[1, team1]]);
 		const existingOrder = [2, 1];
-		const newTeam = createTeam(3, { avgSeedingSkillOrdinal: 150 });
+		const newTeam = teamForOrdering(3, { avgSeedingSkillOrdinal: 150 });
 
 		const position = findTeamInsertPosition(
 			existingOrder,
@@ -317,41 +353,6 @@ describe("findTeamInsertPosition", () => {
 	});
 });
 
-describe("sortTeamsBySeeding with startingBracketIdx", () => {
-	it("orders by startingBracketIdx first", () => {
-		const teams = [
-			createTeam(1, {
-				startingBracketIdx: 1,
-				avgSeedingSkillOrdinal: 500,
-			}),
-			createTeam(2, {
-				startingBracketIdx: 0,
-				avgSeedingSkillOrdinal: 100,
-			}),
-			createTeam(3, {
-				startingBracketIdx: 0,
-				avgSeedingSkillOrdinal: 200,
-			}),
-		];
-
-		const sorted = sortTeamsBySeeding(teams, MIN_MEMBERS);
-
-		expect(sorted.map((t) => t.id)).toEqual([3, 2, 1]);
-	});
-
-	it("uses seeds within same bracket", () => {
-		const teams = [
-			createTeam(1, { seed: 2 }),
-			createTeam(2, { seed: 1 }),
-			createTeam(3, { avgSeedingSkillOrdinal: 500 }),
-		];
-
-		const sorted = sortTeamsBySeeding(teams, MIN_MEMBERS);
-
-		expect(sorted.map((t) => t.id)).toEqual([3, 2, 1]);
-	});
-});
-
 const createBracket = (name: string): ParsedBracket => ({
 	name,
 	type: "single_elimination",
@@ -360,7 +361,7 @@ const createBracket = (name: string): ParsedBracket => ({
 });
 
 describe("getBracketProgressionLabel", () => {
-	it("returns single bracket name when only one bracket is reachable", () => {
+	test("returns single bracket name when only one bracket is reachable", () => {
 		const progression: ParsedBracket[] = [createBracket("Main Bracket")];
 
 		const result = getBracketProgressionLabel(0, progression);
@@ -368,7 +369,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Main Bracket");
 	});
 
-	it("returns common prefix when multiple brackets share a prefix", () => {
+	test("returns common prefix when multiple brackets share a prefix", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("Alpha"),
 			createBracket("Alpha A"),
@@ -383,7 +384,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Alpha");
 	});
 
-	it("trims whitespace from common prefix", () => {
+	test("trims whitespace from common prefix", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("Playoff "),
 			createBracket("Playoff Winner"),
@@ -398,7 +399,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Playoff");
 	});
 
-	it("returns deepest bracket name when no common prefix exists", () => {
+	test("returns deepest bracket name when no common prefix exists", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("Round Robin"),
 			createBracket("Winner Bracket"),
@@ -418,7 +419,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Grand Finals");
 	});
 
-	it("handles single character prefix", () => {
+	test("handles single character prefix", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("A"),
 			createBracket("A1"),
@@ -433,7 +434,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("A");
 	});
 
-	it("handles bracket progression with multiple levels", () => {
+	test("handles bracket progression with multiple levels", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("Qualifier"),
 			createBracket("Group A"),
@@ -453,7 +454,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Finals");
 	});
 
-	it("returns bracket name for progression with partial common prefix", () => {
+	test("returns bracket name for progression with partial common prefix", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("Swiss"),
 			createBracket("Swiss Upper"),
@@ -468,7 +469,7 @@ describe("getBracketProgressionLabel", () => {
 		expect(result).toBe("Swiss");
 	});
 
-	it("handles empty string prefix by returning deepest bracket", () => {
+	test("handles empty string prefix by returning deepest bracket", () => {
 		const progression: ParsedBracket[] = [
 			createBracket("A"),
 			createBracket("B"),
@@ -492,7 +493,7 @@ const emptyCastedMatchesInfo = (): CastedMatchesInfo => ({
 
 describe("updatedCastedMatchesInfo", () => {
 	describe("assigning a cast", () => {
-		it("adds entry to castedMatches and history", () => {
+		test("adds entry to castedMatches and history", () => {
 			const result = updatedCastedMatchesInfo(emptyCastedMatchesInfo(), {
 				matchId: 1,
 				twitchAccount: "streamer_a",
@@ -507,7 +508,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("removes prior castedMatches entry for same matchId", () => {
+		test("removes prior castedMatches entry for same matchId", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatches = [{ twitchAccount: "old_streamer", matchId: 1 }];
 
@@ -522,7 +523,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("removes prior castedMatches entry for same twitchAccount", () => {
+		test("removes prior castedMatches entry for same twitchAccount", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatches = [{ twitchAccount: "streamer_a", matchId: 1 }];
 
@@ -537,7 +538,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("removes matchId from lockedMatches", () => {
+		test("removes matchId from lockedMatches", () => {
 			const current = emptyCastedMatchesInfo();
 			current.lockedMatches = [
 				{ twitchAccount: "streamer_a", matchId: 1 },
@@ -555,7 +556,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("deduplicates history by matchId when channel is corrected", () => {
+		test("deduplicates history by matchId when channel is corrected", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatchHistory = [
 				{ twitchAccount: "wrong_channel", matchId: 1, timestamp: 500 },
@@ -574,7 +575,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("deduplicates history when same account+matchId is reassigned", () => {
+		test("deduplicates history when same account+matchId is reassigned", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatchHistory = [
 				{ twitchAccount: "streamer_a", matchId: 1, timestamp: 500 },
@@ -591,7 +592,7 @@ describe("updatedCastedMatchesInfo", () => {
 			]);
 		});
 
-		it("initializes history when undefined", () => {
+		test("initializes history when undefined", () => {
 			const current: CastedMatchesInfo = {
 				castedMatches: [],
 				lockedMatches: [],
@@ -610,7 +611,7 @@ describe("updatedCastedMatchesInfo", () => {
 	});
 
 	describe("unassigning a cast", () => {
-		it("removes matchId from castedMatches and lockedMatches", () => {
+		test("removes matchId from castedMatches and lockedMatches", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatches = [
 				{ twitchAccount: "streamer_a", matchId: 1 },
@@ -630,7 +631,7 @@ describe("updatedCastedMatchesInfo", () => {
 			expect(result.lockedMatches).toEqual([]);
 		});
 
-		it("does not modify castedMatchHistory", () => {
+		test("does not modify castedMatchHistory", () => {
 			const current = emptyCastedMatchesInfo();
 			current.castedMatchHistory = [
 				{ twitchAccount: "streamer_a", matchId: 1, timestamp: 500 },
@@ -661,7 +662,7 @@ describe("tournamentInWeaponReportingWindow", () => {
 		(previousSeason.ends.getTime() + anchorSeason.starts.getTime()) / 2,
 	);
 
-	it("allows tournaments started in the off-season before current season (in-season)", () => {
+	test("allows tournaments started in the off-season before current season (in-season)", () => {
 		expect(
 			tournamentInWeaponReportingWindow({
 				tournamentStartTime: offSeasonNow,
@@ -670,7 +671,7 @@ describe("tournamentInWeaponReportingWindow", () => {
 		).toBe(true);
 	});
 
-	it("rejects tournaments started before the previous season ended (in-season)", () => {
+	test("rejects tournaments started before the previous season ended (in-season)", () => {
 		expect(
 			tournamentInWeaponReportingWindow({
 				tournamentStartTime: dateInside(previousSeason),
@@ -679,7 +680,7 @@ describe("tournamentInWeaponReportingWindow", () => {
 		).toBe(false);
 	});
 
-	it("allows tournaments started during the previous season (off-season)", () => {
+	test("allows tournaments started during the previous season (off-season)", () => {
 		expect(
 			tournamentInWeaponReportingWindow({
 				tournamentStartTime: dateInside(previousSeason),
@@ -692,60 +693,60 @@ describe("tournamentInWeaponReportingWindow", () => {
 describe("splitTournamentName", () => {
 	const series = [{ name: "In The Zone" }, { name: "Low Ink" }];
 
-	it("splits the trailing number subtext after the series name", () => {
+	test("splits the trailing number subtext after the series name", () => {
 		expect(splitTournamentName("In The Zone 54", series)).toEqual({
 			name: "In The Zone",
 			subtext: "54",
 		});
 	});
 
-	it("splits a non-numeric subtext after the series name", () => {
+	test("splits a non-numeric subtext after the series name", () => {
 		expect(splitTournamentName("Low Ink May 2026", series)).toEqual({
 			name: "Low Ink",
 			subtext: "May 2026",
 		});
 	});
 
-	it("matches the series name case-insensitively", () => {
+	test("matches the series name case-insensitively", () => {
 		expect(splitTournamentName("in the zone 54", series)).toEqual({
 			name: "In The Zone",
 			subtext: "54",
 		});
 	});
 
-	it("strips separators between the series name and the subtext", () => {
+	test("strips separators between the series name and the subtext", () => {
 		expect(splitTournamentName("In The Zone - 54", series)).toEqual({
 			name: "In The Zone",
 			subtext: "54",
 		});
 	});
 
-	it("trims trailing whitespace after the subtext", () => {
+	test("trims trailing whitespace after the subtext", () => {
 		expect(splitTournamentName("In The Zone 54 ", series)).toEqual({
 			name: "In The Zone",
 			subtext: "54",
 		});
 	});
 
-	it("returns name only when the name does not start with a series name", () => {
+	test("returns name only when the name does not start with a series name", () => {
 		expect(splitTournamentName("Picnic Weekly", series)).toEqual({
 			name: "Picnic Weekly",
 		});
 	});
 
-	it("returns name only when the name equals the series name", () => {
+	test("returns name only when the name equals the series name", () => {
 		expect(splitTournamentName("In The Zone", series)).toEqual({
 			name: "In The Zone",
 		});
 	});
 
-	it("returns name only when there are no series", () => {
+	test("returns name only when there are no series", () => {
 		expect(splitTournamentName("In The Zone 54", [])).toEqual({
 			name: "In The Zone 54",
 		});
 	});
 
-	it("prefers the longest matching series name", () => {
+	test("prefers the longest matching series name", () => {
 		expect(
 			splitTournamentName("In The Zone Masters 5", [
 				{ name: "In The Zone" },
@@ -759,22 +760,7 @@ describe("splitTournamentName", () => {
 });
 
 describe("tournamentNameParts", () => {
-	it("uses the parent tournament name and division subtext for a league division", () => {
-		const tournament = testTournament({
-			ctx: {
-				name: "LUTI: Season 17 - Division 1",
-				parentTournamentId: 1,
-				parentTournamentName: "LUTI: Season 17",
-			},
-		});
-
-		expect(tournamentNameParts(tournament)).toEqual({
-			name: "LUTI: Season 17",
-			subtext: "Division 1",
-		});
-	});
-
-	it("falls back to the organization series when not a league division", () => {
+	test("splits the name by the organization series", () => {
 		const tournament = testTournament({
 			ctx: {
 				name: "In The Zone 54",
@@ -807,13 +793,13 @@ describe("bracketProgressionLabel", () => {
 		...bracket,
 	});
 
-	it("returns the short code for a single stage", () => {
+	test("returns the short code for a single stage", () => {
 		expect(
 			bracketProgressionLabel([bracket({ type: "single_elimination" })]),
 		).toEqual({ label: "SE", hasUnderground: false });
 	});
 
-	it("joins stages with an arrow", () => {
+	test("joins stages with an arrow", () => {
 		expect(
 			bracketProgressionLabel([
 				bracket({ type: "round_robin" }),
@@ -822,7 +808,7 @@ describe("bracketProgressionLabel", () => {
 		).toEqual({ label: "RR → SE", hasUnderground: false });
 	});
 
-	it("collapses consecutive duplicate stages", () => {
+	test("collapses consecutive duplicate stages", () => {
 		expect(
 			bracketProgressionLabel([
 				bracket({ type: "single_elimination" }),
@@ -832,7 +818,7 @@ describe("bracketProgressionLabel", () => {
 		).toEqual({ label: "SE → DE", hasUnderground: false });
 	});
 
-	it("leaves an underground bracket out of the label", () => {
+	test("leaves an underground bracket out of the label", () => {
 		expect(
 			bracketProgressionLabel([
 				bracket({ type: "double_elimination" }),
@@ -844,7 +830,7 @@ describe("bracketProgressionLabel", () => {
 		).toEqual({ label: "DE", hasUnderground: true });
 	});
 
-	it("flags many underground brackets the same as one", () => {
+	test("flags many underground brackets the same as one", () => {
 		expect(
 			bracketProgressionLabel([
 				bracket({ type: "swiss" }),
@@ -864,7 +850,39 @@ describe("bracketProgressionLabel", () => {
 		).toEqual({ label: "SW → SE", hasUnderground: true });
 	});
 
-	it("returns empty label for empty progression", () => {
+	test("describes divisions leading to the same shape once", () => {
+		const division = (idx: number) => [
+			bracket({ type: "round_robin", name: `Division ${idx}` }),
+			bracket({
+				type: "single_elimination",
+				name: `Division ${idx} Playoffs`,
+				sources: [{ bracketIdx: idx * 2, placements: [1, 2] }],
+			}),
+		];
+
+		expect(
+			bracketProgressionLabel([...division(0), ...division(1), ...division(2)]),
+		).toEqual({ label: "RR → SE", hasUnderground: false });
+	});
+
+	test("describes every starting bracket when they lead to different shapes", () => {
+		expect(
+			bracketProgressionLabel([
+				bracket({ type: "round_robin" }),
+				bracket({
+					type: "single_elimination",
+					sources: [{ bracketIdx: 0, placements: [1, 2] }],
+				}),
+				bracket({ type: "swiss" }),
+				bracket({
+					type: "double_elimination",
+					sources: [{ bracketIdx: 2, placements: [1, 2] }],
+				}),
+			]),
+		).toEqual({ label: "RR → SE → SW → DE", hasUnderground: false });
+	});
+
+	test("returns empty label for empty progression", () => {
 		expect(bracketProgressionLabel([])).toEqual({
 			label: "",
 			hasUnderground: false,

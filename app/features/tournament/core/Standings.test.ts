@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, test } from "vitest";
 import * as Engine from "~/features/tournament-bracket/core/engine";
 import { createResolved } from "~/features/tournament-bracket/core/engine/create";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
@@ -16,7 +16,7 @@ import {
 } from "./Standings";
 
 describe("tournamentStandings", () => {
-	it("returns single-division standings for a tournament with one starting bracket", () => {
+	test("returns single-division standings for a tournament with one starting bracket", () => {
 		const tournament = singleEliminationTournament();
 
 		const result = tournamentStandings(tournament);
@@ -28,7 +28,7 @@ describe("tournamentStandings", () => {
 		expect(result.standings[0].team.id).toBe(1);
 	});
 
-	it("returns one div per starting bracket for a tournament with multiple starting brackets", () => {
+	test("returns one div per starting bracket for a tournament with multiple starting brackets", () => {
 		const tournament = testTournament({
 			ctx: {
 				settings: { bracketProgression: progressions.manyStartBrackets },
@@ -54,7 +54,7 @@ describe("tournamentStandings", () => {
 		expect(new Set(divs).size).toBe(2);
 	});
 
-	it("splits A/B divisions finals into 'A' and 'B' divs with teams partitioned by abDivision", () => {
+	test("splits A/B divisions finals into 'A' and 'B' divs with teams partitioned by abDivision", () => {
 		const tournament = abDivisionsTournament();
 
 		const result = tournamentStandings(tournament);
@@ -70,7 +70,7 @@ describe("tournamentStandings", () => {
 		expect(b.standings.every((s) => s.team.abDivision === 1)).toBe(true);
 	});
 
-	it("re-numbers placements within each A/B division starting from 1", () => {
+	test("re-numbers placements within each A/B division starting from 1", () => {
 		const tournament = abDivisionsTournament();
 
 		const result = tournamentStandings(tournament);
@@ -81,7 +81,7 @@ describe("tournamentStandings", () => {
 		expect(b.standings.map((s) => s.placement)).toEqual([1, 2]);
 	});
 
-	it("breaks ties of a bracket with the results of its underground bracket", () => {
+	test("breaks ties of a bracket with the results of its underground bracket", () => {
 		const tournament = singleEliminationWithUndergroundTournament();
 
 		const result = tournamentStandings(tournament);
@@ -97,7 +97,7 @@ describe("tournamentStandings", () => {
 		]);
 	});
 
-	it("keeps teams that skipped the underground bracket tied below those who played it", () => {
+	test("keeps teams that skipped the underground bracket tied below those who played it", () => {
 		const tournament = singleEliminationWithUndergroundTournament({
 			undergroundSeeding: [7, 8],
 		});
@@ -113,7 +113,7 @@ describe("tournamentStandings", () => {
 		]);
 	});
 
-	it("does not break ties with an underground bracket that is still in progress", () => {
+	test("does not break ties with an underground bracket that is still in progress", () => {
 		// only the semi-finals of the underground bracket have been played so the two teams
 		// still alive there have no placement yet
 		const tournament = singleEliminationWithUndergroundTournament({
@@ -134,7 +134,23 @@ describe("tournamentStandings", () => {
 		]);
 	});
 
-	it("does not break ties with an underground bracket that was never started", () => {
+	test("places teams eliminated in a redemption bracket above the teams of a lower placed bracket", () => {
+		const tournament = groupsToRedemptionAndConsolationTournament();
+
+		const result = tournamentStandings(tournament);
+
+		invariant(result.type === "single");
+		// team 3 lost the redemption bracket, which it reached by placing 3rd in the groups,
+		// so it is above the teams that placed 5th-8th there and went to the consolation bracket
+		expect(result.standings.map((s) => s.team.id)).toEqual([
+			1, 2, 4, 3, 5, 6, 7, 8,
+		]);
+		expect(result.standings.map((s) => s.placement)).toEqual([
+			1, 2, 3, 4, 5, 6, 7, 8,
+		]);
+	});
+
+	test("does not break ties with an underground bracket that was never started", () => {
 		// an underground bracket set in the progression can be skipped altogether
 		const tournament = singleEliminationWithUndergroundTournament({
 			undergroundStarted: false,
@@ -154,7 +170,7 @@ describe("tournamentStandings", () => {
 });
 
 describe("reNumberPlacements", () => {
-	it("keeps already contiguous placements unchanged", () => {
+	test("keeps already contiguous placements unchanged", () => {
 		const result = reNumberPlacements([
 			{ placement: 1 },
 			{ placement: 2 },
@@ -164,7 +180,7 @@ describe("reNumberPlacements", () => {
 		expect(result.map((s) => s.placement)).toEqual([1, 2, 3]);
 	});
 
-	it("groups tied placements and skips numbers to match team count", () => {
+	test("groups tied placements and skips numbers to match team count", () => {
 		const result = reNumberPlacements([
 			{ placement: 1 },
 			{ placement: 1 },
@@ -176,7 +192,7 @@ describe("reNumberPlacements", () => {
 		expect(result.map((s) => s.placement)).toEqual([1, 1, 3, 3, 5]);
 	});
 
-	it("re-numbers from 1 when the input has been filtered (e.g. top finishers removed)", () => {
+	test("re-numbers from 1 when the input has been filtered (e.g. top finishers removed)", () => {
 		const result = reNumberPlacements([
 			{ placement: 3 },
 			{ placement: 3 },
@@ -187,7 +203,7 @@ describe("reNumberPlacements", () => {
 		expect(result.map((s) => s.placement)).toEqual([1, 1, 3, 4]);
 	});
 
-	it("adds the offset to every placement", () => {
+	test("adds the offset to every placement", () => {
 		const result = reNumberPlacements(
 			[{ placement: 1 }, { placement: 1 }, { placement: 3 }],
 			10,
@@ -196,7 +212,7 @@ describe("reNumberPlacements", () => {
 		expect(result.map((s) => s.placement)).toEqual([11, 11, 13]);
 	});
 
-	it("preserves non-placement fields on each standing", () => {
+	test("preserves non-placement fields on each standing", () => {
 		const result = reNumberPlacements([
 			{ placement: 1, team: { id: 7 }, note: "a" },
 			{ placement: 2, team: { id: 8 }, note: "b" },
@@ -208,14 +224,14 @@ describe("reNumberPlacements", () => {
 		]);
 	});
 
-	it("returns an empty array when given an empty array", () => {
+	test("returns an empty array when given an empty array", () => {
 		expect(reNumberPlacements([])).toEqual([]);
 		expect(reNumberPlacements([], 5)).toEqual([]);
 	});
 });
 
 describe("matchesPlayed", () => {
-	it("tags each match with the bracket index it was actually played in", () => {
+	test("tags each match with the bracket index it was actually played in", () => {
 		const tournament = roundRobinToSingleEliminationTournament();
 
 		const matches = matchesPlayed({ tournament, teamId: 1 });
@@ -227,6 +243,15 @@ describe("matchesPlayed", () => {
 
 		expect(roundRobinMatches).toHaveLength(3);
 		expect(singleEliminationMatches).toHaveLength(1);
+	});
+
+	test("includes matches of brackets that are not part of the standings, in the order they were played", () => {
+		const tournament = roundRobinWithRedemptionTournament();
+
+		const matches = matchesPlayed({ tournament, teamId: 4 });
+
+		// 3 round robin matches, the redemption bracket match and the final stage match
+		expect(matches.map((match) => match.bracketIdx)).toEqual([0, 0, 0, 2, 1]);
 	});
 });
 
@@ -257,6 +282,158 @@ function roundRobinToSingleEliminationTournament() {
 				tournamentCtxTeam(3, { startingBracketIdx: 0, seed: 3 }),
 				tournamentCtxTeam(4, { startingBracketIdx: 0, seed: 4 }),
 			],
+		},
+		data,
+	});
+}
+
+function roundRobinWithRedemptionTournament() {
+	const merged = mergeStages(
+		playOutLowerIdWins(
+			createResolved({
+				type: "round_robin",
+				seeding: [1, 2, 3, 4],
+				settings: { groupCount: 1 },
+			}),
+		),
+		playOut(
+			createResolved({
+				type: "single_elimination",
+				seeding: [3, 4],
+				settings: {},
+			}),
+			(one, two) => one > two,
+		),
+		playOutLowerIdWins(
+			createResolved({
+				type: "single_elimination",
+				seeding: [1, 2, 4],
+				settings: {},
+			}),
+		),
+	);
+
+	// the redemption bracket (idx 2) was played before the final stage (idx 1)
+	const stageNames = ["Groups Stage", "Redemption", "Final Stage"];
+	const data = {
+		...merged,
+		stage: merged.stage.map((stage, stageIdx) => ({
+			...stage,
+			name: stageNames[stageIdx],
+			createdAt: stageIdx + 1,
+		})),
+	};
+
+	return testTournament({
+		ctx: {
+			settings: {
+				bracketProgression: [
+					{
+						type: "round_robin",
+						name: "Groups Stage",
+						requiresCheckIn: false,
+						settings: {},
+					},
+					{
+						type: "single_elimination",
+						name: "Final Stage",
+						requiresCheckIn: false,
+						settings: {},
+						sources: [
+							{ bracketIdx: 0, placements: [1, 2] },
+							{ bracketIdx: 2, placements: [1] },
+						],
+					},
+					{
+						type: "single_elimination",
+						name: "Redemption",
+						requiresCheckIn: false,
+						settings: {},
+						sources: [{ bracketIdx: 0, placements: [3, 4] }],
+					},
+				],
+			},
+			teams: [1, 2, 3, 4].map((id) =>
+				tournamentCtxTeam(id, { startingBracketIdx: 0, seed: id }),
+			),
+		},
+		data,
+	});
+}
+
+function groupsToRedemptionAndConsolationTournament() {
+	const data = mergeStages(
+		playOutLowerIdWins(
+			createResolved({
+				type: "round_robin",
+				seeding: [1, 2, 3, 4, 5, 6, 7, 8],
+				settings: { groupCount: 1 },
+			}),
+		),
+		// the higher seed wins so team 4 advances to the top cut and team 3 is eliminated
+		playOut(
+			createResolved({
+				type: "single_elimination",
+				seeding: [3, 4],
+				settings: {},
+			}),
+			(one, two) => one > two,
+		),
+		playOutLowerIdWins(
+			createResolved({
+				type: "single_elimination",
+				seeding: [1, 2, 4],
+				settings: {},
+			}),
+		),
+		playOutLowerIdWins(
+			createResolved({
+				type: "single_elimination",
+				seeding: [5, 6, 7, 8],
+				settings: { consolationFinal: true },
+			}),
+		),
+	);
+
+	return testTournament({
+		ctx: {
+			settings: {
+				bracketProgression: [
+					{
+						type: "round_robin",
+						name: "Groups",
+						requiresCheckIn: false,
+						settings: { groupCount: 1 },
+					},
+					{
+						type: "single_elimination",
+						name: "Redemption",
+						requiresCheckIn: false,
+						settings: {},
+						sources: [{ bracketIdx: 0, placements: [3, 4] }],
+					},
+					{
+						type: "single_elimination",
+						name: "Top Cut",
+						requiresCheckIn: false,
+						settings: {},
+						sources: [
+							{ bracketIdx: 1, placements: [1] },
+							{ bracketIdx: 0, placements: [1, 2] },
+						],
+					},
+					{
+						type: "single_elimination",
+						name: "Consolation",
+						requiresCheckIn: false,
+						settings: { thirdPlaceMatch: true },
+						sources: [{ bracketIdx: 0, placements: [5, 6, 7, 8] }],
+					},
+				],
+			},
+			teams: [1, 2, 3, 4, 5, 6, 7, 8].map((id) =>
+				tournamentCtxTeam(id, { startingBracketIdx: 0, seed: id }),
+			),
 		},
 		data,
 	});

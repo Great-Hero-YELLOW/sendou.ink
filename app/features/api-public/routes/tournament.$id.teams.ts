@@ -1,19 +1,23 @@
 import { sql } from "kysely";
-import { jsonArrayFrom, jsonObjectFrom } from "kysely/helpers/sqlite";
 import type { LoaderFunctionArgs } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
 import { db } from "~/db/sql";
 import { ordinalToSp } from "~/features/mmr/mmr-utils";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import { getFixedTForLanguage } from "~/modules/i18n/i18next.server";
 import { nullifyingAvg } from "~/utils/arrays";
 import { databaseTimestampToDate } from "~/utils/dates";
-import { concatUserSubmittedImagePrefix } from "~/utils/kysely.server";
+import {
+	concatUserSubmittedImagePrefix,
+	jsonArrayFrom,
+	jsonObjectFrom,
+	tournamentUsername,
+} from "~/utils/kysely.server";
 import { parseParams } from "~/utils/remix.server";
-import { id } from "~/utils/zod";
+import { id } from "~/utils/schema";
 import type { GetTournamentTeamsResponse } from "../schema";
 
-const paramsSchema = z.object({
+const paramsSchema = v.object({
 	id,
 });
 
@@ -78,7 +82,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 					)
 					.select([
 						"User.id as userId",
-						"User.username",
+						tournamentUsername().as("username"),
 						"User.discordId",
 						"User.discordAvatar",
 						"User.battlefy",

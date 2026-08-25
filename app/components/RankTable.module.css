@@ -1,0 +1,58 @@
+.table {
+	display: flex;
+	flex-direction: column;
+	gap: var(--s-0-5);
+	font-size: var(--font-sm);
+	font-weight: var(--weight-semi);
+}
+
+.rank {
+	min-width: 28px;
+	text-align: right;
+}
+
+.row {
+	background-color: var(--color-bg-high);
+	display: flex;
+	padding: var(--s-2) var(--s-3);
+	align-items: center;
+	justify-content: space-between;
+	color: var(--color-text);
+	transition: 0.1s ease-in-out background-color;
+	border-radius: 0;
+
+	&:first-of-type {
+		border-radius: var(--radius-box) var(--radius-box) 0 0;
+	}
+
+	&:last-of-type {
+		border-radius: 0 0 var(--radius-box) var(--radius-box);
+	}
+
+	&:only-child {
+		border-radius: var(--radius-box);
+	}
+}
+
+.dividerRow {
+	justify-content: center;
+	gap: var(--s-2);
+	background-color: var(--color-bg-higher);
+	font-size: var(--font-xs);
+}
+
+a.row:hover {
+	background-color: var(--color-bg-higher);
+}
+
+.weapon {
+	background-color: var(--color-bg);
+	border-radius: 100%;
+}
+
+.innerRow {
+	display: flex;
+	align-items: center;
+	gap: var(--s-3);
+	width: 100%;
+}

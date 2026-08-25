@@ -6,8 +6,6 @@ import {
 	Button,
 	Dialog,
 	DialogTrigger,
-	ListBox,
-	ListBoxItem,
 	Modal,
 	ModalOverlay,
 	Radio,
@@ -21,28 +19,39 @@ import { Input } from "~/components/Input";
 import { LocaleTime } from "~/components/LocaleTime";
 import type { SearchLoaderData } from "~/features/search/routes/search";
 import { searchSearchParams } from "~/features/search/search-search-params";
+import { tournamentOrganizationPage } from "~/features/tournament-organization/tournament-organization-urls";
 import { useDebounce } from "~/hooks/useDebounce";
 import { useHydrated } from "~/hooks/useHydrated";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
+import * as PersistedState from "~/modules/persisted-state/persisted-state";
 import { useSearchParamsTyped } from "~/modules/search-params/hooks";
 import {
 	navIconUrl,
 	teamPage,
-	tournamentOrganizationPage,
 	userPage,
 	weaponCategoryUrl,
 } from "~/utils/urls";
 import styles from "./GlobalSearch.module.css";
+import {
+	saveRecentWeapon,
+	searchTypePersisted,
+	useRecentWeapons,
+} from "./global-search-persisted";
 import {
 	globalSearchSearchParams,
 	GLOBAL_SEARCH_TYPES as SEARCH_TYPES,
 	type GlobalSearchType as SearchType,
 } from "./global-search-search-params";
 import {
+	SearchResultsEmptyState,
+	SearchResultsItem,
+	SearchResultsItemName,
+	SearchResultsItemRow,
+	SearchResultsListBox,
+} from "./SearchResults";
+import {
 	filterWeaponResults,
 	type SelectedWeapon,
-	saveRecentWeapon,
-	useRecentWeapons,
 	WeaponDestinationMenu,
 	WeaponResultsList,
 	weaponToSelectedWeapon,
@@ -56,8 +65,6 @@ const SEARCH_TYPE_TO_PREFIX: Record<SearchType, string> = {
 	tournaments: "to",
 };
 
-const STORAGE_KEY = "global-search-search-type";
-
 function searchTypeIconPath(type: SearchType): string {
 	if (type === "weapons") {
 		return weaponCategoryUrl("SHOOTERS");
@@ -69,27 +76,6 @@ function searchTypeIconPath(type: SearchType): string {
 		tournaments: "calendar",
 	};
 	return navIconUrl(navIcons[type]);
-}
-
-function getInitialSearchType(): SearchType {
-	if (typeof window === "undefined") return "weapons";
-	try {
-		const stored = localStorage.getItem(STORAGE_KEY);
-		if (stored && SEARCH_TYPES.includes(stored as SearchType)) {
-			return stored as SearchType;
-		}
-	} catch {
-		// localStorage may be unavailable
-	}
-	return "weapons";
-}
-
-function persistSearchType(type: SearchType) {
-	try {
-		localStorage.setItem(STORAGE_KEY, type);
-	} catch {
-		// localStorage may be unavailable
-	}
 }
 
 export function GlobalSearch() {
@@ -179,7 +165,7 @@ function GlobalSearchContent({
 	const { t } = useTranslation(["common", "weapons"]);
 	const [query, setQuery] = React.useState("");
 	const [searchType, setSearchType] = React.useState<SearchType>(
-		initialSearchType ?? getInitialSearchType(),
+		() => initialSearchType ?? PersistedState.read(searchTypePersisted),
 	);
 	const [selectedWeapon, setSelectedWeapon] =
 		React.useState<SelectedWeapon | null>(
@@ -254,7 +240,7 @@ function GlobalSearchContent({
 
 	const handleSearchTypeChange = (value: string) => {
 		setSearchType(value as SearchType);
-		persistSearchType(value as SearchType);
+		PersistedState.write(searchTypePersisted, value as SearchType);
 		setSelectedWeapon(null);
 	};
 
@@ -273,7 +259,7 @@ function GlobalSearchContent({
 			);
 			if (matchedType) {
 				setSearchType(matchedType);
-				persistSearchType(matchedType);
+				PersistedState.write(searchTypePersisted, matchedType);
 				setSelectedWeapon(null);
 				setQuery("");
 				return;
@@ -373,44 +359,43 @@ function GlobalSearchContent({
 					listBoxRef={listBoxRef}
 				/>
 			) : (
-				<ListBox
+				<SearchResultsListBox
 					ref={listBoxRef}
-					className={clsx(styles.listBox, "scrollbar")}
+					className="scrollbar"
 					aria-label={t("common:search")}
 					onAction={handleSelect}
 					renderEmptyState={() => {
 						if (!hasQuery) {
 							return (
-								<div className={styles.emptyState}>
+								<SearchResultsEmptyState>
 									{t("common:search.hint")}
-								</div>
+								</SearchResultsEmptyState>
 							);
 						}
 						if (!isCurrentFetch) {
 							return (
-								<div className={styles.emptyState}>
+								<SearchResultsEmptyState>
 									{t("common:search.searching")}
-								</div>
+								</SearchResultsEmptyState>
 							);
 						}
 						return (
-							<div className={styles.emptyState}>
+							<SearchResultsEmptyState>
 								{t("common:search.noResults")}
-							</div>
+							</SearchResultsEmptyState>
 						);
 					}}
 				>
 					{results.map((result) => (
-						<ListBoxItem
+						<SearchResultsItem
 							key={getResultKey(result)}
 							id={getResultKey(result)}
 							href={getResultHref(result)}
-							className={styles.listBoxItem}
 						>
 							<ResultItem result={result} />
-						</ListBoxItem>
+						</SearchResultsItem>
 					))}
-				</ListBox>
+				</SearchResultsListBox>
 			)}
 		</div>
 	);
@@ -451,7 +436,7 @@ function ResultItem({ result }: { result: SearchResult }) {
 	switch (result.type) {
 		case "user":
 			return (
-				<div className={styles.resultItem}>
+				<SearchResultsItemRow>
 					<Avatar
 						user={{
 							discordId: result.discordId,
@@ -460,40 +445,40 @@ function ResultItem({ result }: { result: SearchResult }) {
 						size="xxs"
 					/>
 					<div className={styles.resultTexts}>
-						<span className={styles.resultName}>{result.name}</span>
+						<SearchResultsItemName>{result.name}</SearchResultsItemName>
 						{result.inGameName ? (
 							<span className={styles.resultSecondary}>
 								{result.inGameName}
 							</span>
 						) : null}
 					</div>
-				</div>
+				</SearchResultsItemRow>
 			);
 		case "team":
 			return (
-				<div className={styles.resultItem}>
+				<SearchResultsItemRow>
 					<Avatar
 						url={result.avatarUrl}
 						size="xxs"
 						identiconInput={result.name}
 					/>
-					<span className={styles.resultName}>{result.name}</span>
-				</div>
+					<SearchResultsItemName>{result.name}</SearchResultsItemName>
+				</SearchResultsItemRow>
 			);
 		case "organization":
 			return (
-				<div className={styles.resultItem}>
+				<SearchResultsItemRow>
 					<Avatar
 						url={result.avatarUrl}
 						size="xxs"
 						identiconInput={result.name}
 					/>
-					<span className={styles.resultName}>{result.name}</span>
-				</div>
+					<SearchResultsItemName>{result.name}</SearchResultsItemName>
+				</SearchResultsItemRow>
 			);
 		case "tournament":
 			return (
-				<div className={styles.resultItem}>
+				<SearchResultsItemRow>
 					{result.logoUrl ? (
 						<img
 							src={result.logoUrl}
@@ -504,14 +489,14 @@ function ResultItem({ result }: { result: SearchResult }) {
 						/>
 					) : null}
 					<div className={styles.resultTexts}>
-						<span className={styles.resultName}>{result.name}</span>
+						<SearchResultsItemName>{result.name}</SearchResultsItemName>
 						<LocaleTime
 							date={result.startsAt}
 							options={{ day: "numeric", month: "long", year: "numeric" }}
 							className={styles.resultSecondary}
 						/>
 					</div>
-				</div>
+				</SearchResultsItemRow>
 			);
 	}
 }

@@ -4,11 +4,12 @@ import { Avatar } from "~/components/Avatar";
 import { ModeImage, StageImage } from "~/components/Image";
 import type { Tables } from "~/db/tables";
 import { useUser } from "~/features/auth/core/user";
+import { useTournament } from "~/features/tournament/tournament-context";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
 import { userPage } from "~/utils/urls";
 import { accountCreatedInTheLastSixMonths } from "~/utils/users";
-import { useTournament, useTournamentFriendCodes } from "../routes/to.$id";
-import styles from "../tournament.module.css";
+import { useTournamentFriendCodes } from "../routes/to.$id";
+import styles from "./TeamWithRoster.module.css";
 
 export function TeamWithRoster({
 	team,
@@ -147,7 +148,11 @@ function TeamMapPool({
 			{mapPool.map(({ mode, stageId }, i) => {
 				return (
 					<div key={i}>
-						<StageImage stageId={stageId} width={85} />
+						<StageImage
+							stageId={stageId}
+							width={85}
+							testId={`team-map-pool-${mode}-${stageId}`}
+						/>
 						<div className={styles.teamWithRosterMapPoolModeInfo}>
 							<ModeImage mode={mode} size={16} />
 						</div>

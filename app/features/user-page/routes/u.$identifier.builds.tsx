@@ -14,8 +14,10 @@ import {
 	BUILD_SORT_IDENTIFIERS,
 	type BuildSort,
 } from "~/features/user-page/user-page-constants";
+import { buildsActionSchema } from "~/features/user-page/user-page-schemas";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { mainWeaponIds } from "~/modules/in-game-lists/weapon-ids";
+import { hasPermission } from "~/modules/permissions/utils";
 import { useSearchParam } from "~/modules/search-params/hooks";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { userPage, weaponCategoryUrl } from "~/utils/urls";
@@ -31,7 +33,6 @@ import { userBuildsSearchParams } from "../user-page-search-params";
 
 export { action, loader };
 
-import userStyles from "../user-page.module.css";
 import styles from "./u.$identifier.builds.module.css";
 
 export const handle: SendouRouteHandle = {
@@ -108,7 +109,7 @@ export default function UserBuildsPage() {
 							build={build}
 							owner={layoutData.user}
 							showOwner={false}
-							canEdit={isOwnPage}
+							canEdit={hasPermission(build, "EDIT", user)}
 						/>
 					))}
 				</div>
@@ -149,7 +150,7 @@ function BuildsFilters({
 				onPress={() => setWeaponFilter("ALL")}
 				variant={weaponFilter === "ALL" ? undefined : "outlined"}
 				size="small"
-				className={userStyles.buildFilterButton}
+				className={styles.buildFilterButton}
 			>
 				{t("builds:stats.all")} ({data.builds.length})
 			</SendouButton>
@@ -159,7 +160,7 @@ function BuildsFilters({
 						onPress={() => setWeaponFilter("PUBLIC")}
 						variant={weaponFilter === "PUBLIC" ? undefined : "outlined"}
 						size="small"
-						className={userStyles.buildFilterButton}
+						className={styles.buildFilterButton}
 						icon={<LockOpen />}
 					>
 						{t("builds:stats.public")} ({publicBuildsCount})
@@ -168,7 +169,7 @@ function BuildsFilters({
 						onPress={() => setWeaponFilter("PRIVATE")}
 						variant={weaponFilter === "PRIVATE" ? undefined : "outlined"}
 						size="small"
-						className={userStyles.buildFilterButton}
+						className={styles.buildFilterButton}
 						icon={<Lock />}
 					>
 						{t("builds:stats.private")} ({privateBuildsCount})
@@ -278,6 +279,7 @@ function ChangeSortingDialog({
 											icon={<Trash />}
 											variant="minimal-destructive"
 											onPress={deleteLastSorting}
+											data-testid="delete-sorting-button"
 										/>
 									) : null}
 								</div>
@@ -286,7 +288,7 @@ function ChangeSortingDialog({
 					</div>
 
 					<div>
-						<SubmitButton _action="UPDATE_SORTING">
+						<SubmitButton schema={buildsActionSchema} _action="UPDATE_SORTING">
 							{t("common:actions.save")}
 						</SubmitButton>
 					</div>
@@ -348,7 +350,7 @@ function WeaponFilterMenu({
 				<SendouButton
 					variant={typeof weaponFilter === "number" ? undefined : "outlined"}
 					size="small"
-					className={userStyles.buildFilterButton}
+					className={styles.buildFilterButton}
 				>
 					<Image
 						path={weaponCategoryUrl("SHOOTERS")}

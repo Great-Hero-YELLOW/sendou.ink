@@ -1,31 +1,31 @@
 import clsx from "clsx";
-import { useFetcher } from "react-router";
+import { ActionButton } from "~/components/ActionButton";
 import { SendouButton } from "~/components/elements/Button";
-import { FormWithConfirm } from "~/components/FormWithConfirm";
-import { SubmitButton } from "~/components/SubmitButton";
 import { useUser } from "~/features/auth/core/user";
-import {
-	useBracketExpanded,
-	useTournament,
-} from "~/features/tournament/routes/to.$id";
+import { useBracketExpanded } from "~/features/tournament/routes/to.$id";
+import { useTournament } from "~/features/tournament/tournament-context";
 import * as Engine from "~/features/tournament-bracket/core/engine";
 import type { MatchData as MatchType } from "~/features/tournament-bracket/core/engine/types";
 import { useSearchParam } from "~/modules/search-params/hooks";
 import type { Bracket as BracketType } from "../../core/Bracket";
-import styles from "../../tournament-bracket.module.css";
+import { bracketSchema } from "../../tournament-bracket-schemas";
 import { tournamentBracketsSearchParams } from "../../tournament-bracket-search-params";
 import { groupNumberToLetters } from "../../tournament-bracket-utils";
 import { Match } from "./Match";
 import { PlacementsTable } from "./PlacementsTable";
 import { RoundHeader } from "./RoundHeader";
+import styles from "./Swiss.module.css";
 import { useBracketSpoilerCensor } from "./useBracketSpoilerCensor";
 
 export function SwissBracket({
 	bracket,
 	bracketIdx,
+	groupId,
 }: {
 	bracket: BracketType;
 	bracketIdx: number;
+	/** Group whose matches were loaded, null when every group's were. */
+	groupId?: number | null;
 }) {
 	const user = useUser();
 	const tournament = useTournament();
@@ -33,19 +33,13 @@ export function SwissBracket({
 	const { censored, matchCensorLevel } = useBracketSpoilerCensor();
 
 	const groups = getGroups(bracket);
-	const [selectedGroupIdParam, setSelectedGroupId] = useSearchParam(
+	const [, setSelectedGroupId] = useSearchParam(
 		tournamentBracketsSearchParams,
 		"group",
 	);
-	// when bracket starts we go from "virtual id" to a real one
-	// which would cause the admin to see empty group after starting
-	// bracket
-	const selectedGroupId =
-		typeof selectedGroupIdParam === "number" &&
-		groups.some((g) => g.groupId === selectedGroupIdParam)
-			? selectedGroupIdParam
-			: groups[0].groupId;
-	const fetcher = useFetcher();
+	// the group of the shipped matches rather than that of the search param, so that
+	// the group being switched to only shows up once its matches have loaded
+	const selectedGroupId = groupId ?? groups[0].groupId;
 
 	const selectedGroup = groups.find((g) => g.groupId === selectedGroupId)!;
 
@@ -181,48 +175,36 @@ export function SwissBracket({
 										matches={ongoingMatches}
 									/>
 									{roundThatCanBeStartedId() === round.id ? (
-										<fetcher.Form method="post">
-											<input
-												type="hidden"
-												name="groupId"
-												value={selectedGroupId}
-											/>
-											<input
-												type="hidden"
-												name="bracketIdx"
-												value={bracketIdx}
-											/>
-											<SubmitButton
-												_action="ADVANCE_BRACKET"
-												state={fetcher.state}
-												testId="start-round-button"
-											>
-												Start round
-											</SubmitButton>
-										</fetcher.Form>
+										<ActionButton
+											schema={bracketSchema}
+											action="ADVANCE_BRACKET"
+											fields={{ groupId: selectedGroupId, bracketIdx }}
+											testId="start-round-button"
+										>
+											Start round
+										</ActionButton>
 									) : null}
 									{someMatchOngoing(matches) &&
 									tournament.isOrganizer(user) &&
 									roundI > 0 ? (
-										<FormWithConfirm
-											dialogHeading={`Delete all matches of round ${round.number}?`}
-											fields={[
-												["groupId", selectedGroupId],
-												["roundId", round.id],
-												["bracketIdx", bracketIdx],
-												["_action", "UNADVANCE_BRACKET"],
-											]}
+										<ActionButton
+											schema={bracketSchema}
+											action="UNADVANCE_BRACKET"
+											fields={{
+												groupId: selectedGroupId,
+												roundId: round.id,
+												bracketIdx,
+											}}
+											confirm={{
+												dialogHeading: `Delete all matches of round ${round.number}?`,
+											}}
+											variant="minimal-destructive"
+											className="small-text mb-4"
+											size="small"
+											testId="reset-round-button"
 										>
-											<SendouButton
-												variant="minimal-destructive"
-												type="submit"
-												className="small-text mb-4"
-												size="small"
-												data-testid="reset-round-button"
-											>
-												Reset round
-											</SendouButton>
-										</FormWithConfirm>
+											Reset round
+										</ActionButton>
 									) : null}
 								</div>
 								<div className="stack horizontal md lg-row flex-wrap">
@@ -282,23 +264,8 @@ export function SwissBracket({
 }
 
 function getGroups(bracket: BracketType) {
-	const result: Array<{
-		groupName: string;
-		matches: MatchType[];
-		groupId: number;
-	}> = [];
-
-	for (const group of bracket.data.group) {
-		const matches = bracket.data.match.filter(
-			(match) => match.groupId === group.id,
-		);
-
-		result.push({
-			groupName: `Group ${groupNumberToLetters(group.number)}`,
-			matches,
-			groupId: group.id,
-		});
-	}
-
-	return result;
+	return bracket.data.group.map((group) => ({
+		groupName: `Group ${groupNumberToLetters(group.number)}`,
+		groupId: group.id,
+	}));
 }

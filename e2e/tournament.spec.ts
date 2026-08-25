@@ -8,6 +8,7 @@ import {
 	navigate,
 	test,
 } from "./helpers/playwright";
+import { NotificationPopover } from "./pages/layout/notification-popover";
 import { TournamentBracketsPage } from "./pages/tournament/tournament-brackets-page";
 import { TournamentPage } from "./pages/tournament/tournament-page";
 import { TournamentRegisterPage } from "./pages/tournament/tournament-register-page";
@@ -60,6 +61,17 @@ test.describe("Tournament", () => {
 		await register.saveCounterpickMaps();
 
 		await expect(register.stepCheckmark(3)).toBeVisible();
+
+		// adding to the roster notified the added member
+		await impersonate(page, friends[0].id);
+		await navigate({ page, url: "/" });
+
+		const notifications = new NotificationPopover(page);
+		await notifications.open();
+
+		await expect(
+			notifications.notification(`Added to a team (${TEAM_NAME})`),
+		).toBeVisible();
 	});
 
 	test("checks in and appears on the bracket", async ({ page, factories }) => {
@@ -74,6 +86,13 @@ test.describe("Tournament", () => {
 			tournamentId: tournament.id,
 			team: pickUpTeam(TEAM_NAME),
 			memberUserIds: roster.map((user) => user.id),
+		});
+		await factories.NotificationFactory.create({
+			notification: {
+				type: "TO_CHECK_IN_OPENED",
+				meta: { tournamentId: tournament.id, tournamentName: "In The Zone" },
+			},
+			users: roster.map((user) => ({ userId: user.id })),
 		});
 
 		const opponents = await factories.UserFactory.createMany(2);
@@ -97,7 +116,15 @@ test.describe("Tournament", () => {
 
 		const register = new TournamentRegisterPage(page);
 		await register.goto(tournament.id);
+
+		const notifications = new NotificationPopover(page);
+		await expect(notifications.locators.bellDot).toBeVisible();
+
 		await register.checkIn();
+
+		// checking in resolved the check-in notification without the bell
+		// having been opened
+		await expect(notifications.locators.bellDot).toBeHidden();
 
 		const bracketsAfterCheckIn = await register.openBrackets();
 

@@ -1,4 +1,3 @@
-import { Config } from "~/config";
 import { TEAM } from "../team/team-constants";
 
 export const TOURNAMENT = {
@@ -66,85 +65,8 @@ export const TOURNAMENT_AUDIT_LOG_TYPES = [
 	"TEAM_DROPPED_OUT",
 	"TEAM_DROP_OUT_UNDONE",
 	"UPDATE_IN_GAME_NAME",
+	"UPDATE_TOURNAMENT_NAME",
 ] as const;
 
 export type TournamentAuditLogType =
 	(typeof TOURNAMENT_AUDIT_LOG_TYPES)[number];
-
-export const LEAGUES =
-	process.env.NODE_ENV === "development" && !Config.prodMode
-		? {
-				LUTI: [
-					{
-						tournamentId: 6,
-						weeks: [
-							{
-								weekNumber: 2,
-								year: 2025,
-							},
-							{
-								weekNumber: 3,
-								year: 2025,
-							},
-							{
-								weekNumber: 4,
-								year: 2025,
-							},
-						],
-					},
-				],
-			}
-		: {
-				LUTI: [
-					{
-						tournamentId: 1066,
-						weeks: [
-							{
-								weekNumber: 10,
-								year: 2025,
-							},
-							{
-								weekNumber: 11,
-								year: 2025,
-							},
-							{
-								weekNumber: 12,
-								year: 2025,
-							},
-							{
-								weekNumber: 13,
-								year: 2025,
-							},
-							{
-								weekNumber: 14,
-								year: 2025,
-							},
-						],
-					},
-					{
-						tournamentId: 3192,
-						weeks: [
-							{
-								weekNumber: 9,
-								year: 2026,
-							},
-							{
-								weekNumber: 10,
-								year: 2026,
-							},
-							{
-								weekNumber: 11,
-								year: 2026,
-							},
-							{
-								weekNumber: 12,
-								year: 2026,
-							},
-							{
-								weekNumber: 13,
-								year: 2026,
-							},
-						],
-					},
-				],
-			};

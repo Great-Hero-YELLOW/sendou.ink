@@ -306,8 +306,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 		castedMatchesInfo: null,
 		mapPickingStyle: "TO",
 		hasRules: true,
-		parentTournamentId: null,
-		parentTournamentName: null,
 		name: "Zones Weekly 38",
 		startsAt: 1734685200,
 		isFinalized: 0,
@@ -321,6 +319,13 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 			discordAvatar: "a5fff2b4706d99364e646cab28c8085b",
 			customUrl: "puma",
 			customAvatarUrl: null,
+		},
+		permissions: {
+			ADMIN: [13370],
+			ORGANIZE: [13370],
+			MANAGE_MATCHES: [13370],
+			EDIT_EVENT_INFO: [13370],
+			EDIT_IN_GAME_NAMES: [],
 		},
 		staff: [
 			{
@@ -376,7 +381,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: [5662, 2899, 6114, 30176],
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [5662, 2899, 6114, 33963, 30176],
 				ownerUserId: 5662,
 				checkIns: [
@@ -400,7 +404,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: null,
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [17855, 21689, 3147, 2072],
 				ownerUserId: 17855,
 				checkIns: [
@@ -424,7 +427,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: null,
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [11484, 13370, 45, 1843],
 				ownerUserId: 11484,
 				checkIns: [
@@ -448,7 +450,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: [37632, 13590, 10757, 33047],
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [37632, 13590, 10757, 33047, 41024],
 				ownerUserId: 37632,
 				checkIns: [
@@ -472,7 +473,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: [11780, 46006, 43518, 33483],
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [43518, 29665, 46006, 33483, 11780, 37901],
 				ownerUserId: 43518,
 				checkIns: [
@@ -496,7 +496,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: [46467, 46813, 33491, 43662],
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [45879, 43662, 33491, 46467, 46813],
 				ownerUserId: 45879,
 				checkIns: [
@@ -520,7 +519,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				activeRosterUserIds: null,
 				startingBracketIdx: null,
 				abDivision: null,
-				inviteCode: null,
 				memberUserIds: [26992, 33611, 31148, 33578],
 				ownerUserId: 26992,
 				checkIns: [

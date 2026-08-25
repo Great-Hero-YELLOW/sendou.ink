@@ -35,12 +35,12 @@ test.describe("Calendar", () => {
 			});
 		}
 
+		await impersonate(page, NZAP_TEST_ID);
+
 		const calendar = new CalendarPage(page);
 		await calendar.goto();
 
-		const filters = await calendar.openFilters();
-		await filters.form.check("isSendou");
-		await filters.apply();
+		await calendar.toggleEventTypeFilter("isSendou");
 
 		await expect(calendar.locators.tournamentCards).toHaveCount(
 			SENDOU_INK_TOURNAMENTS_COUNT,
@@ -77,9 +77,8 @@ test.describe("Calendar", () => {
 
 		await isNotVisible(calendar.locators.hiddenEventsButtons);
 
-		const filters = await calendar.openFilters();
-		await filters.form.check("isRanked");
-		await filters.applyAndMakeDefault();
+		await calendar.toggleEventTypeFilter("isRanked");
+		await calendar.saveFiltersAsDefault();
 
 		await expect(calendar.locators.hiddenEventsButtons.first()).toBeVisible();
 
@@ -87,6 +86,15 @@ test.describe("Calendar", () => {
 
 		// remembers selection via user preferences
 		await expect(calendar.locators.hiddenEventsButtons.first()).toBeVisible();
+
+		await calendar.removeEventTypeFilter();
+
+		// removing the filter sticks instead of falling back to the saved default
+		await isNotVisible(calendar.locators.hiddenEventsButtons);
+
+		await calendar.reload();
+
+		await isNotVisible(calendar.locators.hiddenEventsButtons);
 	});
 
 	test("navigates view more buttons", async ({ page }) => {
@@ -144,7 +152,7 @@ test.describe("Calendar", () => {
 		}
 	});
 
-	test("creates a new calendar event", async ({ page }) => {
+	test("creates, edits and deletes a calendar event", async ({ page }) => {
 		await impersonate(page);
 
 		const newEvent = new CalendarNewEventPage(page);
@@ -157,6 +165,36 @@ test.describe("Calendar", () => {
 		await newEvent.form.submit();
 
 		await expect(page).toHaveURL(/\/calendar\/\d+/);
+		const eventId = Number(page.url().match(/\/calendar\/(\d+)/)?.[1]);
+
+		const calendarEvent = new CalendarEventPage(page);
+		const editedDate = new Date(2027, 0, 20, 18, 0);
+
+		const editEvent = await calendarEvent.openEdit();
+		await editEvent.form.fill("name", "Renamed Calendar Event");
+		await editEvent.setFirstDate(editedDate);
+		await editEvent.save();
+
+		await expect(page).toHaveURL(calendarEventPage(eventId));
+		await expect(calendarEvent.startTime(editedDate)).toBeVisible();
+
+		// the edited name and date land on the calendar
+		const calendar = new CalendarPage(page);
+		const editedDateWeek = { day: 20, month: 0, year: 2027 };
+		await calendar.goto(editedDateWeek);
+
+		await expect(
+			calendar.tournamentCard("Renamed Calendar Event"),
+		).toBeVisible();
+
+		await calendarEvent.goto(eventId);
+		await calendarEvent.delete();
+
+		await expect(page).toHaveURL(/\/calendar$/);
+
+		await calendar.goto(editedDateWeek);
+
+		await isNotVisible(calendar.tournamentCard("Renamed Calendar Event"));
 	});
 
 	test("creates a new tournament with a map pool and follow-up bracket", async ({
@@ -197,7 +235,7 @@ test.describe("Calendar", () => {
 
 		await newTournament.addFollowUpBracket({
 			name: "Underground bracket",
-			format: "Single-elimination",
+			format: "Single elimination",
 			placements: "-1",
 		});
 

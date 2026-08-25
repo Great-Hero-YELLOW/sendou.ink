@@ -1,7 +1,7 @@
 import type { ActionFunction } from "react-router";
 import type { PreparedMaps } from "~/db/tables-json";
-import { requireUser } from "~/features/auth/core/user.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
+import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { notify } from "~/features/notifications/core/notify.server";
 import {
 	calculateTournamentTierFromTeams,
@@ -15,11 +15,9 @@ import { logger } from "~/utils/logger";
 import {
 	errorToastIfErr,
 	errorToastIfFalsy,
-	parseParams,
 	parseRequestPayload,
 } from "~/utils/remix.server";
 import { assertUnreachable } from "~/utils/types";
-import { idObject } from "~/utils/zod";
 import * as BracketRepository from "../BracketRepository.server";
 import * as AbDivisions from "../core/AbDivisions";
 import * as Engine from "../core/engine";
@@ -27,25 +25,25 @@ import * as PreparedMapsUtils from "../core/PreparedMaps";
 import type { Tournament } from "../core/Tournament";
 import {
 	clearTournamentDataCache,
+	requireTournamentOrganizer,
 	tournamentFromDB,
+	tournamentFromParams,
 } from "../core/Tournament.server";
-import { bracketSchema } from "../tournament-bracket-schemas.server";
+import { bracketSchema } from "../tournament-bracket-schemas";
 import { tournamentWebsocketRoom } from "../tournament-bracket-utils";
 
 export const action: ActionFunction = async ({ params, request }) => {
-	const user = requireUser();
-	const { id: tournamentId } = parseParams({
+	const { tournament, tournamentId, user } = await tournamentFromParams(
 		params,
-		schema: idObject,
-	});
-	const tournament = await tournamentFromDB({ tournamentId, user });
+		{ for: "action" },
+	);
 	const data = await parseRequestPayload({ request, schema: bracketSchema });
 
 	let emitTournamentUpdate = false;
 
 	switch (data._action) {
 		case "START_BRACKET": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 			errorToastIfFalsy(
 				!tournament.isDraft,
 				"Tournament must be opened before starting a bracket",
@@ -100,7 +98,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 				type: bracket.type,
 				seeding,
 				settings: bracket.settings,
-				independentRounds: tournament.isLeagueDivision,
+				independentRounds: tournament.isLeague,
 				abDivisions,
 				maps,
 			});
@@ -123,9 +121,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 						eliminationTeamCount:
 							bracket.type === "single_elimination" ||
 							bracket.type === "double_elimination"
-								? PreparedMapsUtils.eliminationTeamCountOptions(
-										seeding.length,
-									)[0].max
+								? PreparedMapsUtils.eliminationTeamCountOptions({
+										type: bracket.type,
+										currentCount: seeding.length,
+									})[0].max
 								: undefined,
 					},
 				});
@@ -142,7 +141,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 				});
 			}
 
-			if (data.bracketIdx === 0 && seeding.length >= MIN_TEAMS_FOR_TIERING) {
+			const isDivision = Progression.startingBrackets(
+				tournament.ctx.settings.bracketProgression,
+			).includes(data.bracketIdx);
+			if (isDivision && seeding.length >= MIN_TEAMS_FOR_TIERING) {
 				const checkedInTeams = tournament.ctx.teams
 					.filter((team) => seeding.includes(team.id))
 					.map((team) => ({ avgOrdinal: team.avgSeedingSkillOrdinal }));
@@ -153,8 +155,9 @@ export const action: ActionFunction = async ({ params, request }) => {
 				);
 
 				if (tierNumber !== null) {
-					await TournamentRepository.updateTournamentTier({
+					await TournamentRepository.upsertDivisionTier({
 						tournamentId: tournament.ctx.id,
+						bracketIdx: data.bracketIdx,
 						tier: tierNumber,
 					});
 				}
@@ -178,15 +181,18 @@ export const action: ActionFunction = async ({ params, request }) => {
 				});
 			}
 
+			// starting drops the teams that did not check in and can change the tier
+			ShowcaseTournaments.clearCachedTournaments();
+
 			// update RunningTournaments
-			await tournamentFromDB({ tournamentId, user });
+			await tournamentFromDB(tournamentId);
 
 			emitTournamentUpdate = true;
 
 			break;
 		}
 		case "PREPARE_MAPS": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 
 			const bracket = tournament.bracketByIdx(data.bracketIdx);
 			invariant(bracket, "Bracket not found");
@@ -220,7 +226,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "ADVANCE_BRACKET": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 
 			const bracket = tournament.bracketByIdx(data.bracketIdx);
 			errorToastIfFalsy(bracket, "Bracket not found");
@@ -248,7 +254,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "UNADVANCE_BRACKET": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 
 			const bracket = tournament.bracketByIdx(data.bracketIdx);
 			errorToastIfFalsy(bracket, "Bracket not found");
@@ -283,6 +289,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			await TournamentTeamRepository.checkIn(teamMemberOf.id, {
 				bracketIdx: data.bracketIdx,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			logger.info(
 				`Checking in (bracket success): tournament team id: ${teamMemberOf.id} - user id: ${user.id} - tournament id: ${tournament.ctx.id} - bracket idx: ${data.bracketIdx}`,
@@ -290,7 +297,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			break;
 		}
 		case "OVERRIDE_BRACKET_PROGRESSION": {
-			errorToastIfFalsy(tournament.isOrganizer(user), "Not an organizer");
+			requireTournamentOrganizer(tournament, user);
 
 			const allDestinationBrackets = Progression.destinationsFromBracketIdx(
 				data.sourceBracketIdx,

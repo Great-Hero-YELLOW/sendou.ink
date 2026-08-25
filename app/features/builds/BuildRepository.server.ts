@@ -1,5 +1,4 @@
 import { type NotNull, sql, type Transaction } from "kysely";
-import { jsonArrayFrom } from "kysely/helpers/sqlite";
 import { db } from "~/db/sql";
 import type { BuildWeapon, DB, TablesInsertable } from "~/db/tables";
 import { modesShort } from "~/modules/in-game-lists/modes";
@@ -13,11 +12,12 @@ import { canonicalWeaponSplId } from "~/modules/in-game-lists/weapon-ids";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { LimitReachedError } from "~/utils/errors";
 import invariant from "~/utils/invariant";
-import { commonUserJsonObject } from "~/utils/kysely.server";
+import { commonUserJsonObject, jsonArrayFrom } from "~/utils/kysely.server";
+import { MAIN_SLOT_AP } from "../build-analyzer/analyzer-constants";
 import {
-	MAIN_SLOT_AP,
-	SUB_SLOT_AP,
-} from "../build-analyzer/analyzer-constants";
+	buildToAbilityPoints,
+	isStackableAbility,
+} from "../build-analyzer/core/ability-points";
 import { BUILD } from "./builds-constants";
 import { sortAbilities } from "./core/ability-sorting.server";
 
@@ -61,7 +61,12 @@ export async function findAllByUserId(
 		.orderBy("Build.updatedAt", "desc")
 		.execute();
 
-	return rows.map((row) => buildRowToResult(row, shouldSortAbilities));
+	return rows.map((row) => ({
+		...buildRowToResult(row, shouldSortAbilities),
+		permissions: {
+			EDIT: [userId],
+		},
+	}));
 }
 
 interface CreateArgs {
@@ -475,15 +480,18 @@ async function computeBuildData(
 function computeAbilitySums(
 	abilities: BuildAbilitiesTuple,
 ): Array<[Ability, number]> {
-	const sums = new Map<Ability, number>();
+	const sums = buildToAbilityPoints(abilities);
+
+	// unlike the analyzer, the sums also track main-only abilities so that
+	// builds differing only by them get distinct signatures
 	for (const row of abilities) {
-		for (let slotIdx = 0; slotIdx < row.length; slotIdx++) {
-			const ability = row[slotIdx];
-			const ap = slotIdx === 0 ? MAIN_SLOT_AP : SUB_SLOT_AP;
-			sums.set(ability, (sums.get(ability) ?? 0) + ap);
-		}
+		const mainAbility = row[0];
+		if (isStackableAbility(mainAbility)) continue;
+
+		sums.set(mainAbility, (sums.get(mainAbility) ?? 0) + MAIN_SLOT_AP);
 	}
-	return [...sums.entries()];
+
+	return [...sums.entries()] as Array<[Ability, number]>;
 }
 
 function serializeSignature(sums: Array<[Ability, number]>): string {

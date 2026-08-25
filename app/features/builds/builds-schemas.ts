@@ -1,31 +1,27 @@
-import { z } from "zod";
+import * as v from "valibot";
 import { MAX_AP } from "~/features/build-analyzer/analyzer-constants";
-import { ability, modeShort } from "~/utils/zod";
+import { isValidDate } from "~/utils/dates";
+import { ability } from "~/utils/schema";
 import { MAX_BUILD_FILTERS } from "./builds-constants";
 
-const abilityFilterSchema = z.object({
-	type: z.literal("ability"),
-	ability: z.string().toUpperCase().pipe(ability),
-	value: z.union([z.int().min(0).max(MAX_AP), z.boolean()]),
-	comparison: z
-		.string()
-		.toUpperCase()
-		.pipe(z.enum(["AT_LEAST", "AT_MOST"]))
-		.optional(),
+const abilityConditionSchema = v.object({
+	ability: v.pipe(v.string(), v.toUpperCase(), ability),
+	value: v.union([
+		v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_AP)),
+		v.boolean(),
+	]),
+	comparison: v.optional(
+		v.pipe(v.string(), v.toUpperCase(), v.picklist(["AT_LEAST", "AT_MOST"])),
+	),
 });
 
-const modeFilterSchema = z.object({
-	type: z.literal("mode"),
-	mode: z.string().toUpperCase().pipe(modeShort),
-});
+export const abilityConditionsSchema = v.pipe(
+	v.array(abilityConditionSchema),
+	v.maxLength(MAX_BUILD_FILTERS),
+);
 
-const dateFilterSchema = z.object({
-	type: z.literal("date"),
-	date: z.iso.date(),
-});
-
-export const buildFiltersSchema = z
-	.array(z.union([abilityFilterSchema, modeFilterSchema, dateFilterSchema]))
-	.max(MAX_BUILD_FILTERS);
-
-export type BuildFiltersFromSearchParams = z.infer<typeof buildFiltersSchema>;
+export const buildsDateFilterSchema = v.pipe(
+	v.string(),
+	v.regex(/^\d{4}-\d{2}-\d{2}$/),
+	v.check((value) => isValidDate(new Date(value))),
+);

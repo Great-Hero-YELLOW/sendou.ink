@@ -10,21 +10,20 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Avatar } from "~/components/Avatar";
-import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
 import {
 	IconBanner,
 	MatchBanner,
 	MatchBannerContainer,
+	MatchBannerInfoBadge,
 	MultiMatchBanner,
 } from "~/components/match-page/MatchBanner";
-import bannerStyles from "~/components/match-page/MatchBanner.module.css";
 import { MatchBannerBottomRow } from "~/components/match-page/MatchBannerBottomRow";
 import { MatchBannerStartedAt } from "~/components/match-page/MatchBannerStartedAt";
 import { MatchBannerTimer } from "~/components/match-page/MatchBannerTimer";
 import { MatchBannerTopRow } from "~/components/match-page/MatchBannerTopRow";
 import type { TournamentRoundMaps } from "~/db/tables-json";
-import { useTournament } from "~/features/tournament/routes/to.$id";
+import { useTournament } from "~/features/tournament/tournament-context";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
@@ -318,7 +317,7 @@ function CurrentMapPickInfo({
 	return (
 		<SendouPopover
 			trigger={
-				<SendouButton variant="minimal" className={bannerStyles.infoBadge}>
+				<MatchBannerInfoBadge>
 					{teams.map((team) => (
 						<Avatar
 							key={team.id}
@@ -327,7 +326,7 @@ function CurrentMapPickInfo({
 							size="xxs"
 						/>
 					))}
-				</SendouButton>
+				</MatchBannerInfoBadge>
 			}
 		>
 			{text}

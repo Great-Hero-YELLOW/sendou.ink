@@ -1,4 +1,3 @@
-import clsx from "clsx";
 import { ArrowDown } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -6,6 +5,7 @@ import * as R from "remeda";
 import { LocaleTime } from "~/components/LocaleTime";
 import { tournamentTeamPage } from "~/utils/urls";
 import {
+	GraphicBoxLabel,
 	GraphicContainer,
 	GraphicPlacementCell,
 	GraphicScore,
@@ -17,13 +17,14 @@ import {
 	GraphicTeamsList,
 	GraphicWonLost,
 } from "./Graphic";
-import graphicStyles from "./Graphic.module.css";
 import {
 	TournamentGraphicFooter,
 	TournamentGraphicHeader,
 	type TournamentResultsGraphicTeam,
 } from "./TournamentResultsGraphic";
 import styles from "./TournamentRunGraphic.module.css";
+
+const ROUND_NAME_ONE_LINE_MAX_LENGTH = 9;
 
 const SERIES_WIN_DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 	day: "numeric",
@@ -150,11 +151,11 @@ export function TournamentRunGraphic({
 								team={match.opponent}
 								leading={
 									<div className={styles.matchLeading}>
-										<div
-											className={clsx(graphicStyles.boxLabel, styles.roundName)}
-										>
-											{match.roundName}
-										</div>
+										<GraphicBoxLabel className={styles.roundName}>
+											{roundNameLines(match.roundName).map((line) => (
+												<div key={line}>{line}</div>
+											))}
+										</GraphicBoxLabel>
 										<GraphicScore
 											ownScore={match.ownScore}
 											opponentScore={match.opponentScore}
@@ -172,6 +173,34 @@ export function TournamentRunGraphic({
 				path={tournamentTeamPage({ tournamentId, tournamentTeamId })}
 			/>
 		</GraphicContainer>
+	);
+}
+
+function roundNameLines(roundName: string) {
+	const words = roundName.split(" ");
+
+	if (
+		roundName.length <= ROUND_NAME_ONE_LINE_MAX_LENGTH ||
+		words.length === 1
+	) {
+		return [roundName];
+	}
+
+	const splitIndex =
+		R.firstBy(R.range(1, words.length), (index) =>
+			longestLineLength(words, index),
+		) ?? 1;
+
+	return [
+		words.slice(0, splitIndex).join(" "),
+		words.slice(splitIndex).join(" "),
+	];
+}
+
+function longestLineLength(words: string[], splitIndex: number) {
+	return Math.max(
+		words.slice(0, splitIndex).join(" ").length,
+		words.slice(splitIndex).join(" ").length,
 	);
 }
 

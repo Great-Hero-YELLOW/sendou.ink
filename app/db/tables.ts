@@ -15,7 +15,6 @@ import type {
 	CastedMatchesInfo,
 	CustomTheme,
 	NotificationSubscription,
-	ParsedMemento,
 	PeakXP,
 	PreparedMaps,
 	Pronouns,
@@ -32,8 +31,10 @@ import type { ApiTokenType } from "~/features/api/api-types";
 import type { AssociationVisibility } from "~/features/associations/associations-types";
 import type { CalendarEventTag } from "~/features/calendar/calendar-types";
 import type { LFGType } from "~/features/lfg/lfg-constants";
+import type { TierName } from "~/features/mmr/mmr-constants";
 import type { SkillTeamIdentifier } from "~/features/mmr/mmr-utils";
 import type { Notification as NotificationValue } from "~/features/notifications/notifications-types";
+import type { ScannerMatch } from "~/features/scanner/core/scanner-match";
 import type { SplatoonRotationType } from "~/features/splatoon-rotations/splatoon-rotations-constants";
 import type {
 	MemberRole,
@@ -200,6 +201,7 @@ export interface PendingTrophy {
 	declineReason: string | null;
 	declinedAt: number | null;
 	declinedByUserId: number | null;
+	acceptedAt: number | null;
 	targetTrophyId: number | null;
 	managerId: number | null;
 }
@@ -302,8 +304,17 @@ export interface Group {
 	latestActionAt: Generated<number>;
 	/** If truthy, group was at least partly made in the matchmaking UI (/q/looking) */
 	matchmade: Generated<DBBoolean>;
-	status: "PREPARING" | "ACTIVE" | "INACTIVE";
+	status: "PREPARING" | "ACTIVE" | "INACTIVE" | "READY_CHECK";
 	teamId: number | null;
+	/**
+	 * Tier the group held as its match was created, snapshotted because tier thresholds are
+	 * percentiles of the season's live distribution and so shift as the season goes on.
+	 * `null` until the group gets a match, and for matches made before this was recorded.
+	 * The queue shows a live tier instead, so this is only read by the match page.
+	 */
+	tierName: TierName | null;
+	/** Second half of {@link Group.tierName}, meaningless while that is `null`. */
+	tierIsPlus: Generated<DBBoolean>;
 }
 
 export interface GroupLike {
@@ -311,6 +322,9 @@ export interface GroupLike {
 	likerGroupId: number;
 	targetGroupId: number;
 	isRechallenge: Generated<DBBoolean>;
+	// TODO: migrate to not null
+	/** Member of the liker group who sent the invite. `null` for invites sent before the column existed. */
+	createdByUserId: number | null;
 }
 
 export interface GroupMatch {
@@ -321,7 +335,6 @@ export interface GroupMatch {
 	confirmedByUserId: number | null;
 	createdAt: Generated<number>;
 	id: GeneratedAlways<number>;
-	memento: JSONColumnTypeNullable<ParsedMemento>;
 	cancelRequestedByUserId: number | null;
 	cancelAcceptedByUserId: number | null;
 	noScreen: Generated<DBBoolean>;
@@ -366,9 +379,42 @@ export interface GroupMatchMap {
 export interface GroupMember {
 	createdAt: Generated<number>;
 	groupId: number;
+	/** When the member last let a {@link GroupReadyCheck} expire without confirming, letting the rest of the group kick them. `null` if they have not. */
+	missedReadyCheckAt: number | null;
 	note: string | null;
-	role: "OWNER" | "MANAGER" | "REGULAR";
 	userId: number;
+	/**
+	 * Tier the member held as their group's match was created, snapshotted for the same
+	 * reason as {@link Group.tierName}. `"CALCULATING"` when they had too few ranked sets
+	 * of the season to have a tier yet, `null` when the group never got a match.
+	 */
+	tierName: TierName | "CALCULATING" | null;
+	/** Second half of {@link GroupMember.tierName}, meaningless unless that names a tier. */
+	tierIsPlus: Generated<DBBoolean>;
+}
+
+/** Both groups' members confirming they are ready to play, before their match is created */
+export interface GroupReadyCheck {
+	alphaGroupId: number;
+	bravoGroupId: number;
+	createdAt: Generated<number>;
+	id: GeneratedAlways<number>;
+}
+
+/** One member confirming they are ready to play in a {@link GroupReadyCheck} */
+export interface GroupReadyCheckConfirmation {
+	createdAt: Generated<number>;
+	readyCheckId: number;
+	userId: number;
+}
+
+/** A group member pointing their own group at another group, without inviting it */
+export interface GroupSuggestion {
+	createdAt: Generated<number>;
+	/** Group whose members see the suggestion */
+	suggesterGroupId: number;
+	targetGroupId: number;
+	createdByUserId: number;
 }
 
 export interface PrivateUserNote {
@@ -476,6 +522,30 @@ export interface ReportedWeapon {
 	createdAt: Generated<number>;
 }
 
+export interface IngestedMatch {
+	id: GeneratedAlways<number>;
+	povUserId: number | null;
+	submitterUserId: number | null;
+	/** database timestamp (seconds) the match was played at, when known */
+	playedAt: number | null;
+	data: JSONColumnType<ScannerMatch>;
+	matchHash: string;
+	/** server-resolved tournament the match probably belongs to; aids future linking */
+	tournamentIdHint: number | null;
+	/** server-resolved SendouQ match the match probably belongs to; aids future linking */
+	groupMatchIdHint: number | null;
+	createdAt: Generated<number>;
+}
+
+/** Links an ingested match to the game result it describes (exactly one target). */
+export interface IngestedMatchLink {
+	id: GeneratedAlways<number>;
+	ingestedMatchId: number;
+	tournamentMatchGameResultId: number | null;
+	groupMatchMapId: number | null;
+	createdAt: Generated<number>;
+}
+
 export interface Skill {
 	groupMatchId: number | null;
 	id: GeneratedAlways<number>;
@@ -495,6 +565,16 @@ export interface Skill {
 export interface SkillTeamUser {
 	skillId: number;
 	userId: number;
+}
+
+/** A team that is shown on the team leaderboard but doesn't count for its placements, e.g. because its players want to qualify with another roster. */
+export interface LeaderboardTeamSkip {
+	id: GeneratedAlways<number>;
+	season: number;
+	/** The team's roster, same as `Skill.identifier`. */
+	identifier: SkillTeamIdentifier;
+	skippedByUserId: number;
+	createdAt: Generated<number>;
 }
 
 /** Used for tournament auto-seeding. Calculates off tournament matches same as SP but does not have seasonal resets. */
@@ -523,8 +603,6 @@ export interface Tournament {
 	castTwitchAccounts: JSONColumnTypeNullable<string[]>;
 	castedMatchesInfo: JSONColumnTypeNullable<CastedMatchesInfo>;
 	rules: string | null;
-	/** Related "parent tournament", the tournament that contains the original sign-ups (for leagues) */
-	parentTournamentId: number | null;
 	/** Is the tournament finalized meaning all the matches are played and TO has locked it making it read-only */
 	isFinalized: Generated<DBBoolean>;
 	/** Snapshot of teams and rosters when seeds were last saved. Used to detect NEW teams/players. */
@@ -541,6 +619,19 @@ export interface SavedCalendarEvent {
 	userId: number;
 	calendarEventId: number;
 	createdAt: Generated<number>;
+}
+
+/**
+ * Tier of one division (= starting bracket) of a tournament, based on the skill of the teams that
+ * checked in to it. Tournaments where every team plays the same bracket have one row (bracket idx 0)
+ * matching `Tournament.tier`, tournaments with many starting brackets one row per division.
+ */
+export interface TournamentDivisionTier {
+	tournamentId: number;
+	/** Idx of the starting bracket in `Tournament.settings.bracketProgression`. */
+	bracketIdx: number;
+	/** Same scale as `Tournament.tier`. 1=X, 2=S+, 3=S, 4=A+, 5=A, 6=B+, 7=B, 8=C+, 9=C */
+	tier: TournamentTierNumber;
 }
 
 export interface TournamentBadgeOwner {
@@ -627,8 +718,6 @@ export interface TournamentResult {
 	 * E.g. ["W", "L", null] would mean the user won the first set, lost the second and did not play the third.
 	 * */
 	setResults: JSONColumnType<WinLossParticipationArray>;
-	/** The SP change in total after the finalization of a ranked tournament. */
-	spDiff: number | null;
 	userId: number;
 	/** Division label for tournaments with multiple starting brackets (e.g., "D1", "D2") */
 	div: string | null;
@@ -647,6 +736,8 @@ export interface TournamentRound {
 	number: number;
 	stageId: number;
 	maps: JSONColumnType<TournamentRoundMaps>;
+	/** Datetime the round is played by default (leagues). Null = no default play time, the round is played whenever. */
+	defaultPlayTime: number | null;
 }
 
 /** A stage is an intermediate phase in a tournament. In essence a bracket. */
@@ -714,6 +805,8 @@ export interface TournamentTeamMember {
 	isStayAsSub: Generated<DBBoolean>;
 	/** Set when the member was added to the roster after registration closed. */
 	isSub: Generated<DBBoolean>;
+	/** Set when the member was added to the roster by the tournament organizer instead of joining on their own. */
+	isOrganizerAdded: Generated<DBBoolean>;
 	// denormalized from TournamentTeam.isLooking
 	isLooking: Generated<DBBoolean>;
 }
@@ -853,6 +946,8 @@ export interface User {
 	customName: string | null;
 	/** coalesce(customName, discordName) */
 	username: ColumnType<string, never, never>;
+	/** Name the user is shown under in tournaments, set by organizers of established organizations. `null` = their `username` is used. */
+	tournamentName: string | null;
 	discordUniqueName: string | null;
 	/** User's favorite badges they want to show on the front page of the badge display. Index = 0 big badge. */
 	favoriteBadgeIds: JSONColumnTypeNullable<number[]>;
@@ -896,6 +991,8 @@ export interface User {
 	div: string | null;
 	/** Peak XP as indicated by the user. Should have either `takoroka` or `tentatek` key defined but not both. */
 	unverifiedPeakXP: JSONColumnTypeNullable<PeakXP>;
+	/** Division the user card's XP is taken from. `null` when the user has not picked one, showing their highest XP across both. */
+	xpDivision: XRankPlacementRegion | null;
 }
 
 export interface UserResultHighlight {
@@ -1137,6 +1234,20 @@ export interface ScrimPostUser {
 	isOwner: DBBoolean;
 }
 
+export interface ScrimPickupRoster {
+	id: GeneratedAlways<number>;
+	/** User who used the pick-up roster */
+	userId: number;
+	/** When the roster was last used to make a scrim post */
+	usedAt: Generated<number>;
+}
+
+export interface ScrimPickupRosterUser {
+	scrimPickupRosterId: number;
+	/** Member of the pick-up roster, excluding the roster's owner */
+	userId: number;
+}
+
 export interface ScrimPostRequest {
 	id: GeneratedAlways<number>;
 	scrimPostId: number;
@@ -1250,6 +1361,11 @@ export interface DB {
 	GroupMatchContinueVote: GroupMatchContinueVote;
 	GroupMatchMap: GroupMatchMap;
 	GroupMember: GroupMember;
+	GroupReadyCheck: GroupReadyCheck;
+	GroupReadyCheckConfirmation: GroupReadyCheckConfirmation;
+	GroupSuggestion: GroupSuggestion;
+	IngestedMatch: IngestedMatch;
+	IngestedMatchLink: IngestedMatchLink;
 	PrivateUserNote: PrivateUserNote;
 	LogInLink: LogInLink;
 	LFGPost: LFGPost;
@@ -1264,6 +1380,7 @@ export interface DB {
 	ReportedWeapon: ReportedWeapon;
 	Skill: Skill;
 	SkillTeamUser: SkillTeamUser;
+	LeaderboardTeamSkip: LeaderboardTeamSkip;
 	SeedingSkill: SeedingSkill;
 	SplatoonPlayer: SplatoonPlayer;
 	/** VIEW over `AllTeam`, excludes soft-deleted teams. Insert/update via `AllTeam`. */
@@ -1273,6 +1390,7 @@ export interface DB {
 	/** VIEW over `AllTeamMember`, same as `TeamMember` but also includes rows where this is the member's secondary (i.e. non-main) team. Insert/update via `AllTeamMember`. */
 	TeamMemberWithSecondary: TeamMember;
 	Tournament: Tournament;
+	TournamentDivisionTier: TournamentDivisionTier;
 	TournamentStaff: TournamentStaff;
 	TournamentGroup: TournamentGroup;
 	TournamentLFGLike: TournamentLFGLike;
@@ -1328,6 +1446,8 @@ export interface DB {
 	ScrimPostUser: ScrimPostUser;
 	ScrimPostRequest: ScrimPostRequest;
 	ScrimPostRequestUser: ScrimPostRequestUser;
+	ScrimPickupRoster: ScrimPickupRoster;
+	ScrimPickupRosterUser: ScrimPickupRosterUser;
 	ScrimMapList: ScrimMapList;
 	ScrimMap: ScrimMap;
 	Association: Association;

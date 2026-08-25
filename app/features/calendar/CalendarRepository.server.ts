@@ -6,7 +6,6 @@ import type {
 	Transaction,
 } from "kysely";
 import { sql } from "kysely";
-import { jsonArrayFrom, jsonObjectFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
@@ -22,9 +21,13 @@ import {
 } from "~/utils/dates";
 import invariant from "~/utils/invariant";
 import {
+	commonUserSelect,
 	concatUserSubmittedImagePrefix,
-	customAvatarUrl,
+	jsonArrayFrom,
+	jsonObjectFrom,
 	tournamentLogoWithDefault,
+	tournamentMembersCount,
+	tournamentTeamsCount,
 } from "~/utils/kysely.server";
 import { calendarEventPage, tournamentPage } from "~/utils/urls";
 import {
@@ -137,30 +140,6 @@ const withOrganization = (eb: ExpressionBuilder<DB, "CalendarEvent">) =>
 			),
 	);
 
-const withTeamsCount = (
-	eb: ExpressionBuilder<DB, "CalendarEventDate" | "Tournament">,
-) =>
-	eb
-		.selectFrom("TournamentTeam")
-		.leftJoin("TournamentTeamCheckIn", (join) =>
-			join
-				.on("TournamentTeamCheckIn.bracketIdx", "is", null)
-				.onRef(
-					"TournamentTeamCheckIn.tournamentTeamId",
-					"=",
-					"TournamentTeam.id",
-				),
-		)
-		.whereRef("TournamentTeam.tournamentId", "=", "Tournament.id")
-		.where("TournamentTeam.isPlaceholder", "=", 0)
-		.where((eb) =>
-			eb.or([
-				eb("TournamentTeamCheckIn.checkedInAt", "is not", null),
-				eb("CalendarEventDate.startsAt", ">", databaseTimestampNow()),
-			]),
-		)
-		.select(({ fn }) => [fn.countAll<number>().as("teamsCount")]);
-
 function findAllBetweenTwoTimestampsQuery({
 	startTime,
 	endTime,
@@ -189,7 +168,8 @@ function findAllBetweenTwoTimestampsQuery({
 				"normalizedStartsAt",
 			),
 			withOrganization(eb).as("organization"),
-			withTeamsCount(eb).as("teamsCount"),
+			tournamentTeamsCount(eb).as("teamsCount"),
+			tournamentMembersCount(eb).as("membersCount"),
 			tournamentLogoWithDefault(eb).as("logoUrl"),
 			jsonArrayFrom(
 				eb
@@ -223,7 +203,7 @@ function findAllBetweenTwoTimestampsQuery({
 			dateToDatabaseTimestamp(startTime),
 		)
 		.where("CalendarEventDate.startsAt", "<=", dateToDatabaseTimestamp(endTime))
-		.$narrowType<{ teamsCount: NotNull }>()
+		.$narrowType<{ teamsCount: NotNull; membersCount: NotNull }>()
 		.execute();
 }
 
@@ -259,6 +239,8 @@ function findAllBetweenTwoTimestampsMapped(
 				authorId: row.authorId,
 				tags: tags.filter((tag) => !EXCLUDED_TAGS.includes(tag)),
 				teamsCount: row.teamsCount,
+				membersCount: row.membersCount,
+				minMembersPerTeam: row.tournamentSettings?.minMembersPerTeam ?? 4,
 				normalizedTeamCount: normalizedTeamCount({
 					teamsCount: row.teamsCount,
 					minMembersPerTeam: row.tournamentSettings?.minMembersPerTeam ?? 4,
@@ -337,12 +319,9 @@ export async function findById(
 			"CalendarEvent.participantCount",
 			"CalendarEvent.avatarImgId",
 			"Tournament.mapPickingStyle",
-			"User.id as authorId",
 			"CalendarEventDate.startsAt",
 			"CalendarEventDate.eventId",
-			"User.username",
-			"User.discordId",
-			"User.discordAvatar",
+			...commonUserSelect(eb, { idAs: "authorId" }),
 			hasBadge(eb),
 			tournamentOrganization(eb.ref("CalendarEvent.organizationId")).as(
 				"organization",
@@ -354,11 +333,24 @@ export async function findById(
 
 	if (!firstRow) return null;
 
+	const startTimes = [firstRow, ...rest].map((row) => row.startsAt);
+	const now = new Date();
+
 	return {
 		...firstRow,
 		tags: firstRow.tags ?? [],
-		startTimes: [firstRow, ...rest].map((row) => row.startsAt),
+		startTimes,
 		startsAt: undefined,
+		permissions: {
+			EDIT: [firstRow.authorId],
+			DELETE:
+				databaseTimestampToDate(startTimes[0]) > now ? [firstRow.authorId] : [],
+			REPORT_WINNERS: startTimes.every(
+				(startTime) => databaseTimestampToDate(startTime) < now,
+			)
+				? [firstRow.authorId]
+				: [],
+		},
 	};
 }
 
@@ -394,13 +386,8 @@ export async function findResultsByEventId(eventId: number) {
 					.selectFrom("CalendarEventResultPlayer")
 					.leftJoin("User", "User.id", "CalendarEventResultPlayer.userId")
 					.select((eb) => [
-						"CalendarEventResultPlayer.userId as id",
+						...commonUserSelect(eb),
 						"CalendarEventResultPlayer.name",
-						"User.username",
-						"User.discordId",
-						"User.discordAvatar",
-						"User.customUrl",
-						customAvatarUrl(eb).as("customAvatarUrl"),
 					])
 					.whereRef(
 						"CalendarEventResultPlayer.teamId",
@@ -411,6 +398,31 @@ export async function findResultsByEventId(eventId: number) {
 		])
 		.where("CalendarEventResultTeam.eventId", "=", eventId)
 		.orderBy("CalendarEventResultTeam.placement", "asc")
+		.execute();
+}
+
+/**
+ * Players of the podium teams of the given events, one row per player. Players reported as plain
+ * text rather than linked to an account have a `null` id.
+ */
+export async function findTopThreeResultsByEventIds(eventIds: number[]) {
+	if (eventIds.length === 0) return [];
+
+	return db
+		.selectFrom("CalendarEventResultTeam")
+		.innerJoin(
+			"CalendarEventResultPlayer",
+			"CalendarEventResultPlayer.teamId",
+			"CalendarEventResultTeam.id",
+		)
+		.leftJoin("User", "User.id", "CalendarEventResultPlayer.userId")
+		.select((eb) => [
+			"CalendarEventResultTeam.id as teamId",
+			"CalendarEventResultTeam.placement",
+			...commonUserSelect(eb),
+		])
+		.where("CalendarEventResultTeam.eventId", "in", eventIds)
+		.where("CalendarEventResultTeam.placement", "<=", 3)
 		.execute();
 }
 
@@ -452,7 +464,6 @@ type CreateArgs = Pick<
 	avatarFileName?: string;
 	avatarImgId?: number;
 	autoValidateAvatar?: boolean;
-	parentTournamentId?: number;
 };
 export async function insert(args: CreateArgs) {
 	const copiedStaff = args.tournamentToCopyId
@@ -499,7 +510,6 @@ export async function insert(args: CreateArgs) {
 					.values({
 						mapPickingStyle: args.mapPickingStyle,
 						settings: JSON.stringify(settings),
-						parentTournamentId: args.parentTournamentId,
 						rules: args.rules,
 					})
 					.returning("id")
@@ -537,7 +547,7 @@ export async function insert(args: CreateArgs) {
 				bracketUrl: args.bracketUrl,
 				avatarImgId: args.avatarImgId ?? avatarImgId,
 				organizationId: args.organizationId,
-				hidden: args.parentTournamentId || args.isTest || args.isDraft ? 1 : 0,
+				hidden: args.isTest || args.isDraft ? 1 : 0,
 				tournamentId,
 				trophyId: args.trophyId ?? null,
 			})
@@ -616,14 +626,13 @@ export async function update(args: UpdateArgs) {
 			: null;
 
 		if (tournamentId) {
-			const { parentTournamentId, settings: existingSettings } = await trx
+			const { settings: existingSettings } = await trx
 				.selectFrom("Tournament")
-				.select(["parentTournamentId", "settings"])
+				.select(["settings"])
 				.where("id", "=", tournamentId)
 				.executeTakeFirstOrThrow();
 
-			const hidden =
-				existingSettings.isTest || parentTournamentId || args.isDraft ? 1 : 0;
+			const hidden = existingSettings.isTest || args.isDraft ? 1 : 0;
 			await trx
 				.updateTable("CalendarEvent")
 				.set({ hidden })

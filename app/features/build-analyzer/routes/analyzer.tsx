@@ -22,7 +22,9 @@ import { Placeholder } from "~/components/Placeholder";
 import { Table } from "~/components/Table";
 import { WeaponSelect } from "~/components/WeaponSelect";
 import { useUser } from "~/features/auth/core/user";
+import { objectDamageCalculatorPage } from "~/features/object-damage-calculator/calculator-urls";
 import { FULL_GROUP_SIZE } from "~/features/sendouq/q-constants";
+import { userNewBuildPage } from "~/features/user-page/user-page-urls";
 import { useHydrated } from "~/hooks/useHydrated";
 import { abilitiesShort } from "~/modules/in-game-lists/abilities";
 import type {
@@ -50,10 +52,8 @@ import {
 	ANALYZER_URL,
 	mainWeaponImageUrl,
 	navIconUrl,
-	objectDamageCalculatorPage,
 	specialWeaponImageUrl,
 	subWeaponImageUrl,
-	userNewBuildPage,
 	weaponParamsPage,
 } from "~/utils/urls";
 import { LinkButton, SendouButton } from "../../../components/elements/Button";
@@ -77,6 +77,7 @@ import type {
 } from "../analyzer-types";
 import { INK_CONSUME_TYPES } from "../analyzer-types";
 import { PerInkTankGrid } from "../components/PerInkTankGrid";
+import { isMainOnlyAbility, isStackableAbility } from "../core/ability-points";
 import {
 	ABILITIES_WITHOUT_CHUNKS,
 	getAbilityChunksMapAsArray,
@@ -86,15 +87,10 @@ import {
 	SPECIAL_EFFECTS,
 } from "../core/specialEffects";
 import { buildStats } from "../core/stats";
-import {
-	buildIsEmpty,
-	damageIsSubWeaponDamage,
-	isMainOnlyAbility,
-	isStackableAbility,
-} from "../core/utils";
+import { buildIsEmpty, damageIsSubWeaponDamage } from "../core/utils";
 import styles from "./analyzer.module.css";
 
-export const CURRENT_PATCH = "11.2";
+export const CURRENT_PATCH = "11.3";
 
 export const meta: MetaFunction = (args) => {
 	return metaTags({

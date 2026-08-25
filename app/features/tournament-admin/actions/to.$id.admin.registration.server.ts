@@ -1,31 +1,43 @@
-import { type ActionFunction, redirect } from "react-router";
-import { requireUser } from "~/features/auth/core/user.server";
+import {
+	type ActionFunction,
+	type ActionFunctionArgs,
+	redirect,
+} from "react-router";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
+import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import { notify } from "~/features/notifications/core/notify.server";
 import * as TeamRepository from "~/features/team/TeamRepository.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import {
 	clearTournamentDataCache,
-	tournamentFromDB,
+	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
 import { syncPickupChatMetadata } from "~/features/tournament-lfg/tournament-lfg-utils.server";
 import { parseFormDataWithImages } from "~/form/parse.server";
 import invariant from "~/utils/invariant";
-import { errorToastIfFalsy, parseParams } from "~/utils/remix.server";
+import { logger } from "~/utils/logger";
+import { errorToastIfFalsy } from "~/utils/remix.server";
 import { tournamentAdminPage } from "~/utils/urls";
-import { idObject } from "~/utils/zod";
 import { adminRegistrationFormSchemaServer } from "../tournament-admin-registration-schemas.server";
-import { requireTournamentOrganizer } from "../tournament-admin-utils.server";
 
-export const action: ActionFunction = async ({ request, params }) => {
-	const user = requireUser();
+export const action: ActionFunction = (args) =>
+	upsertRegistrationAction(args, { allowTournamentNameUpdates: true });
 
-	const { id: tournamentId } = parseParams({ params, schema: idObject });
-	const tournament = await tournamentFromDB({ tournamentId, user });
-
-	requireTournamentOrganizer(tournament, user);
+/**
+ * The registration upsert itself, shared with the public API's version of this
+ * endpoint. That one passes `allowTournamentNameUpdates: false`: tournament names
+ * are the admin form's business and the API can only read them.
+ */
+export const upsertRegistrationAction = async (
+	{ request, params }: ActionFunctionArgs,
+	{ allowTournamentNameUpdates }: { allowTournamentNameUpdates: boolean },
+) => {
+	const { tournament, tournamentId, user } = await tournamentFromParams(
+		params,
+		{ for: "organizer" },
+	);
 
 	const result = await parseFormDataWithImages({
 		request,
@@ -81,18 +93,44 @@ export const action: ActionFunction = async ({ request, params }) => {
 		return [{ userId: member.userId, inGameName: member.inGameName }];
 	});
 
-	await TournamentTeamRepository.upsertRegistration({
-		tournamentTeamId: team?.id,
-		tournamentId,
-		name,
-		teamId: linkedTeamId,
-		avatarImgId,
-		ownerUserId,
-		ownerChange,
-		membersToAdd,
-		membersToRemove,
-		inGameNameUpdates,
-	});
+	// only a submission from someone allowed to edit tournament names says anything
+	// about them, everyone else leaves the names the players have untouched
+	const tournamentNameUpdates =
+		allowTournamentNameUpdates && tournament.canEditTournamentNames(user)
+			? submittedMembers.map((member) => ({
+					userId: member.userId,
+					tournamentName: member.tournamentName ?? null,
+				}))
+			: [];
+
+	// the map pool field is only shown while it can still be changed, so a submission
+	// from any other state says nothing about the pool the team has
+	const mapPool =
+		tournament.teamsPrePickMaps && !tournament.hasStarted
+			? new MapPool(data.mapPool)
+			: undefined;
+
+	const { appliedTournamentNameChanges } =
+		await TournamentTeamRepository.upsertRegistration({
+			tournamentTeamId: team?.id,
+			tournamentId,
+			name,
+			teamId: linkedTeamId,
+			avatarImgId,
+			ownerUserId,
+			ownerChange,
+			membersToAdd,
+			membersToRemove,
+			inGameNameUpdates,
+			tournamentNameUpdates,
+			mapPool,
+		});
+
+	for (const change of appliedTournamentNameChanges) {
+		logger.info(
+			`Tournament name updated: subject user id: ${change.userId} - "${change.previousTournamentName ?? ""}" -> "${change.tournamentName ?? ""}" - by user id: ${user.id} - tournament id: ${tournamentId}`,
+		);
+	}
 
 	for (const addId of membersToAdd) {
 		await TournamentLFGRepository.leaveLfg({
@@ -148,12 +186,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 		});
 	}
 
-	if (!team) {
-		ShowcaseTournaments.updateCachedTournamentTeamCount({
-			tournamentId,
-			newTeamCount: tournament.ctx.teams.length + 1,
-		});
-	}
+	await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 	clearTournamentDataCache(tournamentId);
 

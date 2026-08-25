@@ -1,7 +1,13 @@
-import { z } from "zod";
+import * as v from "valibot";
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
-import { _action, id, modeShort, safeJSONParse, stageId } from "~/utils/zod";
+import { _action } from "~/utils/schema";
 import { registerTeamFormSchemaServer } from "./tournament-register-schemas.server";
+import {
+	addPlayerSchema,
+	checkInSchema,
+	deleteTeamMemberSchema,
+	updateMapPoolSchema,
+} from "./tournament-schemas";
 
 export function registerSchema({
 	tournament,
@@ -10,40 +16,17 @@ export function registerSchema({
 	tournament: Tournament;
 	ownTeamId?: number;
 }) {
-	return z.union([
+	return v.unionAsync([
 		registerTeamFormSchemaServer({ tournament, ownTeamId }),
-		z.object({
-			_action: _action("UPDATE_MAP_POOL"),
-			mapPool: z.preprocess(
-				safeJSONParse,
-				z.array(z.object({ stageId, mode: modeShort })),
-			),
-		}),
-		z.object({
-			_action: _action("DELETE_TEAM_MEMBER"),
-			userId: id,
-		}),
-		z.object({
+		updateMapPoolSchema,
+		deleteTeamMemberSchema,
+		v.object({
 			_action: _action("LEAVE_TEAM"),
 		}),
-		z.object({
-			_action: _action("CHECK_IN"),
-		}),
-		z.object({
-			_action: _action("ADD_PLAYER"),
-			userId: id,
-		}),
-		z.object({
+		checkInSchema,
+		addPlayerSchema,
+		v.object({
 			_action: _action("UNREGISTER"),
 		}),
 	]);
 }
-
-export const saveTournamentSchema = z.union([
-	z.object({
-		_action: _action("SAVE_TOURNAMENT"),
-	}),
-	z.object({
-		_action: _action("UNSAVE_TOURNAMENT"),
-	}),
-]);

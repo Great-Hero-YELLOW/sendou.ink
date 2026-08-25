@@ -1,10 +1,11 @@
 import type { ActionFunctionArgs } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
 import { requireUser } from "~/features/auth/core/user.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import {
 	clearTournamentDataCache,
+	requireTournamentOrganizer,
 	tournamentFromDB,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { syncPickupChatMetadata } from "~/features/tournament-lfg/tournament-lfg-utils.server";
@@ -13,15 +14,15 @@ import {
 	parseBody,
 	parseParams,
 } from "~/utils/remix.server";
-import { id } from "~/utils/zod";
+import { id } from "~/utils/schema";
 import { wrapActionForApi } from "../api-action-wrapper.server";
 
-const paramsSchema = z.object({
+const paramsSchema = v.object({
 	id,
 	teamId: id,
 });
 
-const bodySchema = z.object({
+const bodySchema = v.object({
 	userId: id,
 });
 
@@ -37,8 +38,8 @@ export const action = async (args: ActionFunctionArgs) => {
 
 	return wrapActionForApi(async () => {
 		const user = requireUser();
-		const tournament = await tournamentFromDB({ tournamentId, user });
-		errorToastIfFalsy(tournament.isOrganizer(user), "Unauthorized");
+		const tournament = await tournamentFromDB(tournamentId);
+		requireTournamentOrganizer(tournament, user);
 
 		const team = tournament.teamById(teamId);
 		errorToastIfFalsy(team, "Invalid team id");
@@ -71,6 +72,7 @@ export const action = async (args: ActionFunctionArgs) => {
 			type: "participant",
 			userId,
 		});
+		await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 		await syncPickupChatMetadata({
 			teamId: team.id,

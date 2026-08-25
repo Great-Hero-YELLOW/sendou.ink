@@ -2,7 +2,6 @@ import type { ComponentProps } from "react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { describe, expect, test, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import type { GroupSkillDifference } from "~/db/tables-json";
 import type { TieredSkill } from "~/features/mmr/tiered.server";
 import type {
 	SQGroup,
@@ -24,7 +23,6 @@ function createMember(overrides: Partial<SQGroupMember> = {}): SQGroupMember {
 		discordAvatar: null,
 		customAvatarUrl: null,
 		customUrl: null,
-		role: "OWNER",
 		vc: "NO",
 		languages: [],
 		skill: "CALCULATING",
@@ -32,7 +30,6 @@ function createMember(overrides: Partial<SQGroupMember> = {}): SQGroupMember {
 		friendCode: null,
 		inGameName: null,
 		note: null,
-		pronouns: null,
 		skillDifference: undefined,
 		noScreen: undefined,
 
@@ -53,15 +50,25 @@ function createGroup(
 		tierRange: null,
 		skillDifference: undefined,
 		isReplay: false,
-		usersRole: null,
 		noScreen: false,
 		modePreferences: [],
+		teamMapModePreferences: undefined,
 		status: "ACTIVE",
 		matchId: null,
 		latestActionAt: Date.now(),
 		members: members ?? [createMember()],
 		...rest,
 	};
+}
+
+/** A group whose members are censored, as full groups are in the looking page. */
+function createFullGroup(
+	overrides: Partial<Omit<SQGroup, "members">> = {},
+): SQGroup {
+	const group = createGroup(overrides);
+	group.members = undefined;
+
+	return group;
 }
 
 type OwnGroupMember = SQOwnGroup["members"][number];
@@ -76,7 +83,6 @@ function createOwnGroupMember(
 		discordAvatar: null,
 		customAvatarUrl: null,
 		customUrl: null,
-		role: "OWNER",
 		vc: "NO",
 		languages: [],
 		skill: "CALCULATING",
@@ -84,7 +90,6 @@ function createOwnGroupMember(
 		friendCode: null,
 		inGameName: null,
 		note: null,
-		pronouns: null,
 		skillDifference: undefined,
 		noScreen: undefined,
 
@@ -105,9 +110,9 @@ function createOwnGroup(
 		tierRange: null,
 		skillDifference: undefined,
 		isReplay: false,
-		usersRole: "OWNER",
 		noScreen: false,
 		modePreferences: [],
+		teamMapModePreferences: undefined,
 		chatCode: null,
 		status: "ACTIVE",
 		matchId: null,
@@ -161,8 +166,8 @@ describe("GroupCard", () => {
 				group: createGroup({
 					members: [
 						createMember({ id: 1, username: "Player1" }),
-						createMember({ id: 2, username: "Player2", role: "MANAGER" }),
-						createMember({ id: 3, username: "Player3", role: "REGULAR" }),
+						createMember({ id: 2, username: "Player2" }),
+						createMember({ id: 3, username: "Player3" }),
 					],
 				}),
 			});
@@ -262,9 +267,9 @@ describe("GroupCard", () => {
 					tier,
 					members: [
 						createMember({ id: 1 }),
-						createMember({ id: 2, role: "REGULAR" }),
-						createMember({ id: 3, role: "REGULAR" }),
-						createMember({ id: 4, role: "REGULAR" }),
+						createMember({ id: 2 }),
+						createMember({ id: 3 }),
+						createMember({ id: 4 }),
 					],
 				}),
 			});
@@ -282,10 +287,9 @@ describe("GroupCard", () => {
 			};
 
 			const screen = await renderGroupCard({
-				group: createGroup({
+				group: createFullGroup({
 					tierRange,
 					tier: null,
-					members: undefined,
 				}),
 			});
 
@@ -303,33 +307,15 @@ describe("GroupCard", () => {
 					isReplay: true,
 					members: [
 						createMember({ id: 1 }),
-						createMember({ id: 2, role: "REGULAR" }),
-						createMember({ id: 3, role: "REGULAR" }),
-						createMember({ id: 4, role: "REGULAR" }),
+						createMember({ id: 2 }),
+						createMember({ id: 3 }),
+						createMember({ id: 4 }),
 					],
 				}),
 			});
 
 			// REPLAY text is rendered, translations are loaded
 			await expect.element(screen.getByText(/REPLAY/i)).toBeVisible();
-		});
-
-		test("shows group skill difference", async () => {
-			const skillDifference: GroupSkillDifference = {
-				calculated: true,
-				oldSp: 2100,
-				newSp: 2150,
-			};
-
-			const screen = await renderGroupCard({
-				group: createGroup({
-					skillDifference,
-					members: undefined,
-				}),
-			});
-
-			await expect.element(screen.getByText(/2100/)).toBeVisible();
-			await expect.element(screen.getByText(/2150/)).toBeVisible();
 		});
 	});
 
@@ -351,12 +337,8 @@ describe("GroupCard", () => {
 		test("shows Challenge for LIKE with full group (no visible members)", async () => {
 			const ownGroup = createOwnGroup({ id: 2 });
 
-			// Create a group with members explicitly set to undefined (censored/full group)
-			const fullGroup = createGroup({});
-			fullGroup.members = undefined;
-
 			const screen = await renderGroupCard({
-				group: fullGroup,
+				group: createFullGroup(),
 				action: "LIKE",
 				ownGroup,
 				displayOnly: false,
@@ -370,7 +352,7 @@ describe("GroupCard", () => {
 			const ownGroup = createOwnGroup({ id: 2 });
 
 			const screen = await renderGroupCard({
-				group: createGroup({ members: undefined }),
+				group: createFullGroup(),
 				action: "MATCH_UP",
 				ownGroup,
 				displayOnly: false,
@@ -379,23 +361,57 @@ describe("GroupCard", () => {
 			// Actual translated text is "Start match"
 			await expect.element(screen.getByText("Start match")).toBeVisible();
 		});
+	});
 
-		test("hides actions when user is not owner or manager", async () => {
-			// ownGroup with REGULAR role shouldn't show action buttons
-			const ownGroup = createOwnGroup({ id: 2, usersRole: "REGULAR" });
-
+	describe("trail", () => {
+		test("shows suggested trail for a partial group", async () => {
 			const screen = await renderGroupCard({
 				group: createGroup({ members: [createMember()] }),
-				action: "LIKE",
-				ownGroup,
-				displayOnly: false,
+				trail: { type: "SUGGESTED", username: "Suggester" },
 			});
 
-			// Action button should not be rendered when user is not OWNER or MANAGER
-			const actionButton = screen.container.querySelector(
-				'[data-testid="group-card-action-button"]',
-			);
-			expect(actionButton).toBeNull();
+			const trail = screen.getByTestId("group-card-trail");
+			await expect.element(trail).toHaveTextContent("Suggested by Suggester");
+		});
+
+		test("shows suggested trail for a full group", async () => {
+			const screen = await renderGroupCard({
+				group: createFullGroup(),
+				trail: { type: "SUGGESTED", username: "Suggester" },
+			});
+
+			const trail = screen.getByTestId("group-card-trail");
+			await expect.element(trail).toHaveTextContent("Suggested by Suggester");
+		});
+
+		test("shows invited trail for a partial group", async () => {
+			const screen = await renderGroupCard({
+				group: createGroup({ members: [createMember()] }),
+				trail: { type: "INVITED", username: "Inviter" },
+			});
+
+			const trail = screen.getByTestId("group-card-trail");
+			await expect.element(trail).toHaveTextContent("Invited by Inviter");
+		});
+
+		test("shows challenged trail for a full group", async () => {
+			const screen = await renderGroupCard({
+				group: createFullGroup(),
+				trail: { type: "INVITED", username: "Challenger" },
+			});
+
+			const trail = screen.getByTestId("group-card-trail");
+			await expect.element(trail).toHaveTextContent("Challenged by Challenger");
+		});
+
+		test("renders no trail when not given", async () => {
+			const screen = await renderGroupCard({
+				group: createGroup({ members: [createMember()] }),
+			});
+
+			await expect
+				.element(screen.getByTestId("group-card-trail"))
+				.not.toBeInTheDocument();
 		});
 	});
 

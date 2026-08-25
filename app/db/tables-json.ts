@@ -7,7 +7,6 @@
 
 import type { DBBoolean } from "~/db/tables";
 import type { CalendarFilters } from "~/features/calendar/calendar-types";
-import type { TieredSkill } from "~/features/mmr/tiered.server";
 import type { ScrimFilters } from "~/features/scrims/scrims-types";
 import type { CustomThemeVar } from "~/features/theme/theme-constants";
 import type * as PickBan from "~/features/tournament-bracket/core/PickBan";
@@ -84,50 +83,6 @@ export interface PeakXP {
 	tentatek: number | null;
 }
 
-export type UserSkillDifference =
-	| {
-			calculated: true;
-			spDiff: number;
-			oldSp?: number;
-			newSp?: number;
-	  }
-	| CalculatingSkill;
-
-export type GroupSkillDifference =
-	| {
-			calculated: true;
-			oldSp: number;
-			newSp: number;
-	  }
-	| CalculatingSkill;
-
-export type ParsedMemento = {
-	users: Record<
-		number,
-		{
-			skill?: TieredSkill | "CALCULATING";
-			skillDifference?: UserSkillDifference;
-		}
-	>;
-	groups: Record<
-		number,
-		{
-			tier?: TieredSkill["tier"];
-			skillDifference?: GroupSkillDifference;
-		}
-	>;
-	modePreferences?: Partial<
-		Record<ModeShort, Array<{ userId: number; preference?: Preference }>>
-	>;
-	/** mapPreferences of season 2 */
-	mapPreferences?: Array<{ userId: number; preference?: Preference }[]>;
-	pools: Array<{
-		userId: number;
-		pool: UserMapModePreferences["pool"];
-		teamName?: string;
-	}>;
-};
-
 export interface TournamentSettings {
 	bracketProgression: Progression.ParsedBracket[];
 	/** @deprecated use bracketProgression instead */
@@ -155,6 +110,8 @@ export interface TournamentSettings {
 	isTest?: boolean;
 	isDraft?: boolean;
 	requireSendouQParticipation?: boolean;
+	/** Is this tournament a league? Leagues are played over many weeks, each starting bracket being a division. */
+	isLeague?: boolean;
 }
 
 export interface CastedMatchesInfo {
@@ -202,7 +159,7 @@ export interface CustomPickBanFlow {
 	postGame: CustomPickBanStep[];
 }
 
-// when updating this also update `defaultBracketSettings` in tournament-utils.ts
+// when updating this also update `settingsFromFormValues` in calendar-progression-form.ts
 export interface TournamentStageSettings {
 	// SE
 	thirdPlaceMatch?: boolean;
@@ -222,6 +179,8 @@ export interface TournamentAuditLogMetadata {
 	bracketIdx?: number;
 	/** The new in-game name, for `UPDATE_IN_GAME_NAME` events. */
 	inGameName?: string;
+	/** The new tournament name, for `UPDATE_TOURNAMENT_NAME` events. `null` = it was cleared. */
+	tournamentName?: string | null;
 }
 
 /**
@@ -237,11 +196,3 @@ export interface NotificationSubscription {
 		p256dh: string;
 	};
 }
-
-type CalculatingSkill = {
-	calculated: false;
-	matchesCount: number;
-	matchesCountNeeded: number;
-	/** Freshly calculated skill */
-	newSp?: number;
-};

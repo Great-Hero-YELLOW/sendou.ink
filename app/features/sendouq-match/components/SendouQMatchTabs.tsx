@@ -92,7 +92,11 @@ export function SendouQMatchTabs({ data }: { data: SendouQMatchLoaderData }) {
 				<MatchResultTab
 					teams={resolveTimelineTeams(data.match, t)}
 					score={{ alpha: alphaWins, bravo: bravoWins }}
-					maps={resolveTimelineMaps(data.match, data.reportedWeapons)}
+					maps={resolveTimelineMaps(
+						data.match,
+						data.reportedWeapons,
+						data.ingestedScoreboards,
+					)}
 					spChanges={resolveTimelineSpChanges(data.match)}
 					isOngoing={!isLocked && hasReportedMaps}
 				>
@@ -160,10 +164,6 @@ function resolveCancelAccepterUsername(match: MatchData) {
 function mapRosterMembers(members: MatchData["groupAlpha"]["members"]) {
 	return members.map((member) => ({
 		...member,
-		tier:
-			member.skill === "CALCULATING"
-				? ("CALCULATING" as const)
-				: member.skill?.tier,
 		weaponPool: member.weapons?.map((w) => w.weaponSplId),
 	}));
 }

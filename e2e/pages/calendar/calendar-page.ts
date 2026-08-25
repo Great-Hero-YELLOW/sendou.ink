@@ -1,12 +1,14 @@
 import type { Page } from "@playwright/test";
-import { calendarFiltersFormSchema } from "~/features/calendar/calendar-schemas";
-import { calendarPage } from "~/utils/urls";
+import {
+	calendarIcalFeed,
+	calendarPage,
+} from "~/features/calendar/calendar-urls";
+import type { DayMonthYear } from "~/utils/schema";
 import {
 	expectIsHydrated,
 	navigate,
 	waitForPOSTResponse,
 } from "../../helpers/playwright";
-import { createFormHelpers } from "../../helpers/playwright-form";
 
 /** `/calendar` */
 export class CalendarPage {
@@ -20,13 +22,18 @@ export class CalendarPage {
 			hiddenEventsButtons: page.getByTestId("hidden-events-button"),
 			clockHeaderTimes: page.getByTestId("clock-header-time"),
 			todayHeader: page.getByTestId("today-header"),
-			filterEventsButton: page.getByTestId("filter-events-button"),
+			eventTypeFilterPill: page.getByTestId("event-type-filter"),
+			addFilterButton: page.getByTestId("add-filter-button"),
+			saveFiltersAsDefaultButton: page.getByTestId(
+				"save-filters-as-default-button",
+			),
 			navigateButtons: page.getByTestId("calendar-navigate-button"),
 		};
 	}
 
-	async goto() {
-		await navigate({ page: this.page, url: calendarPage() });
+	/** Given a date, opens the calendar at that week instead of the current one. */
+	async goto(dayMonthYear?: DayMonthYear) {
+		await navigate({ page: this.page, url: calendarPage({ dayMonthYear }) });
 	}
 
 	tournamentCard(name: string) {
@@ -46,14 +53,54 @@ export class CalendarPage {
 		await expectIsHydrated(this.page);
 	}
 
-	async openFilters() {
-		await this.locators.filterEventsButton.click();
-		return new CalendarFiltersDialog(this.page);
+	/** Toggles one of the switches inside the "Event type" filter pill's popover. */
+	async toggleEventTypeFilter(name: "isSendou" | "isRanked") {
+		await this.page.keyboard.press("Escape");
+		await this.openEventTypeFilter();
+		await this.page
+			.getByText(
+				name === "isSendou"
+					? "Only events hosted on sendou.ink"
+					: "Only ranked events",
+			)
+			.click();
+		await this.page.keyboard.press("Escape");
+	}
+
+	/** Resets the "Event type" filter pill's filters, hiding the pill. */
+	async removeEventTypeFilter() {
+		await this.page.keyboard.press("Escape");
+		await this.page.getByTestId("event-type-filter-remove").click();
+	}
+
+	/** The pill is only rendered while its filters differ from the defaults. */
+	private async openEventTypeFilter() {
+		if (await this.locators.eventTypeFilterPill.isVisible()) {
+			await this.locators.eventTypeFilterPill.click();
+			return;
+		}
+
+		await this.locators.addFilterButton.click();
+		await this.page.getByTestId("menu-item-event-type-filter").click();
+	}
+
+	/** Persists the current filters as the user's default. */
+	async saveFiltersAsDefault() {
+		await waitForPOSTResponse(this.page, () =>
+			this.locators.saveFiltersAsDefaultButton.click(),
+		);
 	}
 
 	/** Shows or hides the events the current filters hide, of the first time slot. */
 	async toggleHiddenEvents() {
 		await this.locators.hiddenEventsButtons.first().click();
+	}
+
+	/** Fetches the iCal feed directly, the way a subscribed calendar app does. */
+	async fetchICalFeed() {
+		const url = new URL(calendarIcalFeed());
+		const response = await this.page.request.get(url.pathname + url.search);
+		return { status: response.status(), body: await response.text() };
 	}
 
 	async navigatePrevious() {
@@ -62,33 +109,5 @@ export class CalendarPage {
 
 	async navigateNext() {
 		await this.locators.navigateButtons.nth(1).click();
-	}
-}
-
-class CalendarFiltersDialog {
-	private readonly page: Page;
-	readonly form;
-	readonly locators;
-
-	constructor(page: Page) {
-		this.page = page;
-		this.form = createFormHelpers(page, calendarFiltersFormSchema);
-		this.locators = {
-			applyAndMakeDefaultButton: page.getByRole("button", {
-				name: "Apply & make default",
-			}),
-		};
-	}
-
-	/** Applies the filters for this visit only, via search params. */
-	async apply() {
-		await this.form.submit();
-	}
-
-	/** Applies the filters and saves them as the user's default. */
-	async applyAndMakeDefault() {
-		await waitForPOSTResponse(this.page, () =>
-			this.locators.applyAndMakeDefaultButton.click(),
-		);
 	}
 }

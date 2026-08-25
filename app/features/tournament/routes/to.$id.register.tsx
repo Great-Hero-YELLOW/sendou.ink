@@ -3,6 +3,7 @@ import { AlertCircle, Check, Clipboard, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useFetcher, useLoaderData } from "react-router";
+import { ActionButton } from "~/components/ActionButton";
 import { Alert } from "~/components/Alert";
 import { Avatar } from "~/components/Avatar";
 import { Divider } from "~/components/Divider";
@@ -15,36 +16,41 @@ import { containerClassName } from "~/components/Main";
 import { SubmitButton } from "~/components/SubmitButton";
 import { Config } from "~/config";
 import { useUser } from "~/features/auth/core/user";
-import { MapPool } from "~/features/map-list-generator/core/map-pool";
-import { ModeMapPoolPicker } from "~/features/settings/components/ModeMapPoolPicker";
+import {
+	type CounterPickMapPool,
+	CounterPickMapPoolPicker,
+	MapPoolValidationStatusMessage,
+	useCounterPickMapPoolValidationStatus,
+} from "~/features/tournament/components/CounterPickMapPoolPicker";
+import { useTournament } from "~/features/tournament/tournament-context";
+import { tournamentJoinPage } from "~/features/tournament/tournament-urls";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
+import { LUTI_ORGANIZATION_ID } from "~/features/tournament-organization/tournament-organization-constants";
 import { FormField } from "~/form/FormField";
 import { SendouForm, useFormFieldContext } from "~/form/SendouForm";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useHydrated } from "~/hooks/useHydrated";
-import { rankedModesShort } from "~/modules/in-game-lists/modes";
 import {
 	LOG_IN_URL,
 	SENDOU_INK_BASE_URL,
-	tournamentJoinPage,
 	userEditProfilePage,
 } from "~/utils/urls";
 import { action } from "../actions/to.$id.register.server";
 import type { TournamentRegisterPageLoader } from "../loaders/to.$id.register.server";
 import { loader } from "../loaders/to.$id.register.server";
-import styles from "../tournament.module.css";
-import { TOURNAMENT } from "../tournament-constants";
 import {
 	type RegisterTeamFormValues,
 	registerTeamFormSchema,
 } from "../tournament-register-schemas";
 import {
-	type CounterPickValidationStatus,
-	validateCounterPickMapPool,
-} from "../tournament-utils";
-import { useTournament } from "./to.$id";
+	addPlayerSchema,
+	checkInSchema,
+	deleteTeamMemberSchema,
+	updateMapPoolSchema,
+} from "../tournament-schemas";
+import styles from "./to.$id.register.module.css";
 
 export { action, loader };
 
@@ -96,14 +102,21 @@ export default function TournamentRegisterPage() {
 }
 
 function LeaveTeamControl() {
+	const data = useLoaderData<TournamentRegisterPageLoader>();
 	const user = useUser();
 	const tournament = useTournament();
 
 	const teamMemberOf = tournament.teamMemberOfByUser(user);
-	if (!teamMemberOf) return null;
+	if (!user || !teamMemberOf) return null;
 
 	const checkedIn = teamMemberOf.checkIns.length > 0;
-	const cannotLeave = checkedIn || !tournament.registrationOpen;
+	const organizerAdded = Boolean(
+		data?.ownTeam?.members.some(
+			(member) => member.userId === user.id && member.isOrganizerAdded,
+		),
+	);
+	const cannotLeave =
+		organizerAdded || checkedIn || !tournament.registrationOpen;
 
 	if (cannotLeave) {
 		return (
@@ -114,9 +127,11 @@ function LeaveTeamControl() {
 					</SendouButton>
 				}
 			>
-				{checkedIn
-					? "Your team has checked in. Contact the TO to leave the team."
-					: "Registration has closed. Contact the TO to leave the team."}
+				{organizerAdded
+					? "You were added to the team by the organizer. Contact the TO to leave the team."
+					: checkedIn
+						? "Your team has checked in. Contact the TO to leave the team."
+						: "Registration has closed. Contact the TO to leave the team."}
 			</SendouPopover>
 		);
 	}
@@ -207,12 +222,15 @@ function RegistrationForms({ readOnly = false }: { readOnly?: boolean }) {
 					canUnregister={Boolean(ownTeam && !ownTeamCheckedIn)}
 				/>
 			) : null}
-			{tournament.isLeagueSignup ? <GoogleFormsLink /> : null}
+			{tournament.isLeague &&
+			tournament.ctx.organization?.id === LUTI_ORGANIZATION_ID ? (
+				<GoogleFormsLink />
+			) : null}
 			{ownTeam && hasFriendCodeSet ? (
 				<>
 					<FillRoster ownTeam={ownTeam} ownTeamCheckedIn={ownTeamCheckedIn} />
 					{tournament.teamsPrePickMaps ? (
-						<CounterPickMapPoolPicker key={tournament.ctx.id} />
+						<TeamCounterPickMapPoolPicker key={tournament.ctx.id} />
 					) : null}
 				</>
 			) : null}
@@ -240,7 +258,7 @@ function ReadOnlyRegistrationForms() {
 			<TeamInfo ownTeam={team} canUnregister={false} readOnly />
 			<FillRoster ownTeam={team} ownTeamCheckedIn={checkedIn} readOnly />
 			{tournament.teamsPrePickMaps ? (
-				<CounterPickMapPoolPicker readOnly mapPool={team.mapPool ?? []} />
+				<TeamCounterPickMapPoolPicker readOnly mapPool={team.mapPool ?? []} />
 			) : null}
 		</div>
 	);
@@ -286,13 +304,13 @@ function RegistrationProgress({
 					status: completedIfTruthy(mapPool && mapPool.length > 0),
 				}
 			: null,
-		!tournament.isLeagueSignup
+		!tournament.isLeague
 			? {
 					name: t("tournament:pre.steps.check-in"),
 					status: completedIfTruthy(checkedIn),
 				}
 			: null,
-		tournament.isLeagueSignup
+		tournament.isLeague
 			? {
 					name: "Google Sheet",
 					status: "notice" as const,
@@ -306,7 +324,7 @@ function RegistrationProgress({
 
 	const registrationClosesAtString =
 		registrationClosesFormatter.format(
-			tournament.isLeagueSignup
+			tournament.isLeague
 				? tournament.ctx.startsAt
 				: tournament.registrationClosesAt,
 		) ?? "";
@@ -327,21 +345,19 @@ function RegistrationProgress({
 								{step.name}
 								{step.status === "completed" ? (
 									<Check
-										className={clsx(styles.sectionIcon, "color-success")}
+										className="color-success"
 										data-testid={`checkmark-icon-num-${i + 1}`}
 									/>
 								) : step.status === "notice" ? (
-									<AlertCircle
-										className={clsx(styles.sectionIcon, "color-info")}
-									/>
+									<AlertCircle className="color-info" />
 								) : (
-									<X className={clsx(styles.sectionIcon, "color-error")} />
+									<X className="color-error" />
 								)}
 							</div>
 						);
 					})}
 				</div>
-				{!tournament.isLeagueSignup ? (
+				{!tournament.isLeague ? (
 					<CheckIn
 						canCheckIn={
 							steps.filter((step) => step.status === "incomplete").length === 1
@@ -353,7 +369,7 @@ function RegistrationProgress({
 				) : null}
 			</section>
 			<div className={styles.sectionWarning}>
-				{regClosesBeforeStart || tournament.isLeagueSignup ? (
+				{regClosesBeforeStart || tournament.isLeague ? (
 					<span className="text-warning">
 						Registration closes at {registrationClosesAtString}
 					</span>
@@ -378,7 +394,6 @@ function CheckIn({
 }) {
 	const { t } = useTranslation(["tournament"]);
 	const isHydrated = useHydrated();
-	const fetcher = useFetcher();
 	const { formatter: checkInFormatter } = useDateTimeFormat({
 		minute: "numeric",
 		hour: "numeric",
@@ -437,16 +452,15 @@ function CheckIn({
 	}
 
 	return (
-		<fetcher.Form method="post" className="stack items-center">
-			<SubmitButton
-				size="small"
-				_action="CHECK_IN"
-				state={fetcher.state}
-				testId="check-in-button"
-			>
-				{t("tournament:pre.checkIn.button")}
-			</SubmitButton>
-		</fetcher.Form>
+		<ActionButton
+			schema={checkInSchema}
+			action="CHECK_IN"
+			formClassName="stack items-center"
+			size="small"
+			testId="check-in-button"
+		>
+			{t("tournament:pre.checkIn.button")}
+		</ActionButton>
 	);
 }
 
@@ -489,7 +503,7 @@ function TeamInfo({
 					1. {t("tournament:pre.info.header")}
 				</h3>
 				{canUnregister &&
-				tournament.isLeagueSignup &&
+				tournament.isLeague &&
 				!tournament.registrationOpen ? (
 					<SendouPopover
 						trigger={
@@ -847,6 +861,7 @@ function DirectlyAddPlayerSelect({
 				</select>
 			</div>
 			<SubmitButton
+				schema={addPlayerSchema}
 				_action="ADD_PLAYER"
 				state={fetcher.state}
 				testId="add-player-button"
@@ -890,6 +905,7 @@ function DeleteMember({ members }: { members: TournamentTeamFull["members"] }) {
 				</select>
 				<SubmitButton
 					state={fetcher.state}
+					schema={deleteTeamMemberSchema}
 					_action="DELETE_TEAM_MEMBER"
 					variant="minimal-destructive"
 				>
@@ -900,7 +916,7 @@ function DeleteMember({ members }: { members: TournamentTeamFull["members"] }) {
 	);
 }
 
-function CounterPickMapPoolPicker({
+function TeamCounterPickMapPoolPicker({
 	readOnly = false,
 	mapPool,
 }: {
@@ -908,17 +924,13 @@ function CounterPickMapPoolPicker({
 	mapPool?: NonNullable<TournamentTeamFull["mapPool"]>;
 }) {
 	const { t } = useTranslation(["common", "game-misc", "tournament"]);
-	const tournament = useTournament();
 	const fetcher = useFetcher();
 	const data = useLoaderData<TournamentRegisterPageLoader>();
-	const [counterPickMaps, setCounterPickMaps] = React.useState(
-		mapPool ?? data?.mapPool ?? [],
-	);
+	const [counterPickMaps, setCounterPickMaps] =
+		React.useState<CounterPickMapPool>(mapPool ?? data?.mapPool ?? []);
 
-	const counterPickMapPool = new MapPool(counterPickMaps);
-
-	const isOneModeTournamentOf =
-		tournament.modesIncluded.length === 1 ? tournament.modesIncluded[0] : null;
+	const validationStatus =
+		useCounterPickMapPoolValidationStatus(counterPickMaps);
 
 	return (
 		<div>
@@ -932,47 +944,14 @@ function CounterPickMapPoolPicker({
 						name="mapPool"
 						value={JSON.stringify(counterPickMaps)}
 					/>
-					{rankedModesShort
-						.filter(
-							(mode) =>
-								!isOneModeTournamentOf || isOneModeTournamentOf === mode,
-						)
-						.map((mode) => {
-							return (
-								<ModeMapPoolPicker
-									key={mode}
-									amountToPick={
-										isOneModeTournamentOf
-											? TOURNAMENT.COUNTERPICK_ONE_MODE_TOURNAMENT_MAPS_PER_MODE
-											: TOURNAMENT.COUNTERPICK_MAPS_PER_MODE
-									}
-									mode={mode}
-									tiebreaker={
-										tournament.ctx.tieBreakerMapPool.find(
-											(stage) => stage.mode === mode,
-										)?.stageId
-									}
-									pool={
-										counterPickMaps
-											.filter((m) => m.mode === mode)
-											.map((m) => m.stageId) ?? []
-									}
-									onChange={(stageIds) =>
-										setCounterPickMaps([
-											...counterPickMaps.filter((m) => m.mode !== mode),
-											...stageIds.map((stageId) => ({ mode, stageId })),
-										])
-									}
-									disabled={readOnly}
-								/>
-							);
-						})}
-					{readOnly ? null : validateCounterPickMapPool(
-							counterPickMapPool,
-							isOneModeTournamentOf,
-							tournament.ctx.tieBreakerMapPool,
-						) === "VALID" ? (
+					<CounterPickMapPoolPicker
+						mapPool={counterPickMaps}
+						onChange={setCounterPickMaps}
+						disabled={readOnly}
+					/>
+					{readOnly ? null : validationStatus === "VALID" ? (
 						<SubmitButton
+							schema={updateMapPoolSchema}
 							_action="UPDATE_MAP_POOL"
 							state={fetcher.state}
 							className="self-center mt-4"
@@ -981,42 +960,10 @@ function CounterPickMapPoolPicker({
 							{t("common:actions.save")}
 						</SubmitButton>
 					) : (
-						<MapPoolValidationStatusMessage
-							status={validateCounterPickMapPool(
-								counterPickMapPool,
-								isOneModeTournamentOf,
-								tournament.ctx.tieBreakerMapPool,
-							)}
-						/>
+						<MapPoolValidationStatusMessage status={validationStatus} />
 					)}
 				</fetcher.Form>
 			</section>
-		</div>
-	);
-}
-
-function MapPoolValidationStatusMessage({
-	status,
-}: {
-	status: CounterPickValidationStatus;
-}) {
-	const { t } = useTranslation(["common"]);
-
-	if (
-		status !== "TOO_MUCH_STAGE_REPEAT" &&
-		status !== "STAGE_REPEAT_IN_SAME_MODE" &&
-		status !== "INCLUDES_BANNED" &&
-		status !== "INCLUDES_TIEBREAKER"
-	)
-		return null;
-
-	return (
-		<div className="mt-4">
-			<Alert alertClassName="w-max" variation="WARNING" tiny>
-				{t(`common:maps.validation.${status}`, {
-					maxStageRepeat: TOURNAMENT.COUNTERPICK_MAX_STAGE_REPEAT,
-				})}
-			</Alert>
 		</div>
 	);
 }

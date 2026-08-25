@@ -1,9 +1,9 @@
 import type { ActionFunction } from "react-router";
-import { requireUser } from "~/features/auth/core/user.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import { notify } from "~/features/notifications/core/notify.server";
+import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import * as TeamRepository from "~/features/team/TeamRepository.server";
 import * as SavedCalendarEventRepository from "~/features/tournament/SavedCalendarEventRepository.server";
@@ -11,17 +11,16 @@ import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamR
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	clearTournamentDataCache,
-	tournamentFromDB,
+	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
 import { syncPickupChatMetadata } from "~/features/tournament-lfg/tournament-lfg-utils.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { parseFormDataWithImages } from "~/form/parse.server";
 import { logger } from "~/utils/logger";
-import { errorToastIfFalsy, parseParams } from "~/utils/remix.server";
+import { errorToastIfFalsy } from "~/utils/remix.server";
 import { toDBBoolean } from "~/utils/sql";
 import { assertUnreachable } from "~/utils/types";
-import { idObject } from "~/utils/zod";
 import { registerSchema } from "../tournament-schemas.server";
 import {
 	isOneModeTournamentOf,
@@ -33,13 +32,10 @@ import {
 } from "../tournament-utils.server";
 
 export const action: ActionFunction = async ({ request, params }) => {
-	const user = requireUser();
-	const { id: tournamentId } = parseParams({
+	const { tournament, tournamentId, user } = await tournamentFromParams(
 		params,
-		schema: idObject,
-	});
-
-	const tournament = await tournamentFromDB({ tournamentId, user });
+		{ for: "action" },
+	);
 	const ownTeam = tournament.ownedTeamByUser(user);
 
 	const result = await parseFormDataWithImages({
@@ -141,8 +137,8 @@ export const action: ActionFunction = async ({ request, params }) => {
 					tournamentId,
 					type: "participant",
 					userId: user.id,
-					newTeamCount: tournament.ctx.teams.length + 1,
 				});
+				await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 			}
 			break;
 		}
@@ -172,6 +168,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 				type: "participant",
 				userId: data.userId,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			await syncPickupChatMetadata({
 				teamId: ownTeam.id,
@@ -184,6 +181,13 @@ export const action: ActionFunction = async ({ request, params }) => {
 
 			const teamMemberOf = tournament.teamMemberOfByUser(user);
 			errorToastIfFalsy(teamMemberOf, "You are not in a team");
+			errorToastIfFalsy(
+				!(await TournamentTeamRepository.isOrganizerAddedMember({
+					tournamentTeamId: teamMemberOf.id,
+					userId: user.id,
+				})),
+				"You were added to the team by the organizer, contact the TO to leave the team",
+			);
 			errorToastIfFalsy(
 				teamMemberOf.checkIns.length === 0,
 				"You cannot leave after checking in",
@@ -203,6 +207,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 				type: "participant",
 				userId: user.id,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			await syncPickupChatMetadata({
 				teamId: teamMemberOf.id,
@@ -258,6 +263,12 @@ export const action: ActionFunction = async ({ request, params }) => {
 			logger.info(
 				`Checking in (success): tournament team id: ${teamMemberOf.id} - user id: ${user.id} - tournament id: ${tournamentId}`,
 			);
+
+			await resolveNotifications({
+				userIds: teamMemberOf.memberUserIds,
+				type: "TO_CHECK_IN_OPENED",
+				meta: { tournamentId },
+			});
 			break;
 		}
 		case "ADD_PLAYER": {
@@ -309,6 +320,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 				type: "participant",
 				userId: data.userId,
 			});
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			await syncPickupChatMetadata({
 				teamId: ownTeam.id,
@@ -341,7 +353,7 @@ export const action: ActionFunction = async ({ request, params }) => {
 				"You cannot unregister after checking in",
 			);
 			errorToastIfFalsy(
-				!tournament.isLeagueSignup || tournament.registrationOpen,
+				!tournament.isLeague || tournament.registrationOpen,
 				"Unregistering from leagues is not possible after registration has closed",
 			);
 
@@ -360,12 +372,8 @@ export const action: ActionFunction = async ({ request, params }) => {
 					type: "participant",
 					userId,
 				});
-
-				ShowcaseTournaments.updateCachedTournamentTeamCount({
-					tournamentId,
-					newTeamCount: tournament.ctx.teams.length - 1,
-				});
 			}
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 			break;
 		}

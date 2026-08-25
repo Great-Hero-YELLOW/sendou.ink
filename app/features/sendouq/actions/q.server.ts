@@ -9,23 +9,26 @@ import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server"
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { parseFormData } from "~/form/parse.server";
 import { errorToastIfFalsy } from "~/utils/remix.server";
+import { normalizeFriendCode } from "~/utils/schema";
 import { assertUnreachable } from "~/utils/types";
 import {
 	SENDOUQ_LOOKING_PAGE,
 	SENDOUQ_PREPARING_PAGE,
 	SUSPENDED_PAGE,
 } from "~/utils/urls";
-import { normalizeFriendCode } from "~/utils/zod";
-import { refreshSendouQInstance, SendouQ } from "../core/SendouQ.server";
+import {
+	refreshSendouQInstance,
+	SendouQ,
+	sqRedirectIfNeeded,
+} from "../core/SendouQ.server";
+import { frontPageSchema } from "../q-action-schemas";
 import { SENDOUQ_LOOKING_ROOM, sqGroupWebsocketRoom } from "../q-constants";
-import { frontPageSchema } from "../q-schemas.server";
 import { qSearchParams } from "../q-search-params";
 import { userCanJoinQueueAt } from "../q-utils";
 import {
 	SendouQError,
 	seasonInitialSkillsExist,
 	setGroupChatMetadata,
-	sqRedirectIfNeeded,
 } from "../q-utils.server";
 
 export const action: ActionFunction = async ({ request, url }) => {
@@ -44,7 +47,7 @@ export const action: ActionFunction = async ({ request, url }) => {
 	try {
 		switch (data._action) {
 			case "JOIN_QUEUE": {
-				sqRedirectIfNeeded({
+				await sqRedirectIfNeeded({
 					ownGroup: SendouQ.findOwnGroup(user.id),
 					currentLocation: "default",
 				});
@@ -94,10 +97,7 @@ export const action: ActionFunction = async ({ request, url }) => {
 
 				const { chatCodeToRevalidate } = await SQGroupRepository.insertMember(
 					groupInvitedTo.id,
-					{
-						userId: user.id,
-						role: "MANAGER",
-					},
+					{ userId: user.id },
 				);
 
 				if (chatCodeToRevalidate) {

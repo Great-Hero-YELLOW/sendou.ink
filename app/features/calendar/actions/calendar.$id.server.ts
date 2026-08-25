@@ -1,40 +1,31 @@
 import type { ActionFunction } from "react-router";
 import { redirect } from "react-router";
-import { z } from "zod";
-import { requireUser } from "~/features/auth/core/user.server";
+import * as v from "valibot";
 import * as CalendarRepository from "~/features/calendar/CalendarRepository.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import * as BracketRepository from "~/features/tournament-bracket/BracketRepository.server";
 import { clearTournamentDataCache } from "~/features/tournament-bracket/core/Tournament.server";
-import { databaseTimestampToDate } from "~/utils/dates";
+import { requirePermission } from "~/modules/permissions/guards.server";
 import { errorToastIfFalsy, notFoundIfNullish } from "~/utils/remix.server";
+import { actualNumber, id, preprocess } from "~/utils/schema";
 import { CALENDAR_PAGE } from "~/utils/urls";
-import { actualNumber, id } from "~/utils/zod";
-import { canDeleteCalendarEvent } from "../calendar-utils";
 
 export const action: ActionFunction = async ({ params }) => {
-	const user = requireUser();
-	const parsedParams = z
-		.object({ id: z.preprocess(actualNumber, id) })
-		.parse(params);
+	const parsedParams = v.parse(
+		v.object({ id: preprocess(actualNumber, id) }),
+		params,
+	);
 	const event = notFoundIfNullish(
 		await CalendarRepository.findById(parsedParams.id),
 	);
+
+	requirePermission(event, "DELETE");
 
 	if (event.tournamentId) {
 		errorToastIfFalsy(
 			(await BracketRepository.findByTournamentId(event.tournamentId)).stage
 				.length === 0,
 			"Tournament has already started",
-		);
-	} else {
-		errorToastIfFalsy(
-			canDeleteCalendarEvent({
-				user,
-				event,
-				startTime: databaseTimestampToDate(event.startTimes[0]),
-			}),
-			"Cannot delete event",
 		);
 	}
 

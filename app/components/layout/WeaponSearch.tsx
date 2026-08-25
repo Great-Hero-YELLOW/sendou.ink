@@ -1,4 +1,3 @@
-import { clsx } from "clsx";
 import type { Namespace, TFunction } from "i18next";
 import {
 	Calculator,
@@ -11,8 +10,7 @@ import {
 	Users,
 	Videotape,
 } from "lucide-react";
-import * as React from "react";
-import { ListBox, ListBoxItem } from "react-aria-components";
+import type * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Image } from "~/components/Image";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
@@ -33,7 +31,14 @@ import {
 	weaponBuildStatsPage,
 	weaponParamsPage,
 } from "~/utils/urls";
-import styles from "./GlobalSearch.module.css";
+import {
+	SearchResultsEmptyState,
+	SearchResultsItem,
+	SearchResultsItemName,
+	SearchResultsItemRow,
+	SearchResultsListBox,
+} from "./SearchResults";
+import styles from "./WeaponSearch.module.css";
 
 const WEAPON_DESTINATIONS = [
 	"builds",
@@ -154,104 +159,101 @@ export function WeaponDestinationMenu({
 				<Image path={mainWeaponImageUrl(selectedWeapon.id)} size={24} alt="" />
 				<span className={styles.selectedWeaponName}>{selectedWeapon.name}</span>
 			</div>
-			<ListBox
+			<SearchResultsListBox
 				ref={listBoxRef}
-				className={styles.listBox}
 				aria-label={selectedWeapon.name}
 				onAction={onSelect}
 				autoFocus="first"
 			>
-				<ListBoxItem
+				<SearchResultsItem
 					id="builds"
 					href={getWeaponDestinationUrl("builds", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<FlaskConical size={20} />
-						<span className={styles.resultName}>
+						<SearchResultsItemName>
 							{t("common:pages.builds")}
-						</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="popular"
 					href={getWeaponDestinationUrl("popular", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<Flame size={20} />
-						<span className={styles.resultName}>
+						<SearchResultsItemName>
 							{t("common:pages.popularBuilds")}
-						</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="stats"
 					href={getWeaponDestinationUrl("stats", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<ChartColumnBig size={20} />
-						<span className={styles.resultName}>
+						<SearchResultsItemName>
 							{t("common:pages.abilityStats")}
-						</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="analyzer"
 					href={getWeaponDestinationUrl("analyzer", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<Calculator size={20} />
-						<span className={styles.resultName}>
+						<SearchResultsItemName>
 							{t("common:pages.analyzer")}
-						</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="params"
 					href={getWeaponDestinationUrl("params", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<SlidersHorizontal size={20} />
-						<span className={styles.resultName}>
+						<SearchResultsItemName>
 							{t("common:pages.params")}
-						</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="vods"
 					href={getWeaponDestinationUrl("vods", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<Videotape size={20} />
-						<span className={styles.resultName}>{t("common:pages.vods")}</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						<SearchResultsItemName>
+							{t("common:pages.vods")}
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="art"
 					href={getWeaponDestinationUrl("art", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<ImageIcon size={20} />
-						<span className={styles.resultName}>{t("common:pages.art")}</span>
-					</div>
-				</ListBoxItem>
-				<ListBoxItem
+						<SearchResultsItemName>
+							{t("common:pages.art")}
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+				<SearchResultsItem
 					id="lfg"
 					href={getWeaponDestinationUrl("lfg", selectedWeapon)}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<Users size={20} />
-						<span className={styles.resultName}>{t("common:pages.lfg")}</span>
-					</div>
-				</ListBoxItem>
-			</ListBox>
+						<SearchResultsItemName>
+							{t("common:pages.lfg")}
+						</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
+			</SearchResultsListBox>
 		</div>
 	);
 }
@@ -276,92 +278,35 @@ export function WeaponResultsList({
 	const showHint = !hasQuery && recentWeapons.length === 0;
 
 	return (
-		<ListBox
+		<SearchResultsListBox
 			ref={listBoxRef}
-			className={clsx(styles.listBox, "scrollbar")}
+			className="scrollbar"
 			aria-label={t("common:search")}
 			selectionMode="single"
 			onAction={onSelect}
 			renderEmptyState={() =>
 				showNoResults ? (
-					<div className={styles.emptyState}>
+					<SearchResultsEmptyState>
 						{t("common:search.noResults")}
-					</div>
+					</SearchResultsEmptyState>
 				) : showHint ? (
-					<div className={styles.emptyState}>{t("common:search.hint")}</div>
+					<SearchResultsEmptyState>
+						{t("common:search.hint")}
+					</SearchResultsEmptyState>
 				) : null
 			}
 		>
 			{displayedWeapons.map((weapon) => (
-				<ListBoxItem
+				<SearchResultsItem
 					key={`weapon-${weapon.id}`}
 					id={`weapon-${weapon.id}`}
-					className={styles.listBoxItem}
 				>
-					<div className={styles.resultItem}>
+					<SearchResultsItemRow>
 						<Image path={mainWeaponImageUrl(weapon.id)} size={24} alt="" />
-						<span className={styles.resultName}>{weapon.name}</span>
-					</div>
-				</ListBoxItem>
+						<SearchResultsItemName>{weapon.name}</SearchResultsItemName>
+					</SearchResultsItemRow>
+				</SearchResultsItem>
 			))}
-		</ListBox>
+		</SearchResultsListBox>
 	);
-}
-
-const RECENT_WEAPONS_KEY = "command-palette-recent-weapons";
-const MAX_RECENT_WEAPONS = 5;
-
-const recentWeaponsListeners = new Set<() => void>();
-
-function subscribeRecentWeapons(listener: () => void) {
-	recentWeaponsListeners.add(listener);
-	window.addEventListener("storage", listener);
-	return () => {
-		recentWeaponsListeners.delete(listener);
-		window.removeEventListener("storage", listener);
-	};
-}
-
-function getRecentWeaponsSnapshot() {
-	try {
-		return localStorage.getItem(RECENT_WEAPONS_KEY) ?? "[]";
-	} catch {
-		return "[]";
-	}
-}
-
-function parseRecentWeapons(raw: string): MainWeaponId[] {
-	try {
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed)) return [];
-		return parsed.filter(
-			(id): id is MainWeaponId =>
-				typeof id === "number" && mainWeaponIds.includes(id as MainWeaponId),
-		);
-	} catch {
-		return [];
-	}
-}
-
-export function useRecentWeapons(): MainWeaponId[] {
-	const raw = React.useSyncExternalStore(
-		subscribeRecentWeapons,
-		getRecentWeaponsSnapshot,
-		() => "[]",
-	);
-	return parseRecentWeapons(raw);
-}
-
-export function saveRecentWeapon(weaponId: MainWeaponId): void {
-	try {
-		const recent = parseRecentWeapons(getRecentWeaponsSnapshot());
-		const filtered = recent.filter((id) => id !== weaponId);
-		const updated = [weaponId, ...filtered].slice(0, MAX_RECENT_WEAPONS);
-		localStorage.setItem(RECENT_WEAPONS_KEY, JSON.stringify(updated));
-	} catch {
-		// localStorage may be unavailable
-	}
-	for (const listener of recentWeaponsListeners) {
-		listener();
-	}
 }

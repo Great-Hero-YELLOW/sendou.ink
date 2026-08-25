@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, test } from "vitest";
 import {
 	assertDecodesToDefault,
 	assertRoundTrips,
@@ -6,33 +6,41 @@ import {
 import { buildsSearchParams } from "./builds-search-params";
 
 describe("buildsSearchParams", () => {
-	it("round-trips", () => {
+	test("round-trips", () => {
 		assertRoundTrips(buildsSearchParams, {
 			limit: [24, 48, 1, 240],
-			f: [
+			abilities: [
 				[],
 				[
-					{ type: "ability", ability: "ISM", comparison: "AT_LEAST", value: 3 },
-					{ type: "mode", mode: "SZ" },
-					{ type: "date", date: "2026-01-28" },
+					{ ability: "ISM", comparison: "AT_LEAST", value: 3 },
+					{ ability: "SSU", comparison: "AT_MOST", value: 12 },
 				],
-				[{ type: "ability", ability: "LDE", value: true }],
+				[{ ability: "LDE", value: true }],
+				[{ ability: "CB", value: false }],
 			],
+			mode: [null, "SZ", "TW"],
+			date: [null, "2026-01-28"],
 		});
 	});
 
-	it("decodes garbage to defaults", () => {
+	test("decodes garbage to defaults", () => {
 		assertDecodesToDefault(buildsSearchParams, "limit", [
 			[""],
 			["0"],
 			["241"],
 			["abc"],
 		]);
-		assertDecodesToDefault(buildsSearchParams, "f", [
+		assertDecodesToDefault(buildsSearchParams, "abilities", [
 			["not-json"],
-			['[{"type":"ability"}]'],
-			['{"type":"mode","mode":"SZ"}'],
-			['[{"type":"mode","mode":"XX"}]'],
+			['[{"ability":"XXX","value":true}]'],
+			['{"ability":"ISM","value":3}'],
+			['[{"ability":"ISM","value":100,"comparison":"AT_LEAST"}]'],
+		]);
+		assertDecodesToDefault(buildsSearchParams, "mode", [["XX"], ["zz"]]);
+		assertDecodesToDefault(buildsSearchParams, "date", [
+			["not-a-date"],
+			["2026-13-99"],
+			["2026-1-1"],
 		]);
 	});
 });

@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useFetcher, useMatches } from "react-router";
+import { Link, useMatches } from "react-router";
 import { Avatar } from "~/components/Avatar";
 import { LinkButton, SendouButton } from "~/components/elements/Button";
 import { SendouDialog } from "~/components/elements/Dialog";
@@ -23,21 +23,23 @@ import {
 } from "~/components/elements/Tabs";
 import { WeaponImage } from "~/components/Image";
 import { Placement } from "~/components/Placement";
+import { UserLink } from "~/components/UserLink";
 import { useUser } from "~/features/auth/core/user";
 import type { TeamLoaderData } from "~/features/team/loaders/t.$customUrl.server";
-import { useHasRole } from "~/modules/permissions/hooks";
+import { useActionSubmit } from "~/hooks/useActionSubmit";
+import { useHasPermission } from "~/modules/permissions/hooks";
 import invariant from "~/utils/invariant";
 import { editTeamPage, manageTeamRosterPage, userPage } from "~/utils/urls";
 import { action } from "../actions/t.$customUrl.index.server";
 import type * as TeamRepository from "../TeamRepository.server";
-import styles from "../team.module.css";
+import { teamProfilePageActionSchema } from "../team-schemas";
 import {
 	getMemberRoleType,
-	isTeamManager,
 	isTeamMember,
 	isTeamOwner,
 	resolveNewOwner,
 } from "../team-utils";
+import styles from "./t.$customUrl.index.module.css";
 
 export { action };
 
@@ -107,19 +109,20 @@ export default function TeamIndexPage() {
 function ActionButtons() {
 	const { t } = useTranslation(["team"]);
 	const user = useUser();
-	const isAdmin = useHasRole("ADMIN");
 	const [, parentRoute] = useMatches();
 	invariant(parentRoute);
 	const layoutData = parentRoute.loaderData as TeamLoaderData;
 	const team = layoutData.team;
+	const canManageRoster = useHasPermission(team, "MANAGE_ROSTER");
+	const canEditTeam = useHasPermission(team, "EDIT");
 
-	if (!isTeamMember({ user, team }) && !isAdmin) {
+	if (!isTeamMember({ user, team }) && !canManageRoster && !canEditTeam) {
 		return null;
 	}
 
 	return (
 		<div className={styles.actionButtons}>
-			{isTeamManager({ user, team }) || isAdmin ? (
+			{canManageRoster ? (
 				<LinkButton
 					size="small"
 					to={manageTeamRosterPage(team.customUrl)}
@@ -131,7 +134,7 @@ function ActionButtons() {
 					{t("team:actionButtons.manageRoster")}
 				</LinkButton>
 			) : null}
-			{isTeamManager({ user, team }) || isAdmin ? (
+			{canEditTeam ? (
 				<LinkButton
 					size="small"
 					to={editTeamPage(team.customUrl)}
@@ -151,8 +154,7 @@ function ActionButtons() {
 function TeamActionsMenu({ team }: { team: TeamLoaderData["team"] }) {
 	const { t } = useTranslation(["common", "team"]);
 	const user = useUser();
-	const isAdmin = useHasRole("ADMIN");
-	const fetcher = useFetcher();
+	const { submit } = useActionSubmit(teamProfilePageActionSchema);
 	const [confirming, setConfirming] = React.useState<"LEAVE" | "DELETE" | null>(
 		null,
 	);
@@ -163,7 +165,7 @@ function TeamActionsMenu({ team }: { team: TeamLoaderData["team"] }) {
 	const showMainTeamIndicator = isTeamMember({ user, team }) && isMainTeam;
 	const canMakeMainTeam = isTeamMember({ user, team }) && !isMainTeam;
 	const canLeaveTeam = isTeamMember({ user, team }) && team.members.length > 1;
-	const canDeleteTeam = isTeamOwner({ user, team }) || isAdmin;
+	const canDeleteTeam = useHasPermission(team, "DELETE");
 
 	if (
 		!showMainTeamIndicator &&
@@ -174,8 +176,10 @@ function TeamActionsMenu({ team }: { team: TeamLoaderData["team"] }) {
 		return null;
 	}
 
-	const submitAction = (action: string) => {
-		fetcher.submit({ _action: action }, { method: "post" });
+	const submitAction = (
+		action: "LEAVE_TEAM" | "MAKE_MAIN_TEAM" | "DELETE_TEAM",
+	) => {
+		submit(action);
 		setConfirming(null);
 	};
 
@@ -377,10 +381,9 @@ function MobileMemberCard({
 	return (
 		<div className={styles.memberCardContainer}>
 			<div className={styles.memberCard}>
-				<Link to={userPage(member)} className="stack items-center">
-					<Avatar user={member} size="md" />
+				<UserLink user={member} size="md" direction="vertical">
 					<div className={styles.memberCardName}>{member.username}</div>
-				</Link>
+				</UserLink>
 				{member.weapons.length > 0 ? (
 					<div className="stack horizontal md">
 						{member.weapons.map((weapon) => (

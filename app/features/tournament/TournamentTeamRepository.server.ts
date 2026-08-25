@@ -9,6 +9,7 @@ import { flatZip } from "~/utils/arrays";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import invariant from "~/utils/invariant";
+import { toDBBoolean } from "~/utils/sql";
 import * as TournamentAuditLogRepository from "./TournamentAuditLogRepository.server";
 
 export function setActiveRoster({
@@ -210,11 +211,14 @@ export function insert({
 /**
  * Creates a new registration or applies a full-state edit to an existing one in a
  * single transaction: team name, linked sendou.ink team, owner assignment/transfer,
- * member adds/removes and in-game name updates. Pass `tournamentTeamId` to edit an
- * existing team, or omit it to create a new one (all members are then "added" and
- * `ownerUserId` becomes the owner). The caller is responsible for validating the
- * derived ops and for any side effects (cache updates, notifications) outside the
- * transaction.
+ * member adds/removes, in-game name updates, tournament name updates and the
+ * counterpick map pool. Pass `tournamentTeamId` to edit an existing team, or omit it
+ * to create a new one (all members are then "added" and `ownerUserId` becomes the
+ * owner). The caller is responsible for validating the derived ops and for any side
+ * effects (cache updates, notifications) outside the transaction.
+ *
+ * Returns the tournament name changes that were actually applied (submitted values
+ * equal to the user's current one are no-ops), for the caller to log.
  */
 export function upsertRegistration({
 	tournamentTeamId,
@@ -227,6 +231,8 @@ export function upsertRegistration({
 	membersToAdd,
 	membersToRemove,
 	inGameNameUpdates,
+	tournamentNameUpdates,
+	mapPool,
 }: {
 	/** Present when editing an existing team, omitted when creating a new one. */
 	tournamentTeamId?: number;
@@ -243,6 +249,13 @@ export function upsertRegistration({
 	membersToAdd: number[];
 	membersToRemove: number[];
 	inGameNameUpdates: Array<{ userId: number; inGameName: string }>;
+	/** Organizer-set names shown in every tournament. `null` clears the user's current one. */
+	tournamentNameUpdates: Array<{
+		userId: number;
+		tournamentName: string | null;
+	}>;
+	/** Counterpick map pool to replace the team's with. Omitted leaves it as is. */
+	mapPool?: MapPool;
 }) {
 	const isNew = typeof tournamentTeamId !== "number";
 
@@ -291,6 +304,10 @@ export function upsertRegistration({
 			});
 		}
 
+		if (mapPool) {
+			await replaceCounterpickMaps(trx, { tournamentTeamId: id, mapPool });
+		}
+
 		for (const userId of membersToRemove) {
 			await TournamentAuditLogRepository.insert(
 				{
@@ -318,7 +335,12 @@ export function upsertRegistration({
 			const members: Array<
 				Pick<
 					Tables["TournamentTeamMember"],
-					"tournamentTeamId" | "userId" | "inGameName" | "isSub" | "role"
+					| "tournamentTeamId"
+					| "userId"
+					| "inGameName"
+					| "isSub"
+					| "role"
+					| "isOrganizerAdded"
 				>
 			> = [];
 			for (const userId of membersToAdd) {
@@ -333,6 +355,7 @@ export function upsertRegistration({
 					isSub,
 					// every row needs the same keys, otherwise Kysely inserts null for the missing ones
 					role: isOwner ? "OWNER" : "REGULAR",
+					isOrganizerAdded: 1,
 				});
 			}
 
@@ -388,6 +411,45 @@ export function upsertRegistration({
 				trx,
 			);
 		}
+
+		const appliedTournamentNameChanges: Array<{
+			userId: number;
+			previousTournamentName: string | null;
+			tournamentName: string | null;
+		}> = [];
+		for (const { userId, tournamentName } of tournamentNameUpdates) {
+			const { tournamentName: previousTournamentName } = await trx
+				.selectFrom("User")
+				.select("User.tournamentName")
+				.where("User.id", "=", userId)
+				.executeTakeFirstOrThrow();
+
+			if (previousTournamentName === tournamentName) continue;
+
+			await trx
+				.updateTable("User")
+				.set({ tournamentName })
+				.where("User.id", "=", userId)
+				.execute();
+
+			await TournamentAuditLogRepository.insert(
+				{
+					type: "UPDATE_TOURNAMENT_NAME",
+					tournamentTeamId: id,
+					subjectUserId: userId,
+					metadata: { tournamentName },
+				},
+				trx,
+			);
+
+			appliedTournamentNameChanges.push({
+				userId,
+				previousTournamentName,
+				tournamentName,
+			});
+		}
+
+		return { appliedTournamentNameChanges };
 	});
 }
 
@@ -441,106 +503,6 @@ async function resolveInGameName(
 	invariant(user.inGameName, "In-game name is required but not set");
 
 	return user.inGameName;
-}
-
-export function copyFromAnotherTournament({
-	tournamentTeamId,
-	destinationTournamentId,
-	seed,
-	defaultCheckedIn = false,
-}: {
-	tournamentTeamId: number;
-	destinationTournamentId: number;
-	seed?: number;
-	defaultCheckedIn?: boolean;
-}) {
-	return db.transaction().execute(async (trx) => {
-		const oldTeam = await trx
-			.selectFrom("TournamentTeam")
-			.select([
-				"TournamentTeam.avatarImgId",
-				"TournamentTeam.createdAt",
-				"TournamentTeam.name",
-				"TournamentTeam.prefersNotToHost",
-				"TournamentTeam.teamId",
-
-				// -- exclude these
-				// "TournamentTeam.id"
-				// "TournamentTeam.droppedOut"
-				// "TournamentTeam.activeRosterUserIds"
-				// "TournamentTeam.seed"
-				// "TournamentTeam.startingBracketIdx"
-				// "TournamentTeam.inviteCode"
-				// "TournamentTeam.tournamentId"
-				// "TournamentTeam.activeRosterUserIds",
-			])
-			.where("id", "=", tournamentTeamId)
-			.executeTakeFirstOrThrow();
-
-		const oldMembers = await trx
-			.selectFrom("TournamentTeamMember")
-			.select([
-				"TournamentTeamMember.createdAt",
-				"TournamentTeamMember.inGameName",
-				"TournamentTeamMember.role",
-				"TournamentTeamMember.userId",
-				"TournamentTeamMember.isSub",
-
-				// -- exclude these
-				// "TournamentTeamMember.tournamentTeamId"
-			])
-			.where("tournamentTeamId", "=", tournamentTeamId)
-			.execute();
-		invariant(oldMembers.length > 0, "Team has no members");
-
-		const oldMapPool = await trx
-			.selectFrom("MapPoolMap")
-			.select(["MapPoolMap.mode", "MapPoolMap.stageId"])
-			.where("tournamentTeamId", "=", tournamentTeamId)
-			.execute();
-
-		const newTeam = await trx
-			.insertInto("TournamentTeam")
-			.values({
-				...oldTeam,
-				tournamentId: destinationTournamentId,
-				inviteCode: shortNanoid(),
-				seed,
-			})
-			.returning("id")
-			.executeTakeFirstOrThrow();
-
-		if (defaultCheckedIn) {
-			await trx
-				.insertInto("TournamentTeamCheckIn")
-				.values({
-					checkedInAt: databaseTimestampNow(),
-					tournamentTeamId: newTeam.id,
-					bracketIdx: null,
-				})
-				.execute();
-		}
-
-		await trx
-			.insertInto("TournamentTeamMember")
-			.values(
-				oldMembers.map((member) => ({
-					...member,
-					tournamentTeamId: newTeam.id,
-				})),
-			)
-			.execute();
-
-		await trx
-			.insertInto("MapPoolMap")
-			.values(
-				oldMapPool.map((mapPoolMap) => ({
-					...mapPoolMap,
-					tournamentTeamId: newTeam.id,
-				})),
-			)
-			.execute();
-	});
 }
 
 export function update({
@@ -776,12 +738,15 @@ export function join({
 	previousTeamIdToDelete,
 	newTeamId,
 	userId,
+	isOrganizerAdded = false,
 }: {
 	/** Team to delete as the user joins, e.g. a solo team they leave behind. */
 	previousTeamIdToDelete?: number;
 	newTeamId: number;
 	/** The user joining the team. */
 	userId: number;
+	/** Was the user added to the team by the tournament organizer instead of joining on their own? */
+	isOrganizerAdded?: boolean;
 }) {
 	return db.transaction().execute(async (trx) => {
 		if (previousTeamIdToDelete) {
@@ -816,6 +781,7 @@ export function join({
 				userId,
 				inGameName,
 				isSub,
+				isOrganizerAdded: toDBBoolean(isOrganizerAdded),
 			})
 			.execute();
 
@@ -852,6 +818,24 @@ export function deleteById(tournamentTeamId: number) {
 	});
 }
 
+/** Was the user's membership in the given team added by the tournament organizer instead of the user joining on their own? */
+export async function isOrganizerAddedMember({
+	tournamentTeamId,
+	userId,
+}: {
+	tournamentTeamId: number;
+	userId: number;
+}) {
+	const member = await db
+		.selectFrom("TournamentTeamMember")
+		.select("TournamentTeamMember.isOrganizerAdded")
+		.where("TournamentTeamMember.tournamentTeamId", "=", tournamentTeamId)
+		.where("TournamentTeamMember.userId", "=", userId)
+		.executeTakeFirst();
+
+	return Boolean(member?.isOrganizerAdded);
+}
+
 export function leave({
 	teamId,
 	userId,
@@ -878,33 +862,47 @@ export function leave({
 	});
 }
 
-export function upsertCounterpickMaps({
-	tournamentTeamId,
-	mapPool,
-}: {
+export function upsertCounterpickMaps(args: {
 	tournamentTeamId: Tables["TournamentTeam"]["id"];
 	mapPool: MapPool;
 }) {
-	return db.transaction().execute(async (trx) => {
-		await trx
-			.deleteFrom("MapPoolMap")
-			.where("MapPoolMap.tournamentTeamId", "=", tournamentTeamId)
-			.execute();
-
-		await trx
-			.insertInto("MapPoolMap")
-			.values(
-				mapPool.stageModePairs.map(({ stageId, mode }) => ({
-					tournamentTeamId,
-					stageId,
-					mode,
-				})),
-			)
-			.execute();
-	});
+	return db.transaction().execute((trx) => replaceCounterpickMaps(trx, args));
 }
 
-async function findTeamRecentMaps(teamId: number, limit: number) {
+async function replaceCounterpickMaps(
+	trx: Transaction<DB>,
+	{
+		tournamentTeamId,
+		mapPool,
+	}: {
+		tournamentTeamId: Tables["TournamentTeam"]["id"];
+		mapPool: MapPool;
+	},
+) {
+	await trx
+		.deleteFrom("MapPoolMap")
+		.where("MapPoolMap.tournamentTeamId", "=", tournamentTeamId)
+		.execute();
+
+	if (mapPool.stageModePairs.length === 0) return;
+
+	await trx
+		.insertInto("MapPoolMap")
+		.values(
+			mapPool.stageModePairs.map(({ stageId, mode }) => ({
+				tournamentTeamId,
+				stageId,
+				mode,
+			})),
+		)
+		.execute();
+}
+
+async function findTeamRecentMaps(
+	teamId: number,
+	excludeMatchId: number,
+	limit: number,
+) {
 	return db
 		.selectFrom("TournamentMatchGameResult")
 		.innerJoin(
@@ -917,9 +915,21 @@ async function findTeamRecentMaps(teamId: number, limit: number) {
 			"TournamentMatchGameResult.stageId",
 		])
 		.where("TournamentMatchGameResultParticipant.tournamentTeamId", "=", teamId)
+		.where("TournamentMatchGameResult.matchId", "!=", excludeMatchId)
 		.orderBy("TournamentMatchGameResult.createdAt", "desc")
 		.limit(limit)
 		.execute();
+}
+
+/** Invite code of one team, the secret the tournament layout data does not carry. */
+export async function findInviteCodeById(tournamentTeamId: number) {
+	const row = await db
+		.selectFrom("TournamentTeam")
+		.select("TournamentTeam.inviteCode")
+		.where("TournamentTeam.id", "=", tournamentTeamId)
+		.executeTakeFirst();
+
+	return row?.inviteCode ?? null;
 }
 
 export function findByInviteCode(inviteCode: string) {
@@ -963,10 +973,15 @@ export async function findMapPoolsByTeamIds(tournamentTeamIds: number[]) {
 
 export async function findRecentlyPlayedMapsByIds({
 	teamIds,
+	excludeMatchId,
 	limit = 5,
 }: {
 	/** Team IDs to retrieve recent maps for */
 	teamIds: [number, number];
+	/** Match whose own games are left out, being the match the maps are resolved for.
+	 * Without it a set's map list changes under the teams mid-set, as the games they
+	 * already played would count as recently played when it is regenerated. */
+	excludeMatchId: number;
 	/** Limit of recent maps to retrieve per team
 	 *
 	 * @default 5
@@ -974,8 +989,8 @@ export async function findRecentlyPlayedMapsByIds({
 	limit?: number;
 }): Promise<Array<{ mode: ModeShort; stageId: StageId }>> {
 	const [teamOneMaps, teamTwoMaps] = await Promise.all([
-		findTeamRecentMaps(teamIds[0], limit),
-		findTeamRecentMaps(teamIds[1], limit),
+		findTeamRecentMaps(teamIds[0], excludeMatchId, limit),
+		findTeamRecentMaps(teamIds[1], excludeMatchId, limit),
 	]);
 
 	return flatZip(teamOneMaps, teamTwoMaps);

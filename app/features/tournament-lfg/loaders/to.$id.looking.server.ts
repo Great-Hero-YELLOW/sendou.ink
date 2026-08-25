@@ -1,18 +1,16 @@
 import type { LoaderFunctionArgs } from "react-router";
 import * as R from "remeda";
-import type { Pronouns } from "~/db/tables-json";
-import { getUser } from "~/features/auth/core/user.server";
+import type { getUser } from "~/features/auth/core/user.server";
+import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import {
-	requireTournamentVisible,
-	tournamentFromDBCached,
+	tournamentFromParams,
+	tournamentSharedCached,
 	tournamentTeamsFullCached,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import type { SerializeFrom } from "~/utils/remix";
-import { parseParams } from "~/utils/remix.server";
-import { idObject } from "~/utils/zod";
 import type { LFGGroup, LFGGroupMember } from "../components/LFGGroupCard";
 import * as TournamentLFGRepository from "../TournamentLFGRepository.server";
 
@@ -24,14 +22,10 @@ export type SubEntry = Extract<
 export type LookingLoaderData = SerializeFrom<typeof loader>;
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
-	const user = getUser();
-	const { id: tournamentId } = parseParams({ params, schema: idObject });
-
-	const tournament = await tournamentFromDBCached({
-		tournamentId,
-		user,
-	});
-	requireTournamentVisible({ ctx: tournament.ctx, user });
+	const { tournament, tournamentId, user } = await tournamentFromParams(
+		params,
+		{ for: "view" },
+	);
 
 	if (!tournament.lfgEnabled) {
 		throw new Response(null, { status: 404 });
@@ -41,8 +35,17 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		throw new Response(null, { status: 404 });
 	}
 
-	if (tournament.isLeagueSignup && !tournament.registrationOpen) {
-		throw new Response(null, { status: 404 });
+	if (user) {
+		await resolveNotifications({
+			userIds: [user.id],
+			type: "TO_LIKE_RECEIVED",
+			meta: { tournamentId },
+		});
+		await resolveNotifications({
+			userIds: [user.id],
+			type: "TO_LIKE_ACCEPTED",
+			meta: { tournamentId },
+		});
 	}
 
 	if (tournament.registrationOpen) {
@@ -164,10 +167,7 @@ async function resolveOwnTeam({
 	if (!user) return null;
 	if (ownGroup) return null;
 
-	const tournament = await tournamentFromDBCached({
-		tournamentId,
-		user,
-	});
+	const tournament = await tournamentSharedCached(tournamentId);
 
 	const teamLite = tournament.teamMemberOfByUser(user);
 	if (!teamLite) return null;
@@ -189,7 +189,6 @@ async function resolveOwnTeam({
 		customUrl: m.customUrl,
 		languages: [],
 		vc: null,
-		pronouns: null,
 		role: m.role,
 		isStayAsSub: false,
 		weapons: null,
@@ -216,7 +215,6 @@ function transformMembers(
 		const languages = m.languages ?? [];
 
 		const weapons = parseWeapons(m.weapons);
-		const pronouns = parsePronouns(m.pronouns);
 
 		return {
 			id: m.id,
@@ -227,7 +225,6 @@ function transformMembers(
 			customUrl: m.customUrl,
 			languages,
 			vc: m.vc,
-			pronouns,
 			role: m.role,
 			isStayAsSub: m.isStayAsSub === 1,
 			weapons,
@@ -257,13 +254,4 @@ function parseWeapons(raw: unknown): Array<{
 			isTenStar: Boolean(w.isTenStar),
 		}),
 	);
-}
-
-function parsePronouns(raw: unknown): Pronouns | null {
-	if (!raw) return null;
-
-	const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-	if (!parsed || typeof parsed !== "object") return null;
-
-	return parsed as Pronouns;
 }

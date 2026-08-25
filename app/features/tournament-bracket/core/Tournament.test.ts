@@ -1,5 +1,12 @@
-import { describe, expect, it, test } from "vitest";
-import type { MatchData } from "~/features/tournament-bracket/core/engine/types";
+import { describe, expect, test } from "vitest";
+import type {
+	BracketData,
+	GeneratedRound,
+	MatchData,
+} from "~/features/tournament-bracket/core/engine/types";
+import { unwrap } from "~/utils/result";
+import * as Engine from "./engine";
+import type * as Progression from "./Progression";
 import { Tournament } from "./Tournament";
 import {
 	IN_THE_ZONE_32,
@@ -224,7 +231,7 @@ describe("Follow-up bracket progression", () => {
 });
 
 describe("Bracket progression override", () => {
-	it("handles no override", () => {
+	test("handles no override", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167(),
 		});
@@ -243,7 +250,7 @@ describe("Bracket progression override", () => {
 		);
 	});
 
-	it("overrides causing the team to go to another bracket", () => {
+	test("overrides causing the team to go to another bracket", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				{
@@ -259,7 +266,7 @@ describe("Bracket progression override", () => {
 		).toBeTruthy();
 	});
 
-	it("overrides causing the team not to go to their original bracket", () => {
+	test("overrides causing the team not to go to their original bracket", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				{
@@ -275,7 +282,7 @@ describe("Bracket progression override", () => {
 		).toBeFalsy();
 	});
 
-	it("destinationBracketIdx = -1 eliminates the team", () => {
+	test("destinationBracketIdx = -1 eliminates the team", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				{
@@ -300,7 +307,7 @@ describe("Bracket progression override", () => {
 		);
 	});
 
-	it("override teams seeded at the end", () => {
+	test("override teams seeded at the end", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				{
@@ -314,7 +321,7 @@ describe("Bracket progression override", () => {
 		expect(tournament.brackets[1].seeding?.at(-1)).toBe(14809);
 	});
 
-	it("if redundant override, still in the right bracket", () => {
+	test("if redundant override, still in the right bracket", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				{
@@ -330,7 +337,7 @@ describe("Bracket progression override", () => {
 		).toBeTruthy();
 	});
 
-	it("redundants override does not affect the seed", () => {
+	test("redundants override does not affect the seed", () => {
 		const tournamentTeamId = 14735;
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167(),
@@ -355,7 +362,7 @@ describe("Bracket progression override", () => {
 	});
 
 	// note there is also logic for avoiding replays
-	it("override teams seeded according to their placement in the source bracket", () => {
+	test("override teams seeded according to their placement in the source bracket", () => {
 		const tournament = new Tournament({
 			...SWIM_OR_SINK_167([
 				// throw these to different brackets to avoid replays
@@ -413,30 +420,78 @@ describe("Adjusting team starting bracket", () => {
 		});
 	};
 
-	it("defaults to bracket idx = 0", () => {
+	test("defaults to bracket idx = 0", () => {
 		const tournament = createTournament([null, null, null, null]);
 
 		expect(tournament.brackets[0].participantTournamentTeamIds).toHaveLength(4);
 	});
 
-	it("setting starting bracket idx has an effect", () => {
+	test("setting starting bracket idx has an effect", () => {
 		const tournament = createTournament([0, 0, 1, 1]);
 
 		expect(tournament.brackets[0].participantTournamentTeamIds).toHaveLength(2);
 		expect(tournament.brackets[1].participantTournamentTeamIds).toHaveLength(2);
 	});
 
-	it("handles too high bracket idx gracefully", () => {
+	test("handles too high bracket idx gracefully", () => {
 		const tournament = createTournament([0, 0, 0, 10]);
 
 		expect(tournament.brackets[0].participantTournamentTeamIds).toHaveLength(4);
 	});
 
-	it("handles bracket idx is not a valid starting bracket idx gracefully", () => {
+	test("handles bracket idx is not a valid starting bracket idx gracefully", () => {
 		// 2 is not valid because it is a follow-up bracket
 		const tournament = createTournament([0, 0, 0, 2]);
 
 		expect(tournament.brackets[0].participantTournamentTeamIds).toHaveLength(4);
+	});
+});
+
+describe("League divisions", () => {
+	const leagueTournament = (isLeague = true) =>
+		testTournament({
+			ctx: {
+				teams: [0, 0, 0, 2].map((startingBracketIdx, i) =>
+					tournamentCtxTeam(i + 1, { startingBracketIdx }),
+				),
+				settings: {
+					isLeague,
+					bracketProgression: progressions.league,
+				},
+			},
+		});
+
+	test("every starting bracket is a division", () => {
+		expect(leagueTournament().leagueDivisions.map((div) => div.idx)).toEqual([
+			0, 2,
+		]);
+	});
+
+	test("has no divisions when not a league", () => {
+		expect(leagueTournament(false).leagueDivisions).toEqual([]);
+	});
+
+	test("playoffs belong to the division they are sourced from", () => {
+		expect(leagueTournament().leagueDivisionOfBracket(3)).toBe(2);
+	});
+
+	test("brackets of a division exclude the other divisions'", () => {
+		expect(
+			leagueTournament()
+				.visibleBracketsMetaOfDivision(2)
+				.map((bracket) => bracket.name),
+		).toEqual(["Division 2", "Division 2 Playoffs"]);
+	});
+
+	test("every bracket is shown when no division is selected", () => {
+		expect(leagueTournament().visibleBracketsMetaOfDivision(null)).toHaveLength(
+			4,
+		);
+	});
+
+	test("teams of a division are the ones starting in it", () => {
+		expect(leagueTournament().teamsCountOfBracket(0)).toBe(3);
+		expect(leagueTournament().teamsCountOfBracket(2)).toBe(1);
 	});
 });
 
@@ -459,13 +514,13 @@ describe("Resolving the team a user is a member of", () => {
 			},
 		});
 
-	it("resolves the only team the user is a member of", () => {
+	test("resolves the only team the user is a member of", () => {
 		const tournament = tournamentWithTeams([{ id: 1, createdAt: 1 }]);
 
 		expect(tournament.teamMemberOfByUser({ id: USER_ID })?.id).toBe(1);
 	});
 
-	it("resolves the team the user joined most recently when on many teams", () => {
+	test("resolves the team the user joined most recently when on many teams", () => {
 		// e.g. the user's first team dropped out and the organizer added them to an
 		// older team afterwards
 		const tournament = tournamentWithTeams(
@@ -479,7 +534,7 @@ describe("Resolving the team a user is a member of", () => {
 		expect(tournament.teamMemberOfByUser({ id: USER_ID })?.id).toBe(1);
 	});
 
-	it("falls back to the first team when the most recently joined one is not visible", () => {
+	test("falls back to the first team when the most recently joined one is not visible", () => {
 		const tournament = tournamentWithTeams(
 			[
 				{ id: 1, createdAt: 1 },
@@ -491,9 +546,206 @@ describe("Resolving the team a user is a member of", () => {
 		expect(tournament.teamMemberOfByUser({ id: USER_ID })?.id).toBe(1);
 	});
 
-	it("returns null if the user is not a member of any team", () => {
+	test("returns null if the user is not a member of any team", () => {
 		const tournament = tournamentWithTeams([{ id: 1, createdAt: 1 }]);
 
 		expect(tournament.teamMemberOfByUser({ id: USER_ID + 1 })).toBeNull();
 	});
 });
+
+describe("teamMemberOfProgressStatus in swiss", () => {
+	const teamsWithMembers = [1, 2, 3, 4].map((teamId) =>
+		tournamentCtxTeam(teamId, { memberUserIds: [100 + teamId] }),
+	);
+
+	test("resolves an early advanced team as waiting for the follow-up bracket", () => {
+		const data = playOutEarlyAdvanceSwiss(progressions.swissEarlyAdvance);
+
+		const tournament = testTournament({
+			data,
+			ctx: {
+				settings: { bracketProgression: progressions.swissEarlyAdvance },
+				teams: teamsWithMembers,
+			},
+		});
+
+		expect(
+			tournament.bracketByIdx(1)?.seeding,
+			"test setup: the advanced team should be in the top cut preview",
+		).toContain(1);
+		expect(tournament.teamMemberOfProgressStatus({ id: 101 })?.type).toBe(
+			"WAITING_FOR_BRACKET",
+		);
+	});
+
+	test("resolves a dropped out team's status as thanks for playing", () => {
+		const data = Engine.create({
+			type: "swiss",
+			seeding: [1, 2, 3, 4],
+			settings: {},
+		});
+		finishPendingMatches(data);
+
+		const tournament = testTournament({
+			data,
+			ctx: {
+				settings: { bracketProgression: progressions.swissOneGroup },
+				teams: [1, 2, 3, 4].map((teamId) =>
+					tournamentCtxTeam(teamId, {
+						memberUserIds: [100 + teamId],
+						droppedOut: teamId === 4 ? 1 : 0,
+					}),
+				),
+			},
+		});
+
+		expect(tournament.teamMemberOfProgressStatus({ id: 104 })?.type).toBe(
+			"THANKS_FOR_PLAYING",
+		);
+	});
+});
+
+describe("Swiss early advance bracket sourcing", () => {
+	const progressionWithConsolation: Progression.ParsedBracket[] = [
+		{
+			name: "Main Bracket",
+			type: "swiss",
+			requiresCheckIn: false,
+			settings: { advanceThreshold: 3 },
+		},
+		{
+			name: "Top Cut",
+			type: "single_elimination",
+			requiresCheckIn: false,
+			settings: {},
+			sources: [{ bracketIdx: 0, placements: [] }],
+		},
+		{
+			name: "Consolation",
+			type: "single_elimination",
+			requiresCheckIn: false,
+			settings: {},
+			sources: [{ bracketIdx: 0, placements: [2, 3, 4] }],
+		},
+	];
+
+	test("sources a consolation bracket by its placements instead of the advance threshold", () => {
+		const data = playOutEarlyAdvanceSwiss(progressionWithConsolation);
+
+		const tournament = testTournament({
+			data,
+			ctx: { settings: { bracketProgression: progressionWithConsolation } },
+		});
+
+		expect(
+			tournament.bracketByIdx(1)?.seeding,
+			"test setup: the swiss winner should be in the top cut",
+		).toContain(1);
+		expect(
+			tournament.bracketByIdx(2)?.seeding,
+			"the swiss winner advanced to the top cut and should not also be in the consolation bracket",
+		).not.toContain(1);
+	});
+});
+
+describe("teamById division seeds", () => {
+	test("assigns unique seeds within a division when a late registrant has null startingBracketIdx", () => {
+		const tournament = testTournament({
+			ctx: {
+				settings: {
+					bracketProgression: [
+						{
+							name: "Div A",
+							type: "round_robin",
+							requiresCheckIn: false,
+							settings: {},
+						},
+						{
+							name: "Div B",
+							type: "round_robin",
+							requiresCheckIn: false,
+							settings: {},
+						},
+					],
+				},
+				teams: [
+					// DB query orders by seed ASC which puts NULL seeds first in SQLite
+					tournamentCtxTeam(5, {
+						seed: null,
+						startingBracketIdx: null,
+						createdAt: 5,
+					}),
+					tournamentCtxTeam(1, { seed: 1, startingBracketIdx: 0 }),
+					tournamentCtxTeam(2, { seed: 2, startingBracketIdx: 0 }),
+					tournamentCtxTeam(3, { seed: 3, startingBracketIdx: 1 }),
+					tournamentCtxTeam(4, { seed: 4, startingBracketIdx: 1 }),
+				],
+			},
+		});
+
+		const divATeamSeeds = [1, 2, 5].map(
+			(teamId) => tournament.teamById(teamId)?.seed,
+		);
+
+		expect(new Set(divATeamSeeds).size).toBe(3);
+	});
+});
+
+/**
+ * Plays a 4 team, 5 round, advance threshold 3 swiss all the way to its end.
+ * Team 1 wins rounds 1-3 locking their top cut spot, after which the pairing
+ * excludes them from the remaining rounds.
+ */
+function playOutEarlyAdvanceSwiss(
+	progression: Progression.ParsedBracket[],
+): BracketData {
+	const data = Engine.create({
+		type: "swiss",
+		seeding: [1, 2, 3, 4],
+		settings: { advanceThreshold: 3 },
+	});
+	const groupId = data.group[0].id;
+
+	finishPendingMatches(data);
+	for (let roundNumber = 2; roundNumber <= 5; roundNumber++) {
+		const bracket = testTournament({
+			data,
+			ctx: { settings: { bracketProgression: progression } },
+		}).bracketByIdx(0)!;
+		const generated = Engine.generateRound(bracket.data, {
+			groupId,
+			standings: bracket.standings,
+			settings: bracket.settings,
+		});
+		if (!generated.ok) break;
+		appendGeneratedRound(data, unwrap(generated));
+		finishPendingMatches(data);
+	}
+
+	return data;
+}
+
+/** Finishes every pending match, team 1 always winning theirs and otherwise the home side. */
+function finishPendingMatches(data: BracketData) {
+	for (const match of data.match) {
+		if (match.winnerSide !== null || !match.opponent2) continue;
+
+		match.winnerSide = match.opponent2.id === 1 ? "opponent2" : "opponent1";
+	}
+}
+
+function appendGeneratedRound(data: BracketData, round: GeneratedRound) {
+	let id = Math.max(...data.match.map((match) => match.id)) + 1;
+	for (const match of round.matches) {
+		data.match.push({
+			id: id++,
+			stageId: data.stage[0].id,
+			groupId: round.groupId,
+			roundId: round.roundId,
+			number: match.number,
+			opponent1: match.opponent1,
+			opponent2: match.opponent2,
+			winnerSide: null,
+		});
+	}
+}

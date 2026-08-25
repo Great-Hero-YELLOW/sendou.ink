@@ -1,11 +1,7 @@
 import { addDays, addWeeks, startOfWeek, subWeeks } from "date-fns";
-import type { Tables } from "~/db/tables";
-import { isAdmin } from "~/modules/permissions/utils";
-import { allTruthy } from "~/utils/arrays";
-import { databaseTimestampToDate } from "~/utils/dates";
 import { logger } from "~/utils/logger";
+import type { DayMonthYear } from "~/utils/schema";
 import { assertUnreachable } from "~/utils/types";
-import type { DayMonthYear } from "~/utils/zod";
 import {
 	DAYS_SHOWN_AT_A_TIME,
 	type RegClosesAtOption,
@@ -125,53 +121,6 @@ export function datesToRegClosesAt({
 
 	logger.warn("datesToRegClosesAt: fallback value");
 	return "0";
-}
-
-interface CanEditCalendarEventArgs {
-	user?: Pick<Tables["User"], "id">;
-	event: Pick<Tables["CalendarEvent"], "authorId">;
-}
-export function canEditCalendarEvent({
-	user,
-	event,
-}: CanEditCalendarEventArgs) {
-	if (isAdmin(user)) return true;
-
-	return user?.id === event.authorId;
-}
-
-export function canDeleteCalendarEvent({
-	user,
-	event,
-	startTime,
-}: CanEditCalendarEventArgs & { startTime: Date }) {
-	if (isAdmin(user)) return true;
-
-	return user?.id === event.authorId && startTime > new Date();
-}
-
-interface CanReportCalendarEventWinnersArgs {
-	user?: Pick<Tables["User"], "id">;
-	event: Pick<Tables["CalendarEvent"], "authorId">;
-	startTimes: number[];
-}
-export function canReportCalendarEventWinners({
-	user,
-	event,
-	startTimes,
-}: CanReportCalendarEventWinnersArgs) {
-	return allTruthy([
-		canEditCalendarEvent({ user, event }),
-		eventStartedInThePast(startTimes),
-	]);
-}
-
-function eventStartedInThePast(
-	startTimes: CanReportCalendarEventWinnersArgs["startTimes"],
-) {
-	return startTimes.every(
-		(startTime) => databaseTimestampToDate(startTime).getTime() < Date.now(),
-	);
 }
 
 export function daysForCalendar(currentDate?: DayMonthYear) {

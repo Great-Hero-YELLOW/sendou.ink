@@ -51,7 +51,10 @@ export function MatchBanner({
 			}}
 			data-testid="stage-banner"
 		>
-			<div className={clsx(styles.map, styles.thickText)}>
+			<div
+				className={clsx(styles.map, styles.thickText)}
+				data-testid={`banner-map-${mode}-${stageId}`}
+			>
 				<ModeImage mode={mode} size={24} />
 				{t(`game-misc:MODE_SHORT_${mode}`)} {t(`game-misc:STAGE_${stageId}`)}
 			</div>
@@ -209,5 +212,21 @@ function ScreenNotice({ screenLegal }: { screenLegal: boolean }) {
 						special: t("weapons:SPECIAL_19"),
 					})}
 		</SendouPopover>
+	);
+}
+
+/**
+ * Trigger for the small popovers hung off a banner's info row, e.g. who voted
+ * for the map or which team picked it.
+ */
+export function MatchBannerInfoBadge({
+	children,
+}: {
+	children: React.ReactNode;
+}) {
+	return (
+		<SendouButton variant="minimal" className={styles.infoBadge}>
+			{children}
+		</SendouButton>
 	);
 }

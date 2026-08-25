@@ -100,13 +100,6 @@ same place as an auto margin would but leaves their text room to breathe.
 	gap: var(--s-2);
 }
 
-.box {
-	padding: var(--s-2) var(--s-3);
-	background-color: var(--graphic-row-bg);
-	border: 1.5px solid var(--graphic-row-border);
-	border-radius: var(--radius-box);
-}
-
 .boxLabel {
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-semi);
@@ -124,7 +117,7 @@ same place as an auto margin would but leaves their text room to breathe.
 	list-style: none;
 }
 
-.teamRow {
+:where(.teamRow) {
 	display: grid;
 	grid-template-columns: 3rem 2.75rem 1fr auto;
 	align-items: center;
@@ -173,6 +166,7 @@ same place as an auto margin would but leaves their text room to breathe.
 
 .teamInfo {
 	min-width: 0;
+	overflow: hidden;
 }
 
 .teamName {
@@ -205,10 +199,12 @@ same place as an auto margin would but leaves their text room to breathe.
 }
 
 .player {
-	display: flex;
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
 	align-items: center;
 	gap: var(--s-1-5);
 	min-width: 0;
+	overflow: hidden;
 	font-size: var(--font-xs);
 	font-weight: var(--weight-semi);
 	color: var(--graphic-text-dim);

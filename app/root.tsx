@@ -22,6 +22,7 @@ import {
 	useFetchers,
 	useHref,
 	useLoaderData,
+	useLocation,
 	useMatches,
 	useNavigate,
 	useNavigation,
@@ -30,10 +31,9 @@ import {
 } from "react-router";
 import { Config } from "~/config";
 import type { CustomTheme } from "~/db/tables-json";
-import * as NotificationRepository from "~/features/notifications/NotificationRepository.server";
-import { NOTIFICATIONS } from "~/features/notifications/notifications-contants";
-import { resolveSidebarData } from "~/features/sidebar/core/sidebar.server";
+import { resolveLayoutData } from "~/features/layout/core/layout.server";
 import { useDebounce } from "~/hooks/useDebounce";
+import lexendLatinUrl from "~/styles/fonts/lexend-latin.woff2?url";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import type { Route } from "./+types/root";
 import { Catcher } from "./components/Catcher";
@@ -45,6 +45,8 @@ import { userMiddleware } from "./features/auth/core/user-middleware.server";
 import { ChatProvider } from "./features/chat/ChatProvider";
 import { isMatchResultsScopedRevalidation } from "./features/chat/revalidation-scope";
 import { getSidenavSession } from "./features/layout/core/sidenav-session.server";
+import { LayoutDataProvider } from "./features/layout/LayoutDataProvider";
+import { NotificationsProvider } from "./features/notifications/NotificationsProvider";
 import { sessionIdMiddleware } from "./features/session-id/session-id-middleware.server";
 import {
 	isTheme,
@@ -57,14 +59,19 @@ import { getThemeSession } from "./features/theme/core/theme-session.server";
 import { UnsavedChangesGuard } from "./form/UnsavedChangesGuard";
 import { useUserIntlPreference } from "./hooks/intl/useUserIntlPreference";
 import { useHydrated } from "./hooks/useHydrated";
-import { DEFAULT_LANGUAGE } from "./modules/i18n/config";
+import {
+	ALWAYS_LOADED_NAMESPACES,
+	DEFAULT_LANGUAGE,
+} from "./modules/i18n/config";
 import {
 	getLocale,
 	i18nCookie,
 	i18nMiddleware,
 } from "./modules/i18n/i18next.server";
+import { localePreloadUrls } from "./modules/i18n/locale-preload.server";
 import { useChangeLanguage } from "./modules/i18n/useChangeLanguage";
 import { isSupporter } from "./modules/permissions/utils";
+import { redirectsMiddleware } from "./modules/redirects/redirects-middleware.server";
 import { SearchParamsProvider } from "./modules/search-params/hooks";
 import { IS_E2E_TEST_RUN } from "./utils/e2e";
 import { allI18nNamespaces } from "./utils/i18n";
@@ -73,12 +80,14 @@ import { requestContextMiddleware } from "./utils/request-context-middleware.ser
 import { APP_ICON_URL, pwaSplashScreenImageUrl } from "./utils/urls";
 
 export const middleware: Route.MiddlewareFunction[] = [
+	redirectsMiddleware,
 	requestContextMiddleware,
 	sessionIdMiddleware,
 	userMiddleware,
 	i18nMiddleware,
 ];
 
+import "~/styles/fonts.css";
 import "~/styles/vars.css";
 import "~/styles/normalize.css";
 import "~/styles/common.css";
@@ -125,11 +134,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 	const themeSession = await getThemeSession(request);
 	const sidenavSession = await getSidenavSession(request);
 
-	const sidebarData = await resolveSidebarData(user?.id ?? null);
+	const layoutData = await resolveLayoutData(user);
 
 	return data(
 		{
 			locale,
+			i18nPreloadUrls: localePreloadUrls(locale),
 			theme: themeSession.getTheme(),
 			sidenavCollapsed: sidenavSession.getCollapsed(),
 			user: user
@@ -150,12 +160,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 					}
 				: undefined,
 			customTheme: isSupporter(user) ? user?.customTheme : undefined,
-			notifications: user
-				? await NotificationRepository.findByUserId(user.id, {
-						limit: NOTIFICATIONS.PEEK_COUNT,
-					})
-				: undefined,
-			sidebar: sidebarData,
+			...layoutData,
 		},
 		{
 			headers: { "Set-Cookie": await i18nCookie.serialize(locale) },
@@ -164,7 +169,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const handle: SendouRouteHandle = {
-	i18n: ["common", "forms", "game-misc", "weapons", "front", "friends"],
+	i18n: [...ALWAYS_LOADED_NAMESPACES],
 };
 
 function Document({
@@ -185,7 +190,6 @@ function Document({
 	usePreloadTranslation();
 	useLoadingIndicator();
 	useTriggerToasts();
-	useSidebarRevalidation();
 
 	const htmlStyle: Record<string, string | number> = {
 		...Object.fromEntries(customThemeStyle),
@@ -231,6 +235,15 @@ function Document({
 				<meta name="theme-color" content="#010115" />
 				<Meta />
 				<Links />
+				{data?.i18nPreloadUrls?.map((url) => (
+					<link
+						key={url}
+						rel="preload"
+						as="fetch"
+						crossOrigin="anonymous"
+						href={url}
+					/>
+				))}
 				<ThemeHead />
 				<link rel="manifest" href="/app.webmanifest" />
 				<PWALinks />
@@ -246,7 +259,11 @@ function Document({
 								<UnsavedChangesGuard />
 								<MyFuse data={data} />
 								<ChatProvider user={data?.user}>
-									<Layout data={data}>{children}</Layout>
+									<NotificationsProvider user={data?.user}>
+										<LayoutDataProvider data={data}>
+											<Layout data={data}>{children}</Layout>
+										</LayoutDataProvider>
+									</NotificationsProvider>
 								</ChatProvider>
 							</I18nProvider>
 						</RouterProvider>
@@ -318,39 +335,6 @@ function useLoadingIndicator() {
 		150,
 		[transition.state],
 	);
-}
-
-function useSidebarRevalidation() {
-	const { revalidate, state } = useRevalidator();
-
-	// read through a ref so a revalidation elsewhere in the app does not
-	// re-run the effect and restart the interval before it ever fires
-	const stateRef = React.useRef(state);
-	stateRef.current = state;
-
-	useEffect(() => {
-		const TEN_MINUTES = 10 * 60 * 1000;
-
-		const revalidateIfIdle = () => {
-			if (stateRef.current === "idle") {
-				revalidate();
-			}
-		};
-
-		const handleVisibilityChange = () => {
-			if (document.visibilityState === "visible") {
-				revalidateIfIdle();
-			}
-		};
-
-		document.addEventListener("visibilitychange", handleVisibilityChange);
-		const interval = setInterval(revalidateIfIdle, TEN_MINUTES);
-
-		return () => {
-			document.removeEventListener("visibilitychange", handleVisibilityChange);
-			clearInterval(interval);
-		};
-	}, [revalidate]);
 }
 
 function usePreloadTranslation() {
@@ -462,33 +446,48 @@ function HydrationTestIndicator() {
 	const navigation = useNavigation();
 	const revalidator = useRevalidator();
 	const fetchers = useFetchers();
+	const location = useLocation();
 
 	if (!isHydrated) return null;
 
-	const routerIdle =
-		navigation.state === "idle" &&
-		revalidator.state === "idle" &&
-		fetchers.every((fetcher) => fetcher.state === "idle");
+	const busy = [
+		navigation.state !== "idle"
+			? `nav:${navigation.state}:${navigation.location?.pathname}`
+			: null,
+		revalidator.state !== "idle" ? `revalidator:${revalidator.state}` : null,
+		...fetchers
+			.filter((fetcher) => fetcher.state !== "idle")
+			.map(
+				(fetcher) =>
+					`fetcher[${fetcher.key}]:${fetcher.state}:${fetcher.formAction ?? "load"}`,
+			),
+	].filter(Boolean);
+
+	const routerIdle = busy.length === 0;
 
 	return (
 		<div
 			style={{ display: "none" }}
 			data-testid="hydrated"
 			data-router-idle={routerIdle ? "true" : undefined}
+			data-router-busy={routerIdle ? undefined : busy.join(" | ")}
+			// the rendered search, trailing the browser's own by a commit: only
+			// once the toast params are gone from here have the forms keyed on
+			// the location (see SendouForm) finished remounting
+			data-location-search={location.search}
 		/>
 	);
 }
 
 function Fonts() {
 	return (
-		<>
-			<link rel="preconnect" href="https://fonts.googleapis.com" />
-			<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-			<link
-				href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap"
-				rel="stylesheet"
-			/>
-		</>
+		<link
+			rel="preload"
+			href={lexendLatinUrl}
+			as="font"
+			type="font/woff2"
+			crossOrigin="anonymous"
+		/>
 	);
 }
 

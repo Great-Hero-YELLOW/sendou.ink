@@ -5,9 +5,11 @@ import { DeleteObsoleteMatchVodsRoutine } from "./deleteObsoleteMatchVods";
 import { DeleteOldExternalStreamsRoutine } from "./deleteOldExternalStreams";
 import { DeleteOldNotificationsRoutine } from "./deleteOldNotifications";
 import { DeleteOldPendingFriendRequestsRoutine } from "./deleteOldPendingFriendRequests";
+import { DeleteOldScrimPickupRostersRoutine } from "./deleteOldScrimPickupRosters";
 import { DeleteOldTournamentAuditLogsRoutine } from "./deleteOldTournamentAuditLogs";
 import { DeleteOrphanArtTagsRoutine } from "./deleteOrphanArtTags";
 import { EvictStaleRunningTournamentsRoutine } from "./evictStaleRunningTournaments";
+import { ExpireReadyChecksRoutine } from "./expireReadyChecks";
 import { NotifyCheckInStartRoutine } from "./notifyCheckInStart";
 import { NotifyPlusServerVotingRoutine } from "./notifyPlusServerVoting";
 import { NotifyScrimStartingSoonRoutine } from "./notifyScrimStartingSoon";
@@ -19,6 +21,7 @@ import { SyncLiveStreamsRoutine } from "./syncLiveStreams";
 import { SyncSplatoonRotationsRoutine } from "./syncSplatoonRotations";
 import { SyncTournamentVodsRoutine } from "./syncTournamentVods";
 import { UpdatePatreonDataRoutine } from "./updatePatreonData";
+import { VacuumDatabaseRoutine } from "./vacuumDatabase";
 
 /** List of Routines that should occur hourly at XX:00 */
 export const everyHourAt00 = [
@@ -46,11 +49,18 @@ export const daily = [
 	DeleteOldNotificationsRoutine,
 	DeleteOldPendingFriendRequestsRoutine,
 	DeleteOldTournamentAuditLogsRoutine,
+	DeleteOldScrimPickupRostersRoutine,
 	CloseExpiredCommissionsRoutine,
 	DeleteOrphanArtTagsRoutine,
 	ComputeLutiDivsRoutine,
 	OptimizeDatabaseRoutine,
 ];
 
+/** List of Routines that should occur weekly */
+export const weekly = [VacuumDatabaseRoutine];
+
 /** List of Routines that should occur every 2 minutes */
-export const everyTwoMinutes = [SyncLiveStreamsRoutine];
+export const everyTwoMinutes = [
+	SyncLiveStreamsRoutine,
+	ExpireReadyChecksRoutine,
+];

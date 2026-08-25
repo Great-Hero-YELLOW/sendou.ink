@@ -1,10 +1,7 @@
 import { sub } from "date-fns";
 import type { Tables } from "~/db/tables";
 import type { TournamentStageSettings } from "~/db/tables-json";
-import {
-	LEAGUES,
-	TOURNAMENT,
-} from "~/features/tournament/tournament-constants";
+import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import {
 	modesIncluded,
 	sortTeamsBySeeding,
@@ -14,7 +11,7 @@ import {
 import type { MatchData } from "~/features/tournament-bracket/core/engine/types";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
 import type { ModeShort } from "~/modules/in-game-lists/types";
-import { isAdmin } from "~/modules/permissions/utils";
+import { hasPermission } from "~/modules/permissions/utils";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
@@ -24,6 +21,7 @@ import { logger } from "~/utils/logger";
 import { assertUnreachable } from "~/utils/types";
 import { groupNumberToLetters } from "../tournament-bracket-utils";
 import { type Bracket, createBracket } from "./Bracket";
+import { calculateTeamStatus } from "./engine/swiss/team-status";
 import { getRounds } from "./rounds";
 import * as Seeding from "./Seeding";
 import type { TournamentData } from "./Tournament.server";
@@ -40,8 +38,6 @@ export type BracketDerivedMeta = {
 	createdAt: number | null;
 	preview: boolean;
 	everyMatchOver: boolean;
-	/** False only while a swiss bracket still has rounds whose matches have not been generated. */
-	allRoundsHaveMatches: boolean;
 	participantTournamentTeamIds: number[];
 	teamsPendingCheckIn: number[] | null;
 	seeding: number[] | null;
@@ -239,6 +235,83 @@ export class Tournament {
 		);
 	}
 
+	/**
+	 * Divisions of a league. Every starting bracket is a division of its own, identified by its
+	 * bracket idx, the brackets it feeds into (its playoffs) belonging to that division as well.
+	 */
+	get leagueDivisions(): BracketMeta[] {
+		if (!this.isLeague) return [];
+
+		return this.bracketsMeta.filter((bracket) => bracket.isStartingBracket);
+	}
+
+	/** Division the given bracket belongs to, or null if the tournament has no divisions. */
+	leagueDivisionOfBracket(bracketIdx: number): number | null {
+		const division = this.leagueDivisions.find((division) =>
+			this.bracketIdxsOfDivision(division.idx).includes(bracketIdx),
+		);
+
+		return division?.idx ?? null;
+	}
+
+	/** {@link bracketsMeta} limited to the brackets of one division, if a division is given. */
+	bracketsMetaOfDivision(divisionIdx: number | null): BracketMeta[] {
+		if (divisionIdx === null) return this.bracketsMeta;
+
+		const bracketIdxs = this.bracketIdxsOfDivision(divisionIdx);
+
+		return this.bracketsMeta.filter((bracket) =>
+			bracketIdxs.includes(bracket.idx),
+		);
+	}
+
+	/** {@link visibleBracketsMeta} limited to the brackets of one division, if a division is given. */
+	visibleBracketsMetaOfDivision(divisionIdx: number | null): BracketMeta[] {
+		const visibleIdxs = new Set(
+			this.visibleBracketsMeta.map((bracket) => bracket.idx),
+		);
+
+		return this.bracketsMetaOfDivision(divisionIdx).filter((bracket) =>
+			visibleIdxs.has(bracket.idx),
+		);
+	}
+
+	private bracketIdxsOfDivision(divisionIdx: number) {
+		return Progression.bracketsReachableFrom(
+			divisionIdx,
+			this.ctx.settings.bracketProgression,
+		);
+	}
+
+	/** Teams that can play in the bracket: its participants plus the ones still pending check-in. */
+	eligibleTeamsCountOfBracket(bracketIdx: number) {
+		const bracket = this.bracketsMeta[bracketIdx];
+
+		if (bracket.sources) {
+			return (
+				(bracket.teamsPendingCheckIn ?? []).length +
+				bracket.participantTournamentTeamIds.length
+			);
+		}
+
+		if (!this.isMultiStartingBracket) {
+			return this.ctx.teams.length;
+		}
+
+		return this.ctx.teams.filter(
+			(team) => (team.startingBracketIdx ?? 0) === bracketIdx,
+		).length;
+	}
+
+	/** Teams of the bracket: its participants, or every eligible team while it is a preview. */
+	teamsCountOfBracket(bracketIdx: number) {
+		const bracket = this.bracketsMeta[bracketIdx];
+
+		return bracket.preview
+			? this.eligibleTeamsCountOfBracket(bracketIdx)
+			: bracket.participantTournamentTeamIds.length;
+	}
+
 	/** {@link bracketsMeta} in the shape it is shipped in, i.e. only what match data is needed for. */
 	get bracketsDerivedMeta(): BracketDerivedMeta[] {
 		if (!this._derivedMeta) {
@@ -247,9 +320,6 @@ export class Tournament {
 				createdAt: bracket.createdAt ?? null,
 				preview: bracket.preview,
 				everyMatchOver: bracket.everyMatchOver,
-				allRoundsHaveMatches: bracket.data.round.every((round) =>
-					bracket.data.match.some((match) => match.roundId === round.id),
-				),
 				participantTournamentTeamIds: bracket.participantTournamentTeamIds,
 				teamsPendingCheckIn: bracket.teamsPendingCheckIn ?? null,
 				seeding: bracket.seeding ?? null,
@@ -368,9 +438,14 @@ export class Tournament {
 	}
 
 	private resolveTeamsFromSources(
-		sources: NonNullable<Progression.ParsedBracket["sources"]>,
+		unsortedSources: NonNullable<Progression.ParsedBracket["sources"]>,
 		bracketIdx: number,
 	) {
+		const sources = Progression.sortedSourcesForSeeding(
+			unsortedSources,
+			this.ctx.settings.bracketProgression,
+		);
+
 		const teams: number[] = [];
 
 		let allRelevantMatchesFinished = true;
@@ -497,7 +572,10 @@ export class Tournament {
 		}
 
 		const sources: Seeding.FollowUpBracketSource[] = [];
-		for (const source of bracket.sources) {
+		for (const source of Progression.sortedSourcesForSeeding(
+			bracket.sources,
+			this.ctx.settings.bracketProgression,
+		)) {
 			const sourceBracket = this.bracketByIdx(source.bracketIdx);
 			if (!sourceBracket) {
 				logger.warn("followUpBracketSeeding: Source bracket not found");
@@ -698,11 +776,12 @@ export class Tournament {
 	teamById(id: number) {
 		let result: (typeof this.ctx.teams)[number] | null = null;
 		let seed = 0;
-		let currStartingBracketIdx = this.ctx.teams.at(0)?.startingBracketIdx;
+		let currStartingBracketIdx = this.ctx.teams.at(0)?.startingBracketIdx ?? 0;
 
 		for (const team of this.ctx.teams) {
-			if (team.startingBracketIdx !== currStartingBracketIdx) {
-				currStartingBracketIdx = team.startingBracketIdx;
+			const teamStartingBracketIdx = team.startingBracketIdx ?? 0;
+			if (teamStartingBracketIdx !== currStartingBracketIdx) {
+				currStartingBracketIdx = teamStartingBracketIdx;
 				seed = 1;
 			} else {
 				seed++;
@@ -746,8 +825,11 @@ export class Tournament {
 	}
 
 	matchIdToBracketIdx(matchId: number) {
-		const idx = this.brackets.findIndex((bracket) =>
-			bracket.data.match.some((match) => match.id === matchId),
+		const idx = this.brackets.findIndex(
+			(bracket) =>
+				// preview brackets have locally generated match ids that can collide with real ones
+				!bracket.preview &&
+				bracket.data.match.some((match) => match.id === matchId),
 		);
 
 		if (idx === -1) return null;
@@ -762,20 +844,7 @@ export class Tournament {
 			(b) => !b.preview || !b.isUnderground,
 		);
 
-		const everyRoundHasMatches = () => {
-			// only in swiss matches get generated as tournament progresses
-			if (
-				this.ctx.settings.bracketProgression.length > 1 ||
-				this.ctx.settings.bracketProgression[0].type !== "swiss"
-			) {
-				return true;
-			}
-
-			return this.bracketsMeta[0].allRoundsHaveMatches;
-		};
-
 		return (
-			everyRoundHasMatches() &&
 			relevantBrackets.every((b) => b.everyMatchOver) &&
 			this.isOrganizer(user) &&
 			!this.ctx.isFinalized
@@ -872,9 +941,9 @@ export class Tournament {
 
 	/** Date when the regular check-in is scheduled to start. */
 	get regularCheckInStartsAt() {
-		const result = new Date(this.ctx.startsAt);
-		result.setMinutes(result.getMinutes() - 60);
-		return result;
+		// elapsed time math instead of wall clock math so that the window
+		// stays one hour long across a DST transition
+		return new Date(this.ctx.startsAt.getTime() - 60 * 60 * 1000);
 	}
 
 	/** Date when the regular check-in is scheduled to start. */
@@ -915,18 +984,11 @@ export class Tournament {
 	}
 
 	/**
-	 * Is this tournament a league sign-up? League sign-up tournament is a special case which just exists for registration.
-	 * It won't have brackets.
+	 * Is this tournament a league? A league is played over many weeks, each starting bracket
+	 * being a division that teams are placed in by the organizer.
 	 * */
-	get isLeagueSignup() {
-		return Object.values(LEAGUES)
-			.flat()
-			.some((entry) => entry.tournamentId === this.ctx.id);
-	}
-
-	/** Is this tournament a league division? League division is a normal tournament that connects to a league sign-up tournament where teams are sourced from. */
-	get isLeagueDivision() {
-		return Boolean(this.ctx.parentTournamentId);
+	get isLeague() {
+		return this.ctx.settings.isLeague === true;
 	}
 
 	/** Does this tournament have many brackets that act as the first bracket? In this format many bracket progressions advance independently from each other (so not all teams can meet). */
@@ -1193,20 +1255,32 @@ export class Tournament {
 
 		for (const bracket of startedBrackets) {
 			if (bracket.type !== "swiss") continue;
+			// dropped out teams and teams whose run ended early via the advance
+			// threshold are excluded from the pairing, so no round is coming for them
+			if (bracket.everyMatchOver || team.droppedOut) continue;
 
 			// TODO: both seeding and participantTournamentTeamIds are used for the same thing
 			const isParticipant = bracket.participantTournamentTeamIds.includes(
 				team.id,
 			);
 
-			const setsGeneratedCount = bracket.data.match.filter(
+			const teamsMatches = bracket.data.match.filter(
 				(match) =>
 					match.opponent1?.id === team.id || match.opponent2?.id === team.id,
-			).length;
+			);
 			const notAllRoundsGenerated =
-				setsGeneratedCount !== bracket.swissRoundCount;
+				teamsMatches.length !== bracket.swissRoundCount;
 
-			if (isParticipant && notAllRoundsGenerated) {
+			const advanceThreshold = bracket.settings?.advanceThreshold;
+			const runEndedEarly = advanceThreshold
+				? calculateTeamStatus({
+						...swissTeamRecord(teamsMatches, team.id),
+						advanceThreshold,
+						roundCount: bracket.swissRoundCount,
+					}) !== "active"
+				: false;
+
+			if (isParticipant && notAllRoundsGenerated && !runEndedEarly) {
 				return { type: "WAITING_FOR_ROUND" } as const;
 			}
 		}
@@ -1373,71 +1447,27 @@ export class Tournament {
 
 	/** Checks if the given user is an admin of the tournament. */
 	isAdmin(user: OptionalIdObject) {
-		if (!user) return false;
-		if (isAdmin(user)) return true;
-
-		if (
-			this.ctx.organization?.members.some(
-				(member) => member.userId === user.id && member.role === "ADMIN",
-			)
-		) {
-			return true;
-		}
-
-		return this.ctx.author.id === user.id;
+		return hasPermission(this.ctx, "ADMIN", user);
 	}
 
-	/**
-	 * Checks if the given user can edit the tournament's calendar event info.
-	 *
-	 * Mirrors the authorization enforced when the edit is submitted: organization
-	 * admins can only edit when the organization is established, unless they have
-	 * the TOURNAMENT_ADDER role.
-	 */
-	canEditEventInfo(
-		user: OptionalIdObject,
-		{ isTournamentAdder }: { isTournamentAdder: boolean },
-	) {
-		if (!user) return false;
-		if (isAdmin(user)) return true;
-		if (this.ctx.author.id === user.id) return true;
+	/** Checks if the given user can edit the tournament's calendar event info. */
+	canEditEventInfo(user: OptionalIdObject) {
+		return hasPermission(this.ctx, "EDIT_EVENT_INFO", user);
+	}
 
-		const isOrganizationAdmin = this.ctx.organization?.members.some(
-			(member) => member.userId === user.id && member.role === "ADMIN",
-		);
-
-		return Boolean(
-			isOrganizationAdmin &&
-				(isTournamentAdder || this.ctx.organization?.isEstablished),
-		);
+	/** Checks if the given user can set the in-game names of the tournament's players. */
+	canEditTournamentNames(user: OptionalIdObject) {
+		return hasPermission(this.ctx, "EDIT_IN_GAME_NAMES", user);
 	}
 
 	/** Checks if the given user is an organizer of the tournament. */
 	isOrganizer(user: OptionalIdObject) {
-		return isTournamentOrganizer({ ctx: this.ctx, user });
+		return hasPermission(this.ctx, "ORGANIZE", user);
 	}
 
 	/** Checks if the given user is an organizer or streamer of the tournament. */
 	isOrganizerOrStreamer(user: OptionalIdObject) {
-		if (!user) return false;
-		if (isAdmin(user)) return true;
-
-		if (this.ctx.author.id === user.id) return true;
-
-		if (
-			this.ctx.organization?.members.some(
-				(member) =>
-					member.userId === user.id &&
-					["ADMIN", "ORGANIZER", "STREAMER"].includes(member.role),
-			)
-		) {
-			return true;
-		}
-
-		return this.ctx.staff.some(
-			(staff) =>
-				staff.id === user.id && ["ORGANIZER", "STREAMER"].includes(staff.role),
-		);
+		return hasPermission(this.ctx, "MANAGE_MATCHES", user);
 	}
 
 	/** Live streams of the tournament, empty in the views whose loader did not ship them. */
@@ -1463,39 +1493,32 @@ export class Tournament {
 	}
 }
 
-/** The parts of a tournament that decide who organizes it. */
-export type TournamentOrganizerCtx = Pick<
-	TournamentData["ctx"],
-	"author" | "staff" | "organization"
->;
+/** A team's swiss set record off its match data, a BYE counting as a win. */
+function swissTeamRecord(matches: MatchData[], teamId: number) {
+	let wins = 0;
+	let losses = 0;
 
-/**
- * Checks if the given user is an organizer of the tournament, off its context alone.
- * {@link Tournament.isOrganizer} is the same check for when a `Tournament` is at hand.
- */
-export function isTournamentOrganizer({
-	ctx,
-	user,
-}: {
-	ctx: TournamentOrganizerCtx;
-	user: OptionalIdObject;
-}) {
-	if (!user) return false;
-	if (isAdmin(user)) return true;
+	for (const match of matches) {
+		const side =
+			match.opponent1?.id === teamId
+				? "opponent1"
+				: match.opponent2?.id === teamId
+					? "opponent2"
+					: null;
+		if (!side) continue;
 
-	if (ctx.author.id === user.id) return true;
+		if (!match.opponent1 || !match.opponent2) {
+			wins++;
+			continue;
+		}
+		if (!match.winnerSide) continue;
 
-	if (
-		ctx.organization?.members.some(
-			(member) =>
-				member.userId === user.id &&
-				["ADMIN", "ORGANIZER"].includes(member.role),
-		)
-	) {
-		return true;
+		if (match.winnerSide === side) {
+			wins++;
+		} else {
+			losses++;
+		}
 	}
 
-	return ctx.staff.some(
-		(staff) => staff.id === user.id && staff.role === "ORGANIZER",
-	);
+	return { wins, losses };
 }

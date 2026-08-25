@@ -1,15 +1,11 @@
 import { sub } from "date-fns";
 import * as R from "remeda";
-import type {
-	CastedMatchesInfo,
-	TournamentStageSettings,
-} from "~/db/tables-json";
+import type { CastedMatchesInfo } from "~/db/tables-json";
 import { modesShort, rankedModesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
-import { weekNumberToDate } from "~/utils/dates";
+import { databaseTimestampToDate } from "~/utils/dates";
 import { SHORT_NANOID_LENGTH } from "~/utils/id";
 import type { Tables } from "../../db/tables";
-import { assertUnreachable } from "../../utils/types";
 import { MapPool } from "../map-list-generator/core/map-pool";
 import { BANNED_MAPS } from "../match-profile/banned-maps";
 import * as Seasons from "../mmr/core/Seasons";
@@ -18,7 +14,7 @@ import type { ParsedBracket } from "../tournament-bracket/core/Progression";
 import * as Progression from "../tournament-bracket/core/Progression";
 import type { Tournament as TournamentClass } from "../tournament-bracket/core/Tournament";
 import type { TournamentData } from "../tournament-bracket/core/Tournament.server";
-import { LEAGUES, TOURNAMENT } from "./tournament-constants";
+import { TOURNAMENT } from "./tournament-constants";
 
 const mapPickingStyleToModeRecord = {
 	AUTO_SZ: ["SZ"],
@@ -185,37 +181,18 @@ export function tournamentInWeaponReportingWindow({
 	return tournamentStartTime > windowStart;
 }
 
+/** Datetime the league round is played by default, or null if the round has no default play time. */
 export function resolveLeagueRoundStartDate(
 	tournament: TournamentClass,
 	bracket: BracketClass | undefined,
 	roundId: number,
 ) {
-	if (!tournament.isLeagueDivision) return null;
-
-	const league = Object.values(LEAGUES)
-		.flat()
-		.find(
-			(league) => league.tournamentId === tournament.ctx.parentTournamentId,
-		);
-	if (!league) return null;
+	if (!tournament.isLeague) return null;
 
 	const round = bracket?.data.round.find((r) => r.id === roundId);
-	const onlyRelevantRounds = bracket?.data.round.filter(
-		(r) => r.groupId === round?.groupId,
-	);
+	if (!round?.defaultPlayTime) return null;
 
-	const roundIdx = onlyRelevantRounds?.findIndex((r) => r.id === roundId);
-	if (roundIdx === undefined) return null;
-
-	const week = league.weeks[roundIdx];
-	if (!week) return null;
-
-	const date = weekNumberToDate({
-		week: week.weekNumber,
-		year: week.year,
-	});
-
-	return date;
+	return databaseTimestampToDate(round.defaultPlayTime);
 }
 
 const EARLIEST_TIMEZONE_OFFSET_HOURS = 14;
@@ -232,35 +209,6 @@ export function isLeagueRoundLocked(
 	if (!date) return false;
 
 	return sub(date, { hours: EARLIEST_TIMEZONE_OFFSET_HOURS }) > new Date();
-}
-
-export function defaultBracketSettings(
-	type: Tables["TournamentStage"]["type"],
-): TournamentStageSettings {
-	switch (type) {
-		case "single_elimination": {
-			return {
-				thirdPlaceMatch: true,
-			};
-		}
-		case "double_elimination": {
-			return {};
-		}
-		case "round_robin": {
-			return {
-				teamsPerGroup: 4,
-			};
-		}
-		case "swiss": {
-			return {
-				roundCount: 5,
-				groupCount: 1,
-			};
-		}
-		default: {
-			assertUnreachable(type);
-		}
-	}
 }
 
 export function validateCanJoinTeam({
@@ -315,13 +263,22 @@ export type TeamForOrdering = {
 	startingBracketIdx: number | null;
 };
 
+/**
+ * Compares two teams pairwise for ordering purposes. Not a strict weak order
+ * when one team has a seed and the other does not (the seed is ignored in
+ * favor of the skill comparison), so it must not be used as a raw `sort`
+ * comparator over a mixed seeded/unseeded field — {@link sortTeamsBySeeding}
+ * handles that case.
+ */
 export function compareTeamsForOrdering(
 	a: TeamForOrdering,
 	b: TeamForOrdering,
 	minMembersPerTeam: number,
 ): number {
-	if (a.startingBracketIdx !== b.startingBracketIdx) {
-		return (a.startingBracketIdx ?? 0) - (b.startingBracketIdx ?? 0);
+	const aStartingBracketIdx = a.startingBracketIdx ?? 0;
+	const bStartingBracketIdx = b.startingBracketIdx ?? 0;
+	if (aStartingBracketIdx !== bStartingBracketIdx) {
+		return aStartingBracketIdx - bStartingBracketIdx;
 	}
 
 	if (a.seed !== null && b.seed !== null) {
@@ -355,13 +312,76 @@ export function compareTeamsForOrdering(
 	return a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.id - b.id;
 }
 
+/**
+ * Orders tournament teams into their effective seed order. Within each
+ * starting bracket manually seeded teams keep the organizer's seed order,
+ * while unseeded teams (e.g. registered after the seeds were last saved) are
+ * slotted in by skill: below every seeded team with a higher skill ordinal,
+ * above the rest. Unseeded teams that are not full or have no skill ordinal
+ * go below all seeded teams. The result is deterministic regardless of the
+ * input order.
+ */
 export function sortTeamsBySeeding<T extends TeamForOrdering>(
 	teams: T[],
 	minMembersPerTeam: number,
 ): T[] {
-	return [...teams].sort((a, b) =>
-		compareTeamsForOrdering(a, b, minMembersPerTeam),
+	const byStartingBracket = new Map<number, T[]>();
+	for (const team of teams) {
+		const bracketIdx = team.startingBracketIdx ?? 0;
+		const group = byStartingBracket.get(bracketIdx) ?? [];
+		group.push(team);
+		byStartingBracket.set(bracketIdx, group);
+	}
+
+	return [...byStartingBracket.entries()]
+		.sort(([a], [b]) => a - b)
+		.flatMap(([, group]) => orderTeamsOfBracket(group, minMembersPerTeam));
+}
+
+function orderTeamsOfBracket<T extends TeamForOrdering>(
+	teams: T[],
+	minMembersPerTeam: number,
+): T[] {
+	const seeded = teams
+		.filter((team) => team.seed !== null)
+		.sort((a, b) => a.seed! - b.seed!);
+	const unseeded = teams
+		.filter((team) => team.seed === null)
+		.sort((a, b) => compareTeamsForOrdering(a, b, minMembersPerTeam));
+
+	const interleaved = unseeded.filter(
+		(team) =>
+			team.memberUserIds.length >= minMembersPerTeam &&
+			team.avgSeedingSkillOrdinal !== null,
 	);
+	const appended = unseeded.filter((team) => !interleaved.includes(team));
+
+	const insertionIdx = (team: T) => {
+		for (let i = seeded.length - 1; i >= 0; i--) {
+			const seededSkill =
+				seeded[i].avgSeedingSkillOrdinal ?? Number.NEGATIVE_INFINITY;
+			if (seededSkill >= team.avgSeedingSkillOrdinal!) return i + 1;
+		}
+		return 0;
+	};
+
+	const result: T[] = [];
+	let unseededIdx = 0;
+	for (let seededIdx = 0; seededIdx <= seeded.length; seededIdx++) {
+		while (
+			unseededIdx < interleaved.length &&
+			insertionIdx(interleaved[unseededIdx]) === seededIdx
+		) {
+			result.push(interleaved[unseededIdx]);
+			unseededIdx++;
+		}
+
+		if (seededIdx < seeded.length) {
+			result.push(seeded[seededIdx]);
+		}
+	}
+
+	return [...result, ...appended];
 }
 
 export function findTeamInsertPosition<T extends TeamForOrdering>(
@@ -466,11 +486,8 @@ export function splitTournamentName(
 }
 
 /**
- * Resolves the display name and subtext for a tournament's identity.
- *
- * For a league division the parent tournament name is used as the base name and
- * the division name (e.g. `"Division 1"`) becomes the subtext. For all other
- * tournaments the split is based on the organization's tournament series.
+ * Resolves the display name and subtext for a tournament's identity, based on
+ * the organization's tournament series.
  *
  * @see {@link splitTournamentName}
  */
@@ -478,12 +495,6 @@ export function tournamentNameParts(tournament: TournamentClass): {
 	name: string;
 	subtext?: string;
 } {
-	if (tournament.isLeagueDivision && tournament.ctx.parentTournamentName) {
-		return splitTournamentName(tournament.ctx.name, [
-			{ name: tournament.ctx.parentTournamentName },
-		]);
-	}
-
 	return splitTournamentName(
 		tournament.ctx.name,
 		tournament.ctx.organization?.series ?? [],
@@ -513,6 +524,9 @@ const STAGE_TYPE_TO_SHORT_CODE: Record<
  * caller can render a `+ UG` suffix. Their type and where they branch off from is deliberately not
  * conveyed, keeping the label to one shape no matter how the underground brackets are set up.
  *
+ * Starting brackets that lead to the same shape (a league's divisions) are described once, as they
+ * are played in parallel rather than one after the other.
+ *
  * @example
  * // [{type: "round_robin"}, {type: "single_elimination"}, ...underground SE brackets]
  * bracketProgressionLabel(progression) // { label: "RR → SE", hasUnderground: true }
@@ -521,22 +535,47 @@ export function bracketProgressionLabel(progression: ParsedBracket[]): {
 	label: string;
 	hasUnderground: boolean;
 } {
-	const mainCodes: string[] = [];
-	let hasUnderground = false;
+	return {
+		label: labelOfBrackets(labeledBracketIdxs(progression), progression),
+		hasUnderground: progression.some((_, idx) =>
+			Progression.isUnderground(idx, progression),
+		),
+	};
+}
 
-	for (let i = 0; i < progression.length; i++) {
-		if (Progression.isUnderground(i, progression)) {
-			hasUnderground = true;
-			continue;
-		}
+/** Short code of every given bracket, arrow separated, consecutive duplicates collapsed. */
+function labelOfBrackets(bracketIdxs: number[], progression: ParsedBracket[]) {
+	const codes: string[] = [];
 
-		const code = STAGE_TYPE_TO_SHORT_CODE[progression[i].type];
-		if (mainCodes.at(-1) !== code) {
-			mainCodes.push(code);
+	for (const idx of bracketIdxs) {
+		if (Progression.isUnderground(idx, progression)) continue;
+
+		const code = STAGE_TYPE_TO_SHORT_CODE[progression[idx].type];
+		if (codes.at(-1) !== code) {
+			codes.push(code);
 		}
 	}
 
-	return { label: mainCodes.join(" → "), hasUnderground };
+	return codes.join(" → ");
+}
+
+/**
+ * Brackets the label describes: every one of them, or the brackets of one starting bracket when
+ * the tournament has many that all lead to the same shape.
+ */
+function labeledBracketIdxs(progression: ParsedBracket[]) {
+	const everyBracketIdx = progression.map((_, idx) => idx);
+
+	const branches = Progression.startingBrackets(progression).map((idx) =>
+		Progression.bracketsReachableFrom(idx, progression).sort((a, b) => a - b),
+	);
+	if (branches.length <= 1) return everyBracketIdx;
+
+	const labels = branches.map((branch) => labelOfBrackets(branch, progression));
+
+	return labels.every((label) => label === labels[0])
+		? branches[0]
+		: everyBracketIdx;
 }
 
 /**

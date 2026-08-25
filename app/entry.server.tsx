@@ -1,6 +1,5 @@
 import { PassThrough } from "node:stream";
 import { createReadableStreamFromReadable } from "@react-router/node";
-import * as Sentry from "@sentry/react-router";
 import { isbot } from "isbot";
 import cron from "node-cron";
 import { renderToPipeableStream } from "react-dom/server";
@@ -11,7 +10,6 @@ import {
 	type RouterContextProvider,
 	ServerRouter,
 } from "react-router";
-import { Config } from "~/config";
 import { ServerConfig } from "~/config.server";
 import { getI18nInstance } from "~/modules/i18n/i18next.server";
 import {
@@ -19,14 +17,14 @@ import {
 	everyHourAt00,
 	everyHourAt30,
 	everyTwoMinutes,
+	weekly,
 } from "./routines/list.server";
 import { loadAllDateFnsLocales } from "./utils/dates";
+import { IS_E2E_TEST_RUN } from "./utils/e2e";
 import { logger } from "./utils/logger";
 
 // Reject/cancel all pending promises after 5 seconds
 export const streamTimeout = 5000;
-
-const SENTRY_ENABLED = Config.sentry.enabled;
 
 const dateFnsLocalesLoaded = loadAllDateFnsLocales();
 
@@ -65,7 +63,7 @@ async function handleRequest(
 						}),
 					);
 
-					pipe(SENTRY_ENABLED ? Sentry.getMetaTagTransformer(body) : body);
+					pipe(body);
 				},
 				onShellError(error: unknown) {
 					reject(error);
@@ -89,7 +87,7 @@ declare global {
 	var appStartSignal: undefined | true;
 }
 
-if (!global.appStartSignal && ServerConfig.isProduction) {
+if (!global.appStartSignal && ServerConfig.isProduction && !IS_E2E_TEST_RUN) {
 	global.appStartSignal = true;
 
 	cron.schedule("0 */1 * * *", async () => {
@@ -111,6 +109,18 @@ if (!global.appStartSignal && ServerConfig.isProduction) {
 		}
 	});
 
+	// 9:00 AM Finnish time on Wednesdays, a quiet hour picked because vacuuming blocks
+	// writes for longer than the 5s busy_timeout
+	cron.schedule(
+		"0 9 * * 3",
+		async () => {
+			for (const routine of weekly) {
+				await routine.run();
+			}
+		},
+		{ timezone: "Europe/Helsinki" },
+	);
+
 	cron.schedule("*/2 * * * *", async () => {
 		for (const routine of everyTwoMinutes) {
 			await routine.run();
@@ -123,15 +133,7 @@ process.on("unhandledRejection", (reason: string, p: Promise<any>) => {
 });
 
 // wrapper so we get request id shown in the server logs
-export const handleError: HandleErrorFunction = (error, { request }) => {
-	if (SENTRY_ENABLED && !request.signal.aborted) {
-		Sentry.captureException(error);
-	}
+export const handleError: HandleErrorFunction = (error) => {
 	logger.error(error);
 };
-export default SENTRY_ENABLED
-	? Sentry.wrapSentryHandleRequest(handleRequest)
-	: handleRequest;
-export const instrumentations = SENTRY_ENABLED
-	? [Sentry.createSentryServerInstrumentation()]
-	: [];
+export default handleRequest;

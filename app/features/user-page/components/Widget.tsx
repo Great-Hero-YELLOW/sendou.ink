@@ -2,7 +2,6 @@ import clsx from "clsx";
 import { Link2 as LinkIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import { Avatar } from "~/components/Avatar";
 import { BuildCard } from "~/components/BuildCard";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
@@ -15,10 +14,16 @@ import { LocaleTime } from "~/components/LocaleTime";
 import { Markdown } from "~/components/Markdown";
 import { Pagination } from "~/components/Pagination";
 import { Placement } from "~/components/Placement";
+import { UserLink } from "~/components/UserLink";
 import type { Tables } from "~/db/tables";
+import { userArtPage } from "~/features/art/art-urls";
 import { previewUrl } from "~/features/art/art-utils";
 import { BadgeDisplay } from "~/features/badges/components/BadgeDisplay";
+import { lfgSearchParams } from "~/features/lfg/lfg-search-params";
 import { tierListMakerSearchParams } from "~/features/tier-list-maker/tier-list-maker-search-params";
+import { topSearchPlayerPage } from "~/features/top-search/top-search-urls";
+import { tournamentBracketsPage } from "~/features/tournament-bracket/tournament-bracket-urls";
+import { tournamentOrganizationPage } from "~/features/tournament-organization/tournament-organization-urls";
 import { TrophyDisplay } from "~/features/trophies/components/TrophyDisplay";
 import { VodListing } from "~/features/vods/components/VodListing";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
@@ -44,12 +49,7 @@ import {
 	modeImageUrl,
 	navIconUrl,
 	teamPage,
-	topSearchPlayerPage,
-	tournamentBracketsPage,
-	tournamentOrganizationPage,
-	userArtPage,
 	userBuildsPage,
-	userPage,
 	userResultsPage,
 	userVodsPage,
 } from "~/utils/urls";
@@ -497,7 +497,7 @@ function LFGPosts({
 			{posts.map((post) => (
 				<Link
 					key={post.id}
-					to={`${LFG_PAGE}#${post.id}`}
+					to={`${lfgSearchParams.href(LFG_PAGE, { post: post.id })}#${post.id}`}
 					className={styles.lfgPost}
 				>
 					{t(`lfg:types.${post.type}`)}
@@ -802,7 +802,7 @@ function SocialLinksWidget({
 									variant="minimal"
 									className={clsx(
 										styles.socialLinkIconContainer,
-										styles[link.platform],
+										styles.discord,
 									)}
 								>
 									{link.platform === "discord" ? <DiscordIcon /> : null}
@@ -915,14 +915,7 @@ function FriendsWidget({
 	return (
 		<div className={styles.friendsList}>
 			{itemsToDisplay.map((friend) => (
-				<Link
-					key={friend.id}
-					to={userPage(friend)}
-					className={styles.friendLink}
-				>
-					<Avatar user={friend} size="xxs" />
-					{friend.username}
-				</Link>
+				<UserLink key={friend.id} user={friend} className={styles.friendLink} />
 			))}
 			{!everythingVisible ? (
 				<div className="mt-4">

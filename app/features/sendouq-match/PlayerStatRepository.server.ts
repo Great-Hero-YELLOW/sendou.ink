@@ -1,16 +1,18 @@
 import {
 	type ExpressionBuilder,
 	type NotNull,
+	type SqlBool,
 	sql,
 	type Transaction,
 } from "kysely";
-import { jsonArrayFrom } from "kysely/helpers/sqlite";
 import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import {
 	commonUserJsonObject,
+	jsonArrayFrom,
+	latestSkillPerSeason,
 	tournamentLogoWithDefault,
 } from "~/utils/kysely.server";
 
@@ -372,34 +374,56 @@ export async function findSeasonTournamentRunsByUserId({
 		)
 		.innerJoin("Tournament", "Tournament.id", "Skill.tournamentId")
 		.innerJoin("CalendarEvent", "CalendarEvent.tournamentId", "Tournament.id")
+		.innerJoin(
+			"TournamentTeam",
+			"TournamentTeam.id",
+			"TournamentResult.tournamentTeamId",
+		)
+		.leftJoin("TournamentDivisionTier", (join) =>
+			join
+				.onRef(
+					"TournamentDivisionTier.tournamentId",
+					"=",
+					"TournamentResult.tournamentId",
+				)
+				.on(
+					sql<SqlBool>`"TournamentDivisionTier"."bracketIdx" = coalesce("TournamentTeam"."startingBracketIdx", 0)`,
+				),
+		)
 		.select((eb) => [
 			"TournamentResult.placement",
 			"TournamentResult.participantCount as teamsCount",
-			"Tournament.tier",
+			sql<
+				Tables["Tournament"]["tier"]
+			>`coalesce("TournamentDivisionTier"."tier", "Tournament"."tier")`.as(
+				"tier",
+			),
 			"CalendarEvent.name",
 			tournamentLogoWithDefault(eb).as("logoUrl"),
 			eb
 				.selectFrom(
-					eb
-						.selectFrom("Skill as TopEightSkill")
-						.select((seb) => [
-							"TopEightSkill.ordinal",
-							// bare column with max(): the ordinal comes from the season's last skill row of that user
-							seb.fn.max("TopEightSkill.id").as("latestId"),
-						])
-						.where("TopEightSkill.season", "=", season)
-						.where("TopEightSkill.userId", "in", (ieb) =>
-							ieb
+					latestSkillPerSeason({ season, by: "userId" })
+						.where(
+							"Skill.userId",
+							"in",
+							eb
 								.selectFrom("TournamentResult as TopEightResult")
+								.innerJoin(
+									"TournamentTeam as TopEightTeam",
+									"TopEightTeam.id",
+									"TopEightResult.tournamentTeamId",
+								)
 								.select("TopEightResult.userId")
 								.whereRef("TopEightResult.tournamentId", "=", "Tournament.id")
 								.where(
 									"TopEightResult.placement",
 									"<=",
 									TOURNAMENT_FIELD_STRENGTH_PLACEMENT,
+								)
+								.where(
+									sql<SqlBool>`coalesce("TopEightTeam"."startingBracketIdx", 0) = coalesce("TournamentTeam"."startingBracketIdx", 0)`,
 								),
 						)
-						.groupBy("TopEightSkill.userId")
 						.as("TopEightLatestSkill"),
 				)
 				.select(({ fn }) =>

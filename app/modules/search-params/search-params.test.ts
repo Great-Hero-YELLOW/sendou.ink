@@ -1,6 +1,6 @@
 import type { ShouldRevalidateFunction } from "react-router";
-import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import * as v from "valibot";
+import { describe, expect, test } from "vitest";
 import * as SearchParams from "./search-params";
 import { SP } from "./search-params";
 import {
@@ -9,26 +9,34 @@ import {
 } from "./search-params-test-utils";
 
 const testDefinition = SearchParams.define({
-	limit: SP.param(z.number().int().min(1).max(100), {
-		default: 24,
+	limit: SP.param(
+		v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100)),
+		{
+			default: 24,
+			loader: true,
+		},
+	),
+	name: SP.param(v.pipe(v.string(), v.maxLength(20)), {
+		default: "",
 		loader: true,
 	}),
-	name: SP.param(z.string().max(20), { default: "", loader: true }),
-	enabled: SP.param(z.boolean(), { default: false, loader: false }),
-	mode: SP.param(z.enum(["TW", "SZ", "TC"]), {
+	enabled: SP.param(v.boolean(), { default: false, loader: false }),
+	mode: SP.param(v.picklist(["TW", "SZ", "TC"]), {
 		default: "TW",
 		loader: true,
 	}),
-	season: SP.param(z.number().int().nullable(), { loader: true }),
-	ids: SP.param(z.array(z.number().int().positive()), {
+	season: SP.param(v.nullable(v.pipe(v.number(), v.integer())), {
+		loader: true,
+	}),
+	ids: SP.param(v.array(v.pipe(v.number(), v.integer(), v.gtValue(0))), {
 		default: [],
 		loader: false,
 	}),
 	filters: SP.json(
-		z.object({ minValue: z.number(), tags: z.array(z.string()) }),
+		v.object({ minValue: v.number(), tags: v.array(v.string()) }),
 		{ default: { minValue: 0, tags: [] }, loader: true, resets: ["limit"] },
 	),
-	blob: SP.json(z.object({ text: z.string() }), {
+	blob: SP.json(v.object({ text: v.string() }), {
 		default: { text: "" },
 		loader: false,
 		compress: true,
@@ -36,7 +44,7 @@ const testDefinition = SearchParams.define({
 });
 
 describe("SearchParams round trips", () => {
-	it("round-trips representative and edge-case values", () => {
+	test("round-trips representative and edge-case values", () => {
 		assertRoundTrips(testDefinition, {
 			limit: [24, 1, 100, 55],
 			name: ["", "hello", "with space", "ä&=?#ö", "lz~sneaky", "lz~~x"],
@@ -54,7 +62,7 @@ describe("SearchParams round trips", () => {
 });
 
 describe("SearchParams.define", () => {
-	it("decodes garbage to the default", () => {
+	test("decodes garbage to the default", () => {
 		assertDecodesToDefault(testDefinition, "limit", [
 			[""],
 			["abc"],
@@ -80,7 +88,7 @@ describe("SearchParams.define", () => {
 		]);
 	});
 
-	it("parses a Request, URL and URLSearchParams", () => {
+	test("parses a Request, URL and URLSearchParams", () => {
 		const url = "http://localhost/builds?limit=50&mode=SZ";
 		const expected = { limit: 50, mode: "SZ" };
 
@@ -91,7 +99,7 @@ describe("SearchParams.define", () => {
 		).toMatchObject(expected);
 	});
 
-	it("resolves every missing param to its default", () => {
+	test("resolves every missing param to its default", () => {
 		expect(testDefinition.parse(new URLSearchParams())).toEqual({
 			limit: 24,
 			name: "",
@@ -104,15 +112,15 @@ describe("SearchParams.define", () => {
 		});
 	});
 
-	it("drops invalid array members instead of the whole array", () => {
+	test("drops invalid array members instead of the whole array", () => {
 		expect(
 			testDefinition.parse(new URLSearchParams("ids=1&ids=x&ids=-2&ids=3")).ids,
 		).toEqual([1, 3]);
 	});
 
-	it("decodes legacy JSON-encoded arrays", () => {
+	test("decodes legacy JSON-encoded arrays", () => {
 		const definitionWithModes = SearchParams.define({
-			modes: SP.param(z.array(z.enum(["SZ", "TC", "RM", "CB"])), {
+			modes: SP.param(v.array(v.picklist(["SZ", "TC", "RM", "CB"])), {
 				default: ["SZ", "TC", "RM", "CB"],
 				loader: false,
 			}),
@@ -128,43 +136,51 @@ describe("SearchParams.define", () => {
 		]);
 	});
 
-	it("decodes legacy comma-joined numeric arrays", () => {
+	test("decodes legacy comma-joined numeric arrays", () => {
 		expect(testDefinition.parse(new URLSearchParams("ids=1,2,3")).ids).toEqual([
 			1, 2, 3,
 		]);
 	});
 
-	it("returns referentially equal values for the same raw input", () => {
+	test("returns referentially equal values for the same raw input", () => {
 		const first = testDefinition.parse(new URLSearchParams("ids=1&ids=2"));
 		const second = testDefinition.parse(new URLSearchParams("ids=1&ids=2"));
 
 		expect(first.ids).toBe(second.ids);
 	});
 
-	it("rejects schemas outside the derivation table at define time", () => {
+	test("rejects schemas outside the derivation table at define time", () => {
 		expect(() =>
-			SP.param(z.object({ a: z.string() }) as any, {
+			SP.param(v.object({ a: v.string() }) as any, {
 				default: { a: "" },
 				loader: true,
 			}),
 		).toThrow(/derive/);
 		expect(() =>
-			SP.param(z.string().transform((s) => s.length) as any, {
-				default: 0,
-				loader: true,
-			}),
+			SP.param(
+				v.pipe(
+					v.string(),
+					v.transform((s) => s.length),
+				) as any,
+				{
+					default: 0,
+					loader: true,
+				},
+			),
 		).toThrow(/derive/);
 		expect(() =>
-			SP.param(z.array(z.array(z.number())) as any, {
+			SP.param(v.array(v.array(v.number())) as any, {
 				default: [],
 				loader: true,
 			}),
 		).toThrow(/derive/);
 	});
 
-	it("defaults .nullable() params to null without declaring it", () => {
-		const omitted = SP.param(z.number().int().nullable(), { loader: true });
-		const declared = SP.param(z.number().int().nullable(), {
+	test("defaults .nullable() params to null without declaring it", () => {
+		const omitted = SP.param(v.nullable(v.pipe(v.number(), v.integer())), {
+			loader: true,
+		});
+		const declared = SP.param(v.nullable(v.pipe(v.number(), v.integer())), {
 			default: null,
 			loader: true,
 		});
@@ -176,33 +192,28 @@ describe("SearchParams.define", () => {
 		expect(declared.default).toBeNull();
 	});
 
-	it("rejects .optional() and non-null defaults for .nullable()", () => {
+	test("rejects .optional() and non-null defaults for .nullable()", () => {
 		expect(() =>
-			SP.param(z.number().optional() as any, { default: 1, loader: true }),
+			SP.param(v.optional(v.number()) as any, { default: 1, loader: true }),
 		).toThrow(/nullable/);
 		expect(() =>
-			SP.param(z.number().nullable(), { default: 1 as any, loader: true }),
+			SP.param(v.nullable(v.number()), { default: 1 as any, loader: true }),
 		).toThrow(/null as its default/);
 	});
 
-	it("supports SP.custom codecs with total decode via issues", () => {
-		const isoDate = z.codec(z.string(), z.date(), {
-			decode: (value, payload) => {
+	test("supports SP.custom codecs with total decode", () => {
+		const isoDate = SearchParams.codec(v.date(), {
+			decode: (value) => {
 				const date = new Date(value);
-				if (Number.isNaN(date.getTime())) {
-					payload.issues.push({
-						code: "custom",
-						message: "invalid date",
-						input: value,
-					});
-					return z.NEVER;
-				}
-				return date;
+				return Number.isNaN(date.getTime()) ? undefined : date;
 			},
 			encode: (date) => date.toISOString(),
 		});
 		const customDefinition = SearchParams.define({
-			from: SP.custom(isoDate.nullable(), { default: null, loader: true }),
+			from: SP.custom(SearchParams.nullableCodec(isoDate), {
+				default: null,
+				loader: true,
+			}),
 		});
 
 		const value = new Date("2024-05-01T12:00:00.000Z");
@@ -217,17 +228,17 @@ describe("SearchParams.define", () => {
 		assertDecodesToDefault(customDefinition, "from", [["garbage"], [""]]);
 	});
 
-	it("rejects resets pointing at unknown params", () => {
+	test("rejects resets pointing at unknown params", () => {
 		expect(() =>
 			SearchParams.define({
-				a: SP.param(z.number(), { default: 0, loader: true, resets: ["b"] }),
+				a: SP.param(v.number(), { default: 0, loader: true, resets: ["b"] }),
 			}),
 		).toThrow(/unknown param/);
 	});
 });
 
 describe("SearchParams compression", () => {
-	it("decodes a compressed arrival of any param identically to plain", () => {
+	test("decodes a compressed arrival of any param identically to plain", () => {
 		const def = testDefinition.shape.filters;
 		const value = { minValue: 7, tags: ["x"] };
 		const plain = def.encodePlain(value)[0];
@@ -239,7 +250,7 @@ describe("SearchParams compression", () => {
 		).toEqual(value);
 	});
 
-	it("always emits the compressed form for compress: true params", () => {
+	test("always emits the compressed form for compress: true params", () => {
 		const encoded = SearchParams.encodeParam(testDefinition.shape.blob, {
 			text: "hello world",
 		});
@@ -248,13 +259,13 @@ describe("SearchParams compression", () => {
 		expect(encoded[0]).toMatch(/^lz~/);
 	});
 
-	it("resolves a corrupt compressed payload to the default", () => {
+	test("resolves a corrupt compressed payload to the default", () => {
 		expect(
 			SearchParams.decodeParam(testDefinition.shape.blob, ["lz~$$$$"]),
 		).toEqual({ text: "" });
 	});
 
-	it("resolves a compression bomb to the default", () => {
+	test("resolves a compression bomb to the default", () => {
 		const bomb = SearchParams.compressTransportValue(
 			JSON.stringify({ text: "a".repeat(10 * 1024 * 1024) }),
 		);
@@ -264,7 +275,7 @@ describe("SearchParams compression", () => {
 		);
 	});
 
-	it("compresses on demand only when it shortens the value", () => {
+	test("compresses on demand only when it shortens the value", () => {
 		const longFilters = {
 			minValue: 1,
 			tags: Array.from({ length: 30 }, (_, i) => `long-tag-number-${i}`),
@@ -283,7 +294,7 @@ describe("SearchParams compression", () => {
 		).toMatchObject({ filters: longFilters, limit: 50 });
 	});
 
-	it("compares the forms percent-encoded, not as raw strings", () => {
+	test("compares the forms percent-encoded, not as raw strings", () => {
 		// shorter than its compressed form as a raw string, longer once percent-encoded
 		const filters = { minValue: 1, tags: ["ゲームのタグ"] };
 		const compactHref = testDefinition.href(
@@ -301,16 +312,16 @@ describe("SearchParams compression", () => {
 });
 
 describe("SearchParams.href", () => {
-	it("omits values equal to their default", () => {
+	test("omits values equal to their default", () => {
 		expect(
 			testDefinition.href("/builds", { limit: 24, mode: "SZ", season: null }),
 		).toBe("/builds?mode=SZ");
 		expect(testDefinition.href("/builds", { limit: 24 })).toBe("/builds");
 	});
 
-	it("encodes arrays as repeated keys and empty arrays as one empty value", () => {
+	test("encodes arrays as repeated keys and empty arrays as one empty value", () => {
 		const definitionWithDefault = SearchParams.define({
-			modes: SP.param(z.array(z.enum(["SZ", "TC"])), {
+			modes: SP.param(v.array(v.picklist(["SZ", "TC"])), {
 				default: ["SZ", "TC"],
 				loader: false,
 			}),
@@ -326,7 +337,7 @@ describe("SearchParams.href", () => {
 });
 
 describe("SearchParams.applyToSearchParams", () => {
-	it("preserves params outside the definition", () => {
+	test("preserves params outside the definition", () => {
 		const { next } = SearchParams.applyToSearchParams(
 			testDefinition,
 			new URLSearchParams("unrelated=yes&limit=50"),
@@ -338,7 +349,7 @@ describe("SearchParams.applyToSearchParams", () => {
 		expect(next.get("mode")).toBe("SZ");
 	});
 
-	it("applies declared resets", () => {
+	test("applies declared resets", () => {
 		const { next } = SearchParams.applyToSearchParams(
 			testDefinition,
 			new URLSearchParams("limit=50&enabled=true"),
@@ -349,7 +360,7 @@ describe("SearchParams.applyToSearchParams", () => {
 		expect(next.get("enabled")).toBe("true");
 	});
 
-	it("does not reset a param written in the same batch", () => {
+	test("does not reset a param written in the same batch", () => {
 		const { next } = SearchParams.applyToSearchParams(
 			testDefinition,
 			new URLSearchParams(),
@@ -359,7 +370,7 @@ describe("SearchParams.applyToSearchParams", () => {
 		expect(next.get("limit")).toBe("50");
 	});
 
-	it("removes params written back to their default", () => {
+	test("removes params written back to their default", () => {
 		const { next } = SearchParams.applyToSearchParams(
 			testDefinition,
 			new URLSearchParams("mode=SZ"),
@@ -369,7 +380,7 @@ describe("SearchParams.applyToSearchParams", () => {
 		expect(next.has("mode")).toBe(false);
 	});
 
-	it("needs navigation exactly when a loader: true param is written", () => {
+	test("needs navigation exactly when a loader: true param is written", () => {
 		expect(
 			SearchParams.applyToSearchParams(testDefinition, new URLSearchParams(), {
 				enabled: true,
@@ -401,16 +412,16 @@ describe("SearchParams.shouldRevalidate", () => {
 		} as Parameters<ShouldRevalidateFunction>[0]);
 	}
 
-	it("revalidates when a loader: true param's decoded value changes", () => {
+	test("revalidates when a loader: true param's decoded value changes", () => {
 		expect(run("?limit=50", "?limit=60")).toBe(true);
 		expect(run("", "?mode=SZ")).toBe(true);
 	});
 
-	it("does not revalidate for loader: false params", () => {
+	test("does not revalidate for loader: false params", () => {
 		expect(run("", "?enabled=true&ids=1")).toBe(false);
 	});
 
-	it("does not revalidate for non-canonical but equal values", () => {
+	test("does not revalidate for non-canonical but equal values", () => {
 		expect(
 			run(
 				'?filters={"minValue":1,"tags":[]}',
@@ -420,7 +431,7 @@ describe("SearchParams.shouldRevalidate", () => {
 		expect(run("?limit=24", "")).toBe(false);
 	});
 
-	it("defers to the default for other pathnames, submissions and unknown params", () => {
+	test("defers to the default for other pathnames, submissions and unknown params", () => {
 		expect(
 			testDefinition.shouldRevalidate({
 				currentUrl: new URL("http://localhost/x"),

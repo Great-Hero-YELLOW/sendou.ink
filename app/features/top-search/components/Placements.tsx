@@ -1,15 +1,20 @@
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
-import { Image, WeaponImage } from "~/components/Image";
+import { Image } from "~/components/Image";
 import {
-	brandImageUrl,
-	modeImageUrl,
+	RankTable,
+	RankTableInnerRow,
+	RankTableRank,
+	RankTableRow,
+	RankTableWeaponImage,
+} from "~/components/RankTable";
+import {
 	topSearchPage,
 	topSearchPlayerPage,
-} from "~/utils/urls";
-import styles from "../top-search.module.css";
+} from "~/features/top-search/top-search-urls";
+import { brandImageUrl, modeImageUrl } from "~/utils/urls";
 import { monthYearToSpan } from "../top-search-utils";
 import type * as XRankPlacementRepository from "../XRankPlacementRepository.server";
+import styles from "./Placements.module.css";
 
 interface PlacementsTableProps {
 	placements: Array<XRankPlacementRepository.FindPlacement>;
@@ -26,20 +31,19 @@ export function PlacementsTable({
 	const { t } = useTranslation(["game-misc"]);
 
 	return (
-		<div className={styles.table}>
+		<RankTable>
 			{placements.map((placement, i) => (
-				<Link
+				<RankTableRow
 					to={
 						type === "MODE_INFO"
 							? topSearchPage(placement)
 							: topSearchPlayerPage(placement.playerId)
 					}
 					key={placement.id}
-					className={styles.tableRow}
-					data-testid={`placement-row-${i}`}
+					testId={`placement-row-${i}`}
 				>
-					<div className={styles.tableInnerRow}>
-						<div className={styles.tableRank}>{placement.rank}</div>
+					<RankTableInnerRow>
+						<RankTableRank>{placement.rank}</RankTableRank>
 						{type === "MODE_INFO" ? (
 							<>
 								<div className={styles.tableMode}>
@@ -69,13 +73,7 @@ export function PlacementsTable({
 								</div>
 							</>
 						) : null}
-						<WeaponImage
-							className={styles.tableWeapon}
-							variant="build"
-							weaponSplId={placement.weaponSplId}
-							width={32}
-							height={32}
-						/>
+						<RankTableWeaponImage weaponSplId={placement.weaponSplId} />
 						{type === "PLAYER_NAME" ? <div>{placement.name}</div> : null}
 						{type === "MODE_INFO" ? (
 							<div className={styles.time}>
@@ -85,10 +83,10 @@ export function PlacementsTable({
 								{monthYearToSpan(placement).to.year}
 							</div>
 						) : null}
-					</div>
+					</RankTableInnerRow>
 					<div>{placement.power.toFixed(1)}</div>
-				</Link>
+				</RankTableRow>
 			))}
-		</div>
+		</RankTable>
 	);
 }

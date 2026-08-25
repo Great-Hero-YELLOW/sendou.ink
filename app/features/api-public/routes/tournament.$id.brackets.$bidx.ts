@@ -1,23 +1,20 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
 import type { Bracket } from "~/features/tournament-bracket/core/Bracket";
 import { tournamentFromDB } from "~/features/tournament-bracket/core/Tournament.server";
 import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
-import { id } from "~/utils/zod";
+import { coerceNumber, id } from "~/utils/schema";
 import type { GetTournamentBracketResponse } from "../schema";
 
-const paramsSchema = z.object({
+const paramsSchema = v.object({
 	id,
-	bidx: z.coerce.number().int(),
+	bidx: v.pipe(coerceNumber(), v.integer()),
 });
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
 	const { id, bidx } = parseParams({ params, schema: paramsSchema });
 
-	const tournament = await tournamentFromDB({
-		user: undefined,
-		tournamentId: id,
-	});
+	const tournament = await tournamentFromDB(id);
 
 	const bracket = notFoundIfNullish(tournament.bracketByIdx(bidx));
 

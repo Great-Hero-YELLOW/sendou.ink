@@ -1,29 +1,33 @@
-import { Bell, ChevronRight, RefreshCcw } from "lucide-react";
+import clsx from "clsx";
+import { Bell, ChevronRight } from "lucide-react";
 import * as React from "react";
+import { Button } from "react-aria-components";
 import { useTranslation } from "react-i18next";
-import { Link, useMatches, useRevalidator } from "react-router";
+import { Link } from "react-router";
+import { SendouPopover } from "~/components/elements/Popover";
 import {
 	NotificationItem,
 	NotificationItemDivider,
 	NotificationsList,
 } from "~/features/notifications/components/NotificationList";
+import {
+	type NotificationsData,
+	useNotificationsData,
+} from "~/features/notifications/NotificationsProvider";
 import { NOTIFICATIONS } from "~/features/notifications/notifications-contants";
-import type { RootLoaderData } from "~/root";
 import { NOTIFICATIONS_URL } from "~/utils/urls";
-import { useMarkNotificationsAsSeen } from "../../features/notifications/notifications-hooks";
-import { SendouButton } from "../elements/Button";
+import {
+	useMarkNotificationsAsSeen,
+	useShowUnseenDot,
+	useStickyUnseenIds,
+} from "../../features/notifications/notifications-hooks";
 
 import styles from "./NotificationPopover.module.css";
 
-export type LoaderNotification = NonNullable<
-	RootLoaderData["notifications"]
->[number];
+export type LoaderNotification = NonNullable<NotificationsData>[number];
 
 export function useNotifications() {
-	const [root] = useMatches();
-
-	const notifications = (root.loaderData as RootLoaderData | undefined)
-		?.notifications;
+	const { notifications } = useNotificationsData();
 
 	const unseenIds = React.useMemo(
 		() =>
@@ -33,7 +37,37 @@ export function useNotifications() {
 		[notifications],
 	);
 
-	return { notifications, unseenIds };
+	const showUnseenDot = useShowUnseenDot(notifications);
+
+	return { notifications, unseenIds, showUnseenDot };
+}
+
+export function NotificationPopover({
+	notifications,
+	unseenIds,
+	triggerClassName,
+}: {
+	notifications: LoaderNotification[];
+	unseenIds: number[];
+	triggerClassName?: string;
+}) {
+	return (
+		<SendouPopover
+			trigger={
+				<Button className={triggerClassName} data-testid="notifications-button">
+					<Bell />
+				</Button>
+			}
+			popoverClassName={clsx(styles.popoverContainer, {
+				[styles.noNotificationsContainer]: notifications.length === 0,
+			})}
+		>
+			<NotificationContent
+				notifications={notifications}
+				unseenIds={unseenIds}
+			/>
+		</SendouPopover>
+	);
 }
 
 export function NotificationContent({
@@ -46,24 +80,15 @@ export function NotificationContent({
 	onClose?: () => void;
 }) {
 	const { t } = useTranslation(["common"]);
-	const { revalidate, state } = useRevalidator();
+	const stickyUnseenIds = useStickyUnseenIds(notifications);
 
 	useMarkNotificationsAsSeen(unseenIds);
 
 	return (
 		<>
-			<div className={styles.topContainer}>
-				<h2 className={styles.header}>
-					<Bell /> {t("common:notifications.title")}
-				</h2>
-				<SendouButton
-					icon={<RefreshCcw />}
-					shape="circle"
-					variant="minimal"
-					onPress={revalidate}
-					isDisabled={state !== "idle"}
-				/>
-			</div>
+			<h2 className={styles.header}>
+				<Bell /> {t("common:notifications.title")}
+			</h2>
 			<hr className={styles.divider} />
 			{notifications.length === 0 ? (
 				<div className={styles.noNotifications}>
@@ -75,7 +100,10 @@ export function NotificationContent({
 						<React.Fragment key={notification.id}>
 							<NotificationItem
 								key={notification.id}
-								notification={notification}
+								notification={{
+									...notification,
+									seen: Number(!stickyUnseenIds.has(notification.id)),
+								}}
 								onClose={onClose}
 							/>
 							{i !== notifications.length - 1 && <NotificationItemDivider />}

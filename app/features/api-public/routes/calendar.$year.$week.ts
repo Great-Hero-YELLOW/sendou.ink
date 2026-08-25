@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
 import { db } from "~/db/sql";
 import {
 	databaseTimestampToDate,
@@ -7,11 +7,12 @@ import {
 	weekNumberToDateRange,
 } from "~/utils/dates";
 import { parseParams } from "~/utils/remix.server";
+import { coerceNumber } from "~/utils/schema";
 import type { GetCalendarWeekResponse } from "../schema";
 
-const paramsSchema = z.object({
-	year: z.coerce.number().int().min(2020).max(2100),
-	week: z.coerce.number().int().min(1).max(53),
+const paramsSchema = v.object({
+	year: v.pipe(coerceNumber(), v.integer(), v.minValue(2020), v.maxValue(2100)),
+	week: v.pipe(coerceNumber(), v.integer(), v.minValue(1), v.maxValue(53)),
 });
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
@@ -55,7 +56,7 @@ function fetchEventsOfWeek(args: { week: number; year: number }) {
 			">=",
 			dateToDatabaseTimestamp(startTime),
 		)
-		.where("CalendarEventDate.startsAt", "<=", dateToDatabaseTimestamp(endTime))
+		.where("CalendarEventDate.startsAt", "<", dateToDatabaseTimestamp(endTime))
 		.where("CalendarEvent.hidden", "=", 0)
 		.orderBy("CalendarEventDate.startsAt", "asc")
 		.execute();
