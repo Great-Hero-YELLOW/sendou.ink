@@ -71,6 +71,7 @@ export type Notification =
 			{ adderUsername: string; adderDiscordId: string; artId: number }
 	  >
 	| NotificationItem<"SEASON_STARTED", { seasonNth: number }>
+	| NotificationItem<"SEASON_ENDED", { seasonNth: number }>
 	| NotificationItem<
 			"SCRIM_NEW_REQUEST",
 			{ fromUserId: number; fromUsername: string; scrimPostId: number }
@@ -105,7 +106,16 @@ export type Notification =
 				tournamentName: string;
 				accepterUsername: string;
 			}
-	  >;
+	  >
+	| NotificationItem<
+			"TEAM_EVENT_ADDED",
+			{
+				eventName: string;
+				teamName: string;
+				teamCustomUrl: string;
+			}
+	  >
+	| NotificationItem<"SCHEDULE_TEAM_REMINDER">;
 
 type NotificationItem<
 	T extends string,

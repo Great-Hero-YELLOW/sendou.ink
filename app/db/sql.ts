@@ -21,25 +21,18 @@ if (ServerConfig.isTest) {
 }
 
 sql.exec("PRAGMA journal_mode = WAL");
-// The synchronous=NORMAL setting provides the best balance between performance and safety for most applications running in WAL mode.
-// You lose durability across power lose with synchronous NORMAL in WAL mode, but that is not important for most applications.
-// Transactions are still atomic, consistent, and isolated, which are the most important characteristics in most use cases.
-// Source: https://sqlite.org/pragma.html
+// in WAL mode NORMAL only risks durability across a power loss (https://sqlite.org/pragma.html)
 sql.exec("PRAGMA synchronous = NORMAL");
 sql.exec("PRAGMA foreign_keys = ON");
 sql.exec("PRAGMA busy_timeout = 5000");
 // 64MB page cache (default is 2MB)
 sql.exec("PRAGMA cache_size = -65536");
-// lets reads come straight from the OS page cache without read() syscalls
-// Source: https://sqlite.org/mmap.html
+// reads straight from the OS page cache without read() syscalls (https://sqlite.org/mmap.html)
 sql.exec("PRAGMA mmap_size = 3221225472");
-// see https://sqlite.org/pragma.html#pragma_optimize — recommended for long-lived
-// connections; pair with a periodic `PRAGMA optimize;` (see OptimizeDatabase routine)
+// https://sqlite.org/pragma.html#pragma_optimize, paired with the periodic OptimizeDatabase routine
 sql.exec("PRAGMA optimize = 0x10002");
 
-// Strips diacritics so accent-insensitive name searches are possible
-// (e.g. "cafe" matches "Café"). Combined with LIKE's built-in ASCII
-// case-insensitivity this also folds case for the resulting latin letters.
+// strips diacritics ("cafe" matches "Café"); with LIKE's ASCII case-insensitivity this also folds case
 sql.function("unaccent", { deterministic: true }, (value) =>
 	typeof value === "string"
 		? value.normalize("NFD").replace(/\p{M}/gu, "")
@@ -57,11 +50,8 @@ export const db = new Kysely<DB>({
 	plugins: [new EmptyValuesNoopPlugin(), new WriteTrackerPlugin()],
 });
 
-// Every test worker gets its own in-memory database, built by replaying the
-// schema of the migrated (and otherwise empty) file that scripts/ensure-test-db.ts
-// creates in vitest's globalSetup. Replaying the DDL rather than copying the file
-// is what `node:sqlite` allows: unlike better-sqlite3 it cannot deserialize a
-// database into memory.
+// each test worker gets an in-memory db built by replaying the DDL of the migrated empty file from
+// scripts/ensure-test-db.ts; unlike better-sqlite3, `node:sqlite` can't deserialize a db into memory
 function applyMigratedSchema(target: DatabaseSync) {
 	const source = new DatabaseSync("db-test.sqlite3", {
 		readOnly: true,
@@ -69,8 +59,7 @@ function applyMigratedSchema(target: DatabaseSync) {
 	});
 
 	try {
-		// virtual tables create their own shadow tables (e.g. UserSearch_data), so
-		// replaying those would fail on a table that already exists
+		// virtual tables create their own shadow tables (e.g. UserSearch_data)
 		const statements = source
 			.prepare(`
 				SELECT sql FROM sqlite_master m
@@ -107,8 +96,6 @@ function logQuery(event: LogEvent) {
 	if (event.level === "query" && isSelectQuery) {
 		const from = () =>
 			(event.query.query as any).from.froms.map(
-				// plain tables have the name under table, aliased tables and
-				// subqueries under alias
 				(f: any) => f.table?.identifier?.name ?? f.alias?.name ?? "unknown",
 			);
 		// biome-ignore lint/suspicious/noConsole: dev only
@@ -130,12 +117,7 @@ function logQuery(event: LogEvent) {
 function logError(event: LogEvent) {
 	if (
 		event.level === "error" &&
-		// it seems that this error happens everytime something goes wrong inside transaction
-		// my guess is that the transaction is already implicitly rolled back in the case of error
-		// but kysely also does it explicitly -> fails because there is no transaction to rollback.
-		// this `logError` function at least makes it so that due to that the error doesn't get logged
-		// but of course the best solution would also avoid useless rollbacks, something for the future
-		// btw this particular check is here just to avoid the double "no transaction is active" log
+		// an error inside a transaction rolls it back implicitly, so kysely's explicit rollback fails after
 		!(event.error as any).message.includes("no transaction is active")
 	) {
 		logger.error(event.error);

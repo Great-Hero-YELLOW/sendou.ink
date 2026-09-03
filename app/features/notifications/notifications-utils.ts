@@ -1,9 +1,11 @@
 import { userArtPage } from "~/features/art/art-urls";
 import { plusSuggestionPage } from "~/features/plus-suggestions/plus-suggestions-urls";
 import { tournamentBracketsPage } from "~/features/tournament-bracket/tournament-bracket-urls";
+import { userSeasonsPage } from "~/features/user-page/user-page-urls";
 import { assertUnreachable } from "~/utils/types";
 import {
 	badgePage,
+	EVENTS_PAGE,
 	FRIENDS_PAGE,
 	NEW_TROPHY_PAGE,
 	PLUS_VOTING_PAGE,
@@ -12,10 +14,12 @@ import {
 	scrimPage,
 	scrimsPage,
 	sendouQMatchPage,
+	teamSchedulePage,
 	tournamentRegisterPage,
 	tournamentSubsPage,
 	tournamentTeamPage,
 	trophyPage,
+	type UserLinkArgs,
 	userEditProfilePage,
 } from "~/utils/urls";
 import type { Notification } from "./notifications-types";
@@ -40,6 +44,7 @@ export const notificationNavIcon = (type: Notification["type"]) => {
 		case "SQ_NEW_MATCH":
 		case "SQ_READY_CHECK":
 		case "SEASON_STARTED":
+		case "SEASON_ENDED":
 			return "sendouq";
 		case "TAGGED_TO_ART":
 		case "COMMISSIONS_CLOSED":
@@ -59,12 +64,19 @@ export const notificationNavIcon = (type: Notification["type"]) => {
 			return "scrims";
 		case "FRIEND_REQUEST_RECEIVED":
 			return "sendou_love";
+		case "TEAM_EVENT_ADDED":
+			return "t";
+		case "SCHEDULE_TEAM_REMINDER":
+			return "calendar";
 		default:
 			assertUnreachable(type);
 	}
 };
 
-export const notificationLink = (notification: Notification) => {
+export const notificationLink = (
+	notification: Notification,
+	recipient?: UserLinkArgs,
+) => {
 	switch (notification.type) {
 		case "BADGE_ADDED":
 			return badgePage(notification.meta.badgeId);
@@ -82,6 +94,13 @@ export const notificationLink = (notification: Notification) => {
 		case "SEASON_STARTED":
 		case "SQ_ADDED_TO_GROUP":
 			return SENDOUQ_PAGE;
+		case "SEASON_ENDED":
+			return recipient
+				? userSeasonsPage({
+						user: recipient,
+						season: notification.meta.seasonNth,
+					})
+				: SENDOUQ_PAGE;
 		case "SQ_NEW_MATCH":
 			return sendouQMatchPage(notification.meta.matchId);
 		case "SQ_READY_CHECK":
@@ -123,6 +142,12 @@ export const notificationLink = (notification: Notification) => {
 		case "TO_LIKE_RECEIVED":
 		case "TO_LIKE_ACCEPTED": {
 			return tournamentSubsPage(notification.meta.tournamentId);
+		}
+		case "TEAM_EVENT_ADDED": {
+			return teamSchedulePage(notification.meta.teamCustomUrl);
+		}
+		case "SCHEDULE_TEAM_REMINDER": {
+			return EVENTS_PAGE;
 		}
 		default:
 			assertUnreachable(notification);

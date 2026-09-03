@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLoaderData } from "react-router";
+import { type MetaFunction, useLoaderData } from "react-router";
 import { SendouButton } from "~/components/elements/Button";
 import { UserSearch } from "~/components/elements/UserSearch";
 import { FormMessage } from "~/components/FormMessage";
@@ -21,6 +21,7 @@ import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
 import { useRecentlyReportedWeapons } from "~/hooks/useRecentlyReportedWeapons";
 import type { MainWeaponId, StageId } from "~/modules/in-game-lists/types";
 import { useHasRole } from "~/modules/permissions/hooks";
+import { metaTags, ogPageImage } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { Alert } from "../../../components/Alert";
 import { action } from "../actions/vods.new.server";
@@ -30,6 +31,14 @@ import { extractYoutubeIdFromVideoUrl } from "../vods-utils";
 import styles from "./vods.new.module.css";
 
 export { action, loader };
+
+export const meta: MetaFunction = (args) => {
+	return metaTags({
+		title: "New VOD",
+		image: ogPageImage("vods"),
+		location: args.location,
+	});
+};
 
 export const handle: SendouRouteHandle = {
 	i18n: ["vods", "calendar"],
@@ -131,12 +140,9 @@ function vodToEditToFormValues(vodToEdit: VodToEdit) {
 type VodPrefill = NonNullable<Awaited<ReturnType<typeof loader>>["vodPrefill"]>;
 
 /**
- * Prefill from the emberz VoD parser's `ingest` search param (see the loader):
- * detected matches with anything the detectors missed left at the blank form's
- * defaults for the user to fill. CAST weapons are the alpha team's four slots
- * then bravo's; unread slots are dropped so the remaining empty (required)
- * selects surface them. A non-CAST VoD instead takes the POV player's weapon,
- * which the scan only knows when a scoreboard identified their seat.
+ * Prefill from the emberz VoD parser's `ingest` param; what the detectors missed stays at the blank
+ * defaults. CAST weapons are alpha's four slots then bravo's, unread slots dropped so the empty
+ * required selects surface them. A non-CAST VoD takes the POV player's weapon when their seat is known.
  */
 function vodPrefillToFormValues(prefill: VodPrefill) {
 	const teamSize = 4;
@@ -200,11 +206,8 @@ const EMBED_RAIL_GAP = 24; // mirrors var(--s-6)
 const EMBED_FLOAT_WIDTHS = [400, 320] as const;
 
 /**
- * Returns the width to float the embed at when the form's left margin can fit
- * it (widest that fits), or `null` to leave it in flow above the fields.
- * Measures the form's actual left margin so it accounts for the side nav being
- * collapsed and the chat sidebar being open, neither of which a media query can
- * see.
+ * Widest embed width the form's left margin fits, or `null` to leave it in flow. Measures the
+ * actual margin since a media query can't see the collapsed side nav or open chat sidebar.
  */
 function useFloatingEmbedWidth(): number | null {
 	const [leftMargin, setLeftMargin] = useState(0);
@@ -287,8 +290,7 @@ function VodFormFields({
 function TeamSizeField({ FormField }: { FormField: VodFormFieldComponent }) {
 	const context = useOptionalFormFieldContext();
 
-	// The weapon count per match is tied to the team size, so any already picked
-	// weapons would no longer fit the new size.
+	// the weapon count per match is tied to the team size
 	const clearMatchWeapons = () => {
 		context?.setValueFromPrev("matches", (prev) =>
 			((prev ?? []) as Array<Record<string, unknown>>).map((match) => ({

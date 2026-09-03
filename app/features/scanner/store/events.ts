@@ -1,24 +1,28 @@
 /**
- * IndexedDB event store: one `events` object store, keyed by auto id,
- * indexed by timestamp. A small thumbnail of the detection frame is kept
- * per event for the feed; the full-res analyzed PNG lives in the separate
- * `frames` store under the same id (loaded on demand via loadEventFrame),
- * so listing the feed never deserializes megabytes of blobs. The store is
- * capped: saving past MAX_EVENTS evicts the oldest events and their frames.
+ * IndexedDB event store: one `events` store keyed by auto id, indexed by
+ * timestamp, with a small thumbnail per event; the full-res analyzed PNG lives
+ * in the separate `frames` store under the same id (loadEventFrame) so listing
+ * the feed never deserializes megabytes of blobs. Saving past MAX_EVENTS
+ * evicts the oldest events and their frames; past MAX_FRAMES the oldest
+ * frames alone (the events stay, marked frameless).
  */
 import type { IngestedMatchLink } from "~/features/scanner-ingest/scanner-ingest-schemas";
 import type { DetectedEvent } from "../core/detectors/types";
 import { db, EVENTS_STORE, FRAMES_STORE, tx } from "./db";
 
-/** Oldest events (and their frames) are evicted past this count. */
-const MAX_EVENTS = 1000;
+/**
+ * Counter/status reads land ~2.2 events a second of match time, so the cap must
+ * hold a whole session: at 1000 the store rolled over in ~8 minutes and evicted
+ * matches before they were sent (2026-08-23: Mahi-Mahi reached sendou.ink with no data).
+ */
+const MAX_EVENTS = 10_000;
+
+/** Full-res frame PNGs (~1-2MB each) evicted past this count; only "Save fixture" loses them. */
+const MAX_FRAMES = 200;
 
 /** Where an event stands with sendou.ink /ingest; absent = never attempted. */
 export interface SendStatus {
-	/**
-	 * "unlinked": sendou.ink stored the match but its game is not reported
-	 * yet, so it has no scoreboard to attach to — resent on a backoff.
-	 */
+	/** "unlinked": sendou.ink stored the match but its game is not reported yet — resent on a backoff */
 	state: "queued" | "sending" | "sent" | "unlinked" | "failed";
 	/** wall-clock time of the last state change */
 	at: number;
@@ -46,9 +50,8 @@ export interface StoredEvent {
 }
 
 /**
- * Persist a detection; resolves to its store id. `reuseId` overwrites that
- * existing row (and its frame) instead of adding a new one, so an event a
- * better read replaces keeps a stable id.
+ * Persists a detection; resolves to its store id. `reuseId` overwrites that row
+ * (and its frame) so an event a better read replaces keeps a stable id.
  */
 export async function saveEvent(
 	event: DetectedEvent,
@@ -99,6 +102,27 @@ function evictOldest(events: IDBObjectStore, frames: IDBObjectStore): void {
 			if (!c || excess <= 0) return;
 			frames.delete(c.primaryKey);
 			c.delete();
+			excess--;
+			if (excess > 0) c.continue();
+		};
+	};
+	const frameCount = frames.count();
+	frameCount.onsuccess = () => {
+		let excess = frameCount.result - MAX_FRAMES;
+		if (excess <= 0) return;
+		const cursor = frames.openKeyCursor(); // ascending id = oldest first
+		cursor.onsuccess = () => {
+			const c = cursor.result;
+			if (!c || excess <= 0) return;
+			const id = c.primaryKey;
+			frames.delete(id);
+			const get = events.get(id) as IDBRequest<StoredEvent | undefined>;
+			get.onsuccess = () => {
+				const record = get.result;
+				if (!record?.hasFrame) return;
+				record.hasFrame = false;
+				events.put(record);
+			};
 			excess--;
 			if (excess > 0) c.continue();
 		};

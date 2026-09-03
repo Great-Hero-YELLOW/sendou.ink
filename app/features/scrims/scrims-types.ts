@@ -14,9 +14,8 @@ export interface ScrimPost {
 	visibility: AssociationVisibility | null;
 	text: string | null;
 	divs: {
-		/** Max div in the whole system is "X" */
+		/** the highest div is "X", the lowest "11" */
 		max: LutiDiv;
-		/** Min div in the whole system is "11" */
 		min: LutiDiv;
 	} | null;
 	maps: "SZ" | "ALL" | "RANKED" | null;
@@ -27,7 +26,7 @@ export interface ScrimPost {
 	} | null;
 	team: ScrimPostTeam | null;
 	users: Array<ScrimPostUser>;
-	chatCode: string | null;
+	chatRoomId: number | null;
 	requests: Array<ScrimPostRequest>;
 	/** Is the post visible to the user because of their association membership? */
 	isPrivate?: boolean;

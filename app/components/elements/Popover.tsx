@@ -7,19 +7,7 @@ import {
 } from "react-aria-components";
 import styles from "./Popover.module.css";
 
-/**
- * A reusable popover component that wraps around a trigger element (SendouButton or Button from React Aria Components library).
- * Supports controlled and uncontrolled open states.
- *
- * @example
- * ```tsx
- * <SendouPopover
- *   trigger={<SendouButton>Click me</SendouButton>}
- * >
- *   Popover content goes here!
- * </SendouPopover>
- * ```
- */
+/** Popover opened by `trigger` (a SendouButton or React Aria Button); controlled or uncontrolled. */
 export function SendouPopover({
 	children,
 	trigger,
@@ -48,21 +36,19 @@ export function SendouPopover({
 	);
 }
 
-/**
- * Popover anchored to a trigger rendered outside of it, with its open state
- * controlled by the caller. Prefer `SendouPopover` when the trigger can be
- * passed in.
- */
+/** Controlled popover anchored to a trigger rendered outside of it. Prefer `SendouPopover` when the trigger can be passed in. */
 export function SendouAnchoredPopover({
 	children,
 	isOpen,
 	onOpenChange,
 	triggerRef,
+	"aria-label": ariaLabel,
 }: {
 	children: React.ReactNode;
 	isOpen: boolean;
 	onOpenChange: (isOpen: boolean) => void;
 	triggerRef: React.RefObject<HTMLElement | null>;
+	"aria-label"?: string;
 }) {
 	return (
 		<Popover
@@ -71,7 +57,9 @@ export function SendouAnchoredPopover({
 			onOpenChange={onOpenChange}
 			triggerRef={triggerRef}
 		>
-			<Dialog className={styles.dialog}>{children}</Dialog>
+			<Dialog className={styles.dialog} aria-label={ariaLabel}>
+				{children}
+			</Dialog>
 		</Popover>
 	);
 }

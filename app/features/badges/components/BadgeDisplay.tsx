@@ -32,6 +32,15 @@ export function BadgeDisplay({
 }: BadgeDisplayProps) {
 	const { t } = useTranslation("badges");
 	const [badges, setBadges] = React.useState(_badges);
+	const [shownBadgeIds, setShownBadgeIds] = React.useState(() =>
+		badgeIdsKey(_badges),
+	);
+
+	// props can change without a remount e.g. navigating between organization pages
+	if (shownBadgeIds !== badgeIdsKey(_badges)) {
+		setShownBadgeIds(badgeIdsKey(_badges));
+		setBadges(_badges);
+	}
 
 	const [bigBadge, ...smallBadges] = badges;
 
@@ -124,4 +133,8 @@ export function BadgeDisplay({
 			) : null}
 		</div>
 	);
+}
+
+function badgeIdsKey(badges: BadgeDisplayProps["badges"]) {
+	return badges.map((badge) => badge.id).join(",");
 }

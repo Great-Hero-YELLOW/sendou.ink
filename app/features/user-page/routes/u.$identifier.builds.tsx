@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useFetcher, useLoaderData, useMatches } from "react-router";
 import { BuildCard } from "~/components/BuildCard";
+import { EmptyState } from "~/components/EmptyState";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouDialog } from "~/components/elements/Dialog";
 import { SendouMenu, SendouMenuItem } from "~/components/elements/Menu";
@@ -57,8 +58,7 @@ export default function UserBuildsPage() {
 		"sorting",
 	);
 	const changingSorting = sorting && isOwnPage;
-	// lives here so closing the dialog mid-submit doesn't unmount the fetcher,
-	// which would discard the action's redirect and skip revalidation
+	// here so closing the dialog mid-submit doesn't unmount the fetcher and drop the redirect
 	const sortingFetcher = useFetcher();
 
 	const closeSortingDialog = () => setChangingSorting(false);
@@ -114,9 +114,7 @@ export default function UserBuildsPage() {
 					))}
 				</div>
 			) : (
-				<div className="text-center text-lg text-lighter font-semi-bold">
-					{t("noBuilds")}
-				</div>
+				<EmptyState navItem="builds">{t("noBuilds")}</EmptyState>
 			)}
 		</div>
 	);

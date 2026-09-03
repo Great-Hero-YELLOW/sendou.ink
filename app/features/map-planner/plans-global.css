@@ -1,5 +1,3 @@
-/* Currently ignored by Biome, can be unignored when https://github.com/biomejs/biome/pull/3251 lands */
-
 /* https://github.com/tldraw/tldraw/blob/2352985e949d14270fc89dc60144239c37c8ff91/packages/tldraw/src/hooks/useStylesheet.ts */
 @import url("https://fonts.googleapis.com/css2?family=Caveat+Brush&family=Source+Code+Pro&family=Source+Sans+Pro&family=Crimson+Pro&display=block");
 @import url("@tldraw/tldraw/tldraw.css");
@@ -47,13 +45,14 @@ div {
 	box-shadow: none !important;
 }
 
-/* Hacky selector to hide sidebar and top nav */
+/* hides sidebar, top nav and footer */
 body:has(.planner) nav,
-body:has(.planner) header {
+body:has(.planner) header,
+body:has(.planner) footer {
 	display: none !important;
 }
 
-/** Hacky selector to remove the help button on bottom left */
+/* removes the help button on bottom left */
 .tlui-help-menu {
 	display: none;
 }
@@ -77,6 +76,13 @@ body:has(.planner) header {
 .tlui-toolbar__tools,
 .tlui-popover__content {
 	border: var(--border-style);
+}
+
+/* the undo/redo row tucks under the toolbar, so it shares its look sans bottom border */
+.tlui-toolbar__extras__controls {
+	border: var(--border-style);
+	border-bottom: none;
+	background-color: var(--color-panel);
 }
 
 .tlui-style-panel {

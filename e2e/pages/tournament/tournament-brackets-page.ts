@@ -62,8 +62,18 @@ export class TournamentBracketsPage {
 		return this.page.getByText(`Round ${roundNumber}`, { exact: true });
 	}
 
+	/** A round column's header by its name, e.g. "Grand Finals". */
+	roundHeader(name: string) {
+		return this.locators.bracketsViewer.getByText(name, { exact: true });
+	}
+
 	match(matchId: number) {
 		return this.page.locator(`[data-match-id="${matchId}"]`);
+	}
+
+	/** Both sides' scores of the match, top to bottom. */
+	matchScores(matchId: number) {
+		return this.match(matchId).getByTestId("match-score");
 	}
 
 	/** The match's countdown timer, a sibling of the match link. */
@@ -71,11 +81,9 @@ export class TournamentBracketsPage {
 		return this.match(matchId).locator("..").getByTestId("bracket-match-timer");
 	}
 
-	/** Team names of the bracket's first round in bracket order, top to bottom; two
-	 * slots per match, both slots of a BYE match reading as an empty string.
-	 * `teamCount` is how many teams the first round holds, byes excluded. Note that a
-	 * first round of mostly byes is compacted away by the UI, in which case what is
-	 * returned is the compacted column rather than the true first round. */
+	/** Team names of the first round in bracket order, two slots per match, both slots of a BYE
+	 * reading as "". `teamCount` excludes byes. A first round of mostly byes is compacted away by
+	 * the UI, in which case the compacted column is returned instead. */
 	async firstRoundTeamNames(teamCount: number): Promise<string[]> {
 		const firstRound = this.locators.bracketsViewer
 			.locator("[data-round-id]")
@@ -190,11 +198,18 @@ class BracketMapListDialog {
 			),
 			linkFinalsButton: page.getByTestId("link-finals-3rd-place-match-button"),
 			beforeSetText: page.getByText("Before set"),
+			pickBanToggles: page.getByTitle("Toggle counterpick/ban"),
 		};
 	}
 
 	async setPickBan(value: string) {
 		await this.locators.pickBanSelect.selectOption(value);
+	}
+
+	/** Turns pick/ban on. Round robin and swiss share one setting across every
+	 * round, so any round's toggle switches the whole bracket. */
+	async togglePickBan() {
+		await this.locators.pickBanToggles.first().click();
 	}
 
 	async setCountType(value: string) {
@@ -217,9 +232,8 @@ class BracketMapListDialog {
 		return submit(this.page, "confirm-finalize-bracket-button");
 	}
 
-	/** Starts the bracket with a CUSTOM pick/ban flow. The flow builder UI has no
-	 * e2e-friendly handles, so the flow is written straight into the form's maps
-	 * input before submitting it. */
+	/** Starts the bracket with a CUSTOM pick/ban flow, written straight into the form's maps
+	 * input as the flow builder UI has no e2e-friendly handles. */
 	confirmWithCustomFlow(customFlow: unknown) {
 		return waitForPOSTResponse(this.page, async () => {
 			await this.page.evaluate((cfStr) => {

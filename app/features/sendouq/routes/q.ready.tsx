@@ -7,10 +7,10 @@ import { useLoaderData, useRevalidator } from "react-router";
 import { ActionButton } from "~/components/ActionButton";
 import { Main } from "~/components/Main";
 import { useUser } from "~/features/auth/core/user";
-import { useWebsocketRevalidation } from "~/features/chat/chat-hooks";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
-import { metaTags } from "~/utils/remix";
+import { metaTags, ogPageImage } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { navIconUrl, SENDOUQ_READY_PAGE } from "~/utils/urls";
 import { action } from "../actions/q.ready.server";
@@ -18,7 +18,7 @@ import { GroupCard, HiddenGroupCard } from "../components/GroupCard";
 import { GroupLeaver } from "../components/GroupLeaver";
 import { loader } from "../loaders/q.ready.server";
 import { readySchema } from "../q-action-schemas";
-import { sqGroupWebsocketRoom } from "../q-constants";
+import { sqGroupChannel } from "../q-constants";
 
 export { action, loader };
 
@@ -36,6 +36,7 @@ export const handle: SendouRouteHandle = {
 export const meta: MetaFunction = (args) => {
 	return metaTags({
 		title: "SendouQ - Ready Check",
+		image: ogPageImage("sendouq"),
 		location: args.location,
 	});
 };
@@ -45,7 +46,7 @@ export default function QReadyPage() {
 	const user = useUser();
 	const data = useLoaderData<typeof loader>();
 
-	useWebsocketRevalidation(sqGroupWebsocketRoom(data.group.id));
+	useTopicRevalidation(sqGroupChannel(data.group.id));
 
 	const ownIsReady = user ? data.readyUserIds.includes(user.id) : false;
 

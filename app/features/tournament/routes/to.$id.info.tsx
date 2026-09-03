@@ -58,7 +58,7 @@ export default function TournamentInfoPage() {
 
 	return (
 		<div className={clsx("stack lg", containerClassName("normal"))}>
-			<TournamentHeader tournament={tournament} />
+			<TournamentHeader tournament={tournament} estimatedEndsAt={data.endsAt} />
 			<div className="stack md">
 				<FactCardGrid facts={facts} />
 				<TournamentHeaderActions
@@ -103,7 +103,9 @@ function useFacts(
 				<>
 					{bracketProgression.label}
 					{bracketProgression.hasUnderground ? (
-						<span className={styles.underground}>+ UG</span>
+						<span className={styles.underground}>
+							{t("tournament:fact.bracket.underground")}
+						</span>
 					) : null}
 				</>
 			),

@@ -34,10 +34,7 @@ export const discordAvatarUrl = ({
 		discordAvatar
 	}.webp${size === "lg" ? "?size=240" : "?size=80"}`;
 
-/**
- * Resolves the avatar image url of an user, preferring their custom avatar over
- * the Discord one. Returns undefined if the user has neither.
- */
+/** Avatar url preferring the custom avatar over the Discord one; undefined without either. */
 export const resolveAvatarUrl = ({
 	customAvatarUrl,
 	discordId,
@@ -125,6 +122,9 @@ export const COMP_ANALYZER_URL = "/comp-analyzer";
 export const OBJECT_DAMAGE_CALCULATOR_URL = "/object-damage-calculator";
 export const SCANNER_PAGE = "/scanner";
 export const VODS_PAGE = "/vods";
+export const ART_PAGE = "/art";
+export const XSEARCH_PAGE = "/xsearch";
+export const ASSOCIATIONS_PAGE = "/associations";
 export const LEADERBOARDS_PAGE = "/leaderboards";
 export const LINKS_PAGE = "/links";
 export const SENDOUQ_PAGE = "/q";
@@ -144,11 +144,46 @@ export const FRIENDS_PAGE = "/friends";
 export const SETTINGS_PAGE = "/settings";
 export const LUTI_PAGE = "/luti";
 export const PLUS_VOTING_PAGE = "/plus/voting";
+export const PLUS_VOTING_RESULTS_PAGE = "/plus/voting/results";
+export const PLUS_SUGGESTIONS_PAGE = "/plus/suggestions";
 
 const STATIC_ASSETS_URL = Config.staticAssetsUrl;
 
 export const BLANK_IMAGE_URL = `${STATIC_ASSETS_URL}/img/blank.gif`;
-export const COMMON_PREVIEW_IMAGE = `${STATIC_ASSETS_URL}/img/layout/common-preview.png`;
+
+/** Pages with an OG image of their own (named after the nav item), rendered by `/admin/og-images`. */
+export const OG_IMAGE_PAGES = [
+	"settings",
+	"sendouq",
+	"analyzer",
+	"comp-analyzer",
+	"builds",
+	"object-damage-calculator",
+	"leaderboards",
+	"scrims",
+	"lfg",
+	"plans",
+	"trophies",
+	"calendar",
+	"plus",
+	"xsearch",
+	"articles",
+	"vods",
+	"art",
+	"tier-list-maker",
+	"links",
+	"maps",
+] as const;
+
+export type OgImagePage = (typeof OG_IMAGE_PAGES)[number];
+
+/** Preview image shown when a page is shared on Discord, Bluesky etc. */
+export const ogImageUrl = (page: OgImagePage | "default") =>
+	`${STATIC_ASSETS_URL}/img/og/${page}.png`;
+
+/** Preview image of the front page, also used by pages without one of their own. */
+export const DEFAULT_OG_IMAGE = ogImageUrl("default");
+
 export const ERROR_GIRL_IMAGE_PATH = `${STATIC_ASSETS_URL}/img/layout/error-girl`;
 export const SENDOU_LOVE_EMOJI_PATH = `${STATIC_ASSETS_URL}/img/layout/sendou_love`;
 export const FIRST_PLACEMENT_ICON_PATH = `${STATIC_ASSETS_URL}/svg/placements/first.svg`;
@@ -171,6 +206,14 @@ export const NOTIFICATIONS_URL = "/notifications";
 export const NOTIFICATIONS_MARK_AS_SEEN_ROUTE = "/notifications/seen";
 export const NOTIFICATIONS_SUBSCRIBE_ROUTE = "/notifications/subscribe";
 export const NOTIFICATIONS_DATA_ROUTE = "/api/notifications";
+
+export const CHAT_ROOMS_DATA_ROUTE = "/api/chat/rooms";
+export const chatRoomDataRoute = (roomId: number) =>
+	`${CHAT_ROOMS_DATA_ROUTE}/${roomId}`;
+export const chatRoomMessagesRoute = (roomId: number) =>
+	`${chatRoomDataRoute(roomId)}/messages`;
+export const chatRoomReadRoute = (roomId: number) =>
+	`${chatRoomDataRoute(roomId)}/read`;
 
 export const userCardFriendshipPage = (userId: number) =>
 	`/user-card/${userId}/friendship`;
@@ -210,6 +253,8 @@ export const editTeamPage = (customUrl: string) =>
 	`${teamPage(customUrl)}/edit`;
 export const manageTeamRosterPage = (customUrl: string) =>
 	`${teamPage(customUrl)}/roster`;
+export const teamSchedulePage = (customUrl: string) =>
+	`${teamPage(customUrl)}/schedule`;
 
 export const authErrorUrl = (errorCode: AuthErrorCode) =>
 	`/?authError=${errorCode}`;

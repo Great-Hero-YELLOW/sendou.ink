@@ -12,11 +12,9 @@ type MetaFilter<T extends Notification["type"]> =
 	NotificationOfType<T> extends { meta: infer M } ? Partial<M> : undefined;
 
 /**
- * What resolves each notification type beyond opening the notification list.
- * `null` means nothing does: the notification is informational, or resolving it
- * would cost a query on a hot path for little gain (TO_ADDED_TO_TEAM,
- * TO_TEST_CREATED). Exhaustive on purpose, so a new notification type has to
- * pick a side, and only the types with a trigger can be resolved.
+ * What resolves each notification type beyond opening the list. `null`: nothing does, it is
+ * informational or resolving would cost a hot-path query for little gain (TO_ADDED_TO_TEAM,
+ * TO_TEST_CREATED). Exhaustive so a new type has to pick a side.
  */
 const RESOLUTION_TRIGGERS = {
 	SQ_ADDED_TO_GROUP: "visits a SendouQ group page (preparing/looking)",
@@ -40,6 +38,7 @@ const RESOLUTION_TRIGGERS = {
 	PLUS_SUGGESTION_ADDED: "visits the suggestions page of the tier",
 	TAGGED_TO_ART: null,
 	SEASON_STARTED: null,
+	SEASON_ENDED: null,
 	SCRIM_NEW_REQUEST:
 		"a request for the post is accepted (settling the post), the request is canceled by its sender, or the post is deleted",
 	SCRIM_SCHEDULED: "visits the scrim's page, or the scrim gets canceled",
@@ -49,6 +48,8 @@ const RESOLUTION_TRIGGERS = {
 	COMMISSIONS_CLOSED: null,
 	FRIEND_REQUEST_RECEIVED:
 		"accepts or declines the request, or the sender cancels it",
+	TEAM_EVENT_ADDED: "visits the team's schedule page",
+	SCHEDULE_TEAM_REMINDER: "saves any week of their own schedule",
 } as const satisfies Record<Notification["type"], string | null>;
 
 type ResolvableNotificationType = {
@@ -58,12 +59,9 @@ type ResolvableNotificationType = {
 }[Notification["type"]];
 
 /**
- * Marks the users' unseen notifications of the given type as seen because they
- * addressed the thing the notification is about, so the unseen dot only shows
- * for notifications that still need the user's attention. Never throws; a
- * failed resolution only logs since the caller's action/loader matters more.
- *
- * See `RESOLUTION_TRIGGERS` for what resolves each type.
+ * Marks the users' unseen notifications of the type as seen because they addressed what it is
+ * about (see `RESOLUTION_TRIGGERS`). Never throws; a failure only logs since the caller's
+ * action/loader matters more.
  */
 export async function resolveNotifications<
 	T extends ResolvableNotificationType,
@@ -72,9 +70,7 @@ export async function resolveNotifications<
 	type,
 	meta,
 }: {
-	/** Users whose notifications got addressed */
 	userIds: Array<number>;
-	/** Notification type to resolve */
 	type: T;
 	/** Only notifications whose meta matches every given key/value pair are resolved (e.g. `{ tournamentId }`) */
 	meta?: MetaFilter<T>;

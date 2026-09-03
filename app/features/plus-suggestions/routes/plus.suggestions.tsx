@@ -26,7 +26,7 @@ import {
 	useSearchParamsTyped,
 } from "~/modules/search-params/hooks";
 import { databaseTimestampToDate } from "~/utils/dates";
-import { metaTags, type SerializeFrom } from "~/utils/remix";
+import { metaTags, ogPageImage, type SerializeFrom } from "~/utils/remix";
 import { action } from "../actions/plus.suggestions.server";
 import { loader } from "../loaders/plus.suggestions.server";
 import type { PlusTier } from "../plus-suggestions-constants";
@@ -50,6 +50,7 @@ export const meta: MetaFunction = (args) => {
 		ogTitle: "Plus Server suggestions",
 		description:
 			"This season's suggestions to the Plus Server (+1, +2 and +3).",
+		image: ogPageImage("plus"),
 		location: args.location,
 	});
 };
@@ -197,11 +198,13 @@ function SuggestedUser({
 	return (
 		<div className="stack md">
 			<div className={styles.suggestedUserInfo}>
-				<h2>
+				<h2 className={styles.suggestedUserHeading}>
 					<UserCard userId={suggestion.suggested.id}>
 						<span className={styles.suggestedUserTrigger}>
 							<Avatar user={suggestion.suggested} size="md" />
-							{suggestion.suggested.username}
+							<span className={styles.suggestedUsername}>
+								{suggestion.suggested.username}
+							</span>
 						</span>
 					</UserCard>
 				</h2>

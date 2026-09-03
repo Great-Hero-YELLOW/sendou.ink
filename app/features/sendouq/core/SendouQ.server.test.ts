@@ -50,11 +50,7 @@ const createGroup = async (
 	return group.id;
 };
 
-/**
- * Gives every group the same `latestActionAt`, so the sort comparator's recency
- * tie-breaker stays neutral and the assertion does not depend on whether the group
- * inserts straddle a second boundary (which they can on slow CI).
- */
+/** Gives every group the same `latestActionAt` so the recency tie-breaker stays neutral even when inserts straddle a second boundary (slow CI). */
 const alignLatestActionAt = async (groupIds: number[]) => {
 	const at = new Date();
 
@@ -321,7 +317,7 @@ describe("SendouQ", () => {
 			expect(groups[0].members).toHaveLength(2);
 		});
 
-		test("removes inviteCode and chatCode from all groups", async () => {
+		test("removes inviteCode and chatRoomId from all groups", async () => {
 			await createGroup([1, 2]);
 			await createGroup([3, 4, 5, 6]);
 			await refreshSendouQInstance();
@@ -331,7 +327,7 @@ describe("SendouQ", () => {
 			expect(groups).toHaveLength(2);
 			for (const group of groups) {
 				expect(group).not.toHaveProperty("inviteCode");
-				expect(group).not.toHaveProperty("chatCode");
+				expect(group).not.toHaveProperty("chatRoomId");
 			}
 		});
 
@@ -668,7 +664,7 @@ describe("SendouQ", () => {
 				expect(partialGroup?.members).toHaveLength(2);
 			});
 
-			test("inviteCode and chatCode removed from all groups", async () => {
+			test("inviteCode and chatRoomId removed from all groups", async () => {
 				await createGroup([1]);
 				await createGroup([2]);
 				await createGroup([3, 4, 5, 6]);
@@ -678,7 +674,7 @@ describe("SendouQ", () => {
 
 				for (const group of groups) {
 					expect(group).not.toHaveProperty("inviteCode");
-					expect(group).not.toHaveProperty("chatCode");
+					expect(group).not.toHaveProperty("chatRoomId");
 				}
 			});
 		});

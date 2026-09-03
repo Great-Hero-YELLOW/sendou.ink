@@ -14,14 +14,13 @@ import { refreshSendouQInstance, SendouQ } from "../core/SendouQ.server";
 import { lookingSchema } from "../q-action-schemas";
 import {
 	FULL_GROUP_SIZE,
-	SENDOUQ_LOOKING_ROOM,
-	sqGroupWebsocketRoom,
+	SENDOUQ_LOOKING_CHANNEL,
+	sqGroupChannel,
 } from "../q-constants";
-import { SendouQError, setGroupChatMetadata } from "../q-utils.server";
+import { SendouQError } from "../q-utils.server";
 
-// this function doesn't throw normally because we are assuming
-// if there is a validation error the user saw stale data
-// and when we return null we just force a refresh
+// a validation error means the user saw stale data, so instead of throwing
+// this returns null to force a refresh
 export const action: ActionFunction = async ({ request }) => {
 	const user = requireUser();
 	const result = await parseFormData({
@@ -43,22 +42,15 @@ export const action: ActionFunction = async ({ request }) => {
 	}
 
 	const broadcastLookingUpdate = () =>
-		ChatSystemMessage.send({
-			room: SENDOUQ_LOOKING_ROOM,
-			revalidateOnly: true,
-		});
+		ChatSystemMessage.send({ channel: SENDOUQ_LOOKING_CHANNEL });
 
 	const revalidateGroupTopic = (groupId: number) =>
-		ChatSystemMessage.send({
-			room: sqGroupWebsocketRoom(groupId),
-			revalidateOnly: true,
-		});
+		ChatSystemMessage.send({ channel: sqGroupChannel(groupId) });
 
 	const notifyLikeReceived = (groupId: number) =>
 		ChatSystemMessage.send({
-			room: sqGroupWebsocketRoom(groupId),
+			channel: sqGroupChannel(groupId),
 			type: "LIKE_RECEIVED",
-			revalidateOnly: true,
 		});
 
 	try {
@@ -150,21 +142,12 @@ export const action: ActionFunction = async ({ request }) => {
 
 				await refreshSendouQInstance();
 
-				if (ourGroup.chatCode) {
-					ChatSystemMessage.removeRoom(ourGroup.chatCode);
-				}
-				if (theirGroup.chatCode) {
-					ChatSystemMessage.removeRoom(theirGroup.chatCode);
-				}
-
-				const survivingGroup =
-					SendouQ.findUncensoredGroupById(survivingGroupId);
-				if (survivingGroup?.chatCode) {
-					setGroupChatMetadata({
-						chatCode: survivingGroup.chatCode,
-						members: survivingGroup.members,
-					});
-				}
+				// both old rooms died and a fresh merged room was created
+				ChatSystemMessage.notifyRoomsChanged(
+					[...ourGroup.members, ...theirGroup.members].map(
+						(member) => member.id,
+					),
+				);
 
 				broadcastLookingUpdate();
 
@@ -209,17 +192,17 @@ export const action: ActionFunction = async ({ request }) => {
 				}
 
 				const remainingGroup = SendouQ.findUncensoredGroupById(currentGroup.id);
-				if (remainingGroup?.chatCode) {
-					ChatSystemMessage.send({
-						room: remainingGroup.chatCode,
+				if (remainingGroup?.chatRoomId) {
+					ChatSystemMessage.sendPersisted({
+						roomId: remainingGroup.chatRoomId,
 						type: "USER_LEFT",
-						context: { name: user.username },
-					});
-					setGroupChatMetadata({
-						chatCode: remainingGroup.chatCode,
-						members: remainingGroup.members,
+						authorUserId: user.id,
 					});
 				}
+
+				ChatSystemMessage.notifyRoomsChanged(
+					currentGroup.members.map((member) => member.id),
+				);
 
 				broadcastLookingUpdate();
 
@@ -245,17 +228,17 @@ export const action: ActionFunction = async ({ request }) => {
 				await refreshSendouQInstance();
 
 				const groupAfterKick = SendouQ.findUncensoredGroupById(currentGroup.id);
-				if (groupAfterKick?.chatCode && kickedMember) {
-					ChatSystemMessage.send({
-						room: groupAfterKick.chatCode,
+				if (groupAfterKick?.chatRoomId && kickedMember) {
+					ChatSystemMessage.sendPersisted({
+						roomId: groupAfterKick.chatRoomId,
 						type: "USER_LEFT",
-						context: { name: kickedMember.username },
-					});
-					setGroupChatMetadata({
-						chatCode: groupAfterKick.chatCode,
-						members: groupAfterKick.members,
+						authorUserId: kickedMember.id,
 					});
 				}
+
+				ChatSystemMessage.notifyRoomsChanged(
+					currentGroup.members.map((member) => member.id),
+				);
 
 				broadcastLookingUpdate();
 
@@ -289,9 +272,8 @@ export const action: ActionFunction = async ({ request }) => {
 
 		return null;
 	} catch (error) {
-		// some errors are expected to happen, for example they might request two groups at the same time
-		// then after morphing one group the other request fails because the group no longer exists
-		// return null causes loaders to run and they see the fresh state again instead of error page
+		// expected errors (e.g. two groups requested at once, the second failing once the first
+		// morphed): return null so loaders re-run and the user sees the fresh state
 		if (error instanceof SendouQError) {
 			return null;
 		}

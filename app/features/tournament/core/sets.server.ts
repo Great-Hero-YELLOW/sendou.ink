@@ -16,6 +16,8 @@ export interface AllRoundsItem {
 export interface PlayedSet {
 	tournamentMatchId: number;
 	score: [teamBeingViewed: number, opponent: number];
+	/** Per the bracket; can disagree with the maps and score, e.g. an organizer overrode the winner after reports. */
+	result: "win" | "loss";
 	round: {
 		type: "winners" | "losers" | "single_elim" | "round_robin" | "swiss";
 		round: number | "finals" | "grand_finals" | "bracket_reset";
@@ -30,7 +32,6 @@ export interface PlayedSet {
 	opponent: {
 		id: number;
 		name: string;
-		/** Team's roster that played in this set */
 		roster: Array<
 			Pick<
 				Tables["User"],
@@ -63,7 +64,7 @@ export function winCounts(sets: PlayedSet[]) {
 		}
 
 		totalSets++;
-		if (mapsWonThisSet > totalMapsThisSet / 2) {
+		if (set.result === "win") {
 			setsWon++;
 		}
 
@@ -140,7 +141,8 @@ export function tournamentTeamSets({
 				result: match.wasWinner ? "win" : "loss",
 				source: parseMaplistSource(match.source),
 			})),
-			score: flipScoreIfNeeded(set),
+			result: set.winnerSide === set.teamSide ? "win" : "loss",
+			score: scoreFromTeamPerspective(set),
 			opponent: {
 				id: set.otherTeamId,
 				name: set.otherTeamName,
@@ -150,24 +152,12 @@ export function tournamentTeamSets({
 	});
 }
 
-function flipScoreIfNeeded(set: FindByTournamentTeamIdItem): [number, number] {
-	const score: [number, number] = [
-		set.opponentOneScore ?? 0,
-		set.opponentTwoScore ?? 0,
-	];
-
-	const wonTheSet =
-		set.matches.reduce((acc, cur) => cur.wasWinner + acc, 0) >
-		set.matches.length / 2;
-
-	if (
-		(wonTheSet && score[0] < score[1]) ||
-		(!wonTheSet && score[0] > score[1])
-	) {
-		return [score[1], score[0]];
-	}
-
-	return score;
+function scoreFromTeamPerspective(
+	set: FindByTournamentTeamIdItem,
+): [number, number] {
+	return set.teamSide === "opponent1"
+		? [set.opponentOneScore ?? 0, set.opponentTwoScore ?? 0]
+		: [set.opponentTwoScore ?? 0, set.opponentOneScore ?? 0];
 }
 
 function resolveRoundType({

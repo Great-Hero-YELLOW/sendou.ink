@@ -10,8 +10,20 @@ import {
 import { TournamentBracketsPage } from "./pages/tournament/tournament-brackets-page";
 import { TournamentMatchPage } from "./pages/tournament/tournament-match-page";
 
+/** Counterpick options are grouped by the modes still available, of the four the
+ * tournament's map pool holds. Plain COUNTERPICK bars the picker from the mode
+ * they last won on, MODE_REPEAT_OK leaves every mode open. BAN_2 has no
+ * counterpicks at all. */
+const PICK_BAN_VARIANTS = [
+	{ pickBan: "COUNTERPICK", modeGroupsAfterWinning: 3 },
+	{ pickBan: "COUNTERPICK_MODE_REPEAT_OK", modeGroupsAfterWinning: 4 },
+	{ pickBan: "BAN_2", modeGroupsAfterWinning: null },
+] as const;
+
 test.describe("Tournament bracket pick/ban", () => {
-	for (const pickBan of ["COUNTERPICK", "BAN_2"]) {
+	for (const { pickBan, modeGroupsAfterWinning } of PICK_BAN_VARIANTS) {
+		const isCounterpick = modeGroupsAfterWinning !== null;
+
 		test(`ban/pick ${pickBan}`, async ({ page, factories }) => {
 			const tournament = await factories.TournamentFactory.create({
 				authorId: ADMIN_ID,
@@ -30,12 +42,13 @@ test.describe("Tournament bracket pick/ban", () => {
 			const brackets = new TournamentBracketsPage(page);
 			await brackets.goto(tournament.id);
 			const mapListDialog = await brackets.openFinalizeDialog();
+			await mapListDialog.togglePickBan();
 			await mapListDialog.setPickBan(pickBan);
 			await mapListDialog.confirm();
 
 			const match = new TournamentMatchPage(page);
 
-			if (pickBan === "BAN_2") {
+			if (!isCounterpick) {
 				for (const captainId of [teamTwoCaptainId, teamOneCaptainId]) {
 					await impersonate(page, captainId);
 					await match.goto({ tournamentId: tournament.id, matchId });
@@ -55,7 +68,7 @@ test.describe("Tournament bracket pick/ban", () => {
 			await match.openTab("action");
 			await match.reportResult({ mapsToReport: 1, winner: 2, setEnds: false });
 
-			if (pickBan === "COUNTERPICK") {
+			if (isCounterpick) {
 				await match.pickBan();
 			}
 
@@ -65,7 +78,12 @@ test.describe("Tournament bracket pick/ban", () => {
 			await match.openTab("action");
 			await match.reportResult({ mapsToReport: 1, winner: 1, setEnds: false });
 
-			if (pickBan === "COUNTERPICK") {
+			if (isCounterpick) {
+				// team two won the first map, so its own counterpick after losing the
+				// second one is the one the mode repeat rule bites on
+				await expect(match.locators.pickBanModeGroups).toHaveCount(
+					modeGroupsAfterWinning,
+				);
 				await match.pickBan();
 
 				await match.undoLastReport();
@@ -113,7 +131,6 @@ test.describe("Tournament bracket pick/ban", () => {
 			],
 		};
 
-		// 1) Start bracket with CUSTOM pick/ban flow
 		await impersonate(page);
 
 		const brackets = new TournamentBracketsPage(page);
@@ -126,7 +143,7 @@ test.describe("Tournament bracket pick/ban", () => {
 
 		const match = new TournamentMatchPage(page);
 
-		// 2) PreSet: Higher seed bans 2 maps
+		// PreSet: higher seed bans 2 maps
 		await impersonate(page, higherSeedCaptainId);
 		await match.goto({ tournamentId: tournament.id, matchId });
 		await match.openTab("action");
@@ -136,7 +153,7 @@ test.describe("Tournament bracket pick/ban", () => {
 		await expect(match.locators.lastBanText).toBeVisible();
 		await match.pickBan();
 
-		// 3) PreSet: Lower seed bans 2 maps
+		// PreSet: lower seed bans 2 maps
 		await impersonate(page, lowerSeedCaptainId);
 		await match.goto({ tournamentId: tournament.id, matchId });
 		await match.openTab("action");
@@ -146,21 +163,21 @@ test.describe("Tournament bracket pick/ban", () => {
 		await expect(match.locators.lastBanText).toBeVisible();
 		await match.pickBan();
 
-		// 4) Roll auto-executed after last ban; report game 1 score
+		// the roll auto-executes after the last ban
 		await expect(match.locators.stageBanner).toBeVisible();
 		await match.openTab("action");
 
 		await match.reportResult({ mapsToReport: 1, winner: 1, setEnds: false });
 		await expect(match.score([1, 0])).toBeVisible();
 
-		// 5) PostGame: Winner (the alpha team, whose captain is still impersonated) bans 2 maps
+		// PostGame: the winner (alpha, whose captain is still impersonated) bans 2 maps
 		await expect(match.locators.banAMapText).toBeVisible();
 		await match.pickBan();
 
 		await expect(match.locators.lastBanText).toBeVisible();
 		await match.pickBan();
 
-		// PostGame: Loser (the bravo team) picks a map
+		// PostGame: the loser (bravo) picks a map
 		await impersonate(page, higherSeedCaptainId);
 		await match.goto({ tournamentId: tournament.id, matchId });
 		await match.openTab("action");
@@ -168,14 +185,14 @@ test.describe("Tournament bracket pick/ban", () => {
 		await expect(match.locators.pickAMapText).toBeVisible();
 		await match.pickBan();
 
-		// 6) Undo game 1 score — also deletes postGame pick/ban events
+		// undoing game 1 also deletes the postGame pick/ban events
 		await expect(match.locators.stageBanner).toBeVisible();
 		await match.undoLastReport();
 
 		await expect(match.score([0, 0])).toBeVisible();
 		await expect(match.locators.stageBanner).toBeVisible();
 
-		// 7) Re-report game 1 and verify postGame cycle restarts
+		// the postGame cycle restarts
 		await match.openTab("action");
 		await match.reportResult({ mapsToReport: 1, winner: 1, setEnds: false });
 		await expect(match.score([1, 0])).toBeVisible();

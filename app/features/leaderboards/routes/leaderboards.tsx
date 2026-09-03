@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { MetaFunction } from "react-router";
 import { Link, useLoaderData } from "react-router";
 import { Avatar } from "~/components/Avatar";
+import { EmptyState } from "~/components/EmptyState";
 import { SendouButton } from "~/components/elements/Button";
 import {
 	SendouChipRadio,
@@ -33,7 +34,7 @@ import {
 	useSearchParam,
 	useSearchParamsTyped,
 } from "~/modules/search-params/hooks";
-import { metaTags, type SerializeFrom } from "~/utils/remix";
+import { metaTags, ogPageImage, type SerializeFrom } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import {
 	LEADERBOARDS_PAGE,
@@ -85,6 +86,7 @@ export const meta: MetaFunction = (args) => {
 		ogTitle: "Splatoon leaderboards",
 		description:
 			"Leaderboards of top Splatoon players ranked by their X Battle placements as well as tournament and SendouQ results. Categories per weapon and mode.",
+		image: ogPageImage("leaderboards"),
 		location: args.location,
 	});
 };
@@ -206,11 +208,11 @@ export default function LeaderboardsPage() {
 			{data.xpLeaderboard ? <XPTable entries={data.xpLeaderboard} /> : null}
 
 			{renderNoEntries ? (
-				<div className="text-center text-lg text-lighter">
+				<EmptyState navItem="leaderboards">
 					{data.userLeaderboard
 						? t("common:leaderboard.noPlayers")
 						: t("common:leaderboard.noTeams")}
-				</div>
+				</EmptyState>
 			) : null}
 
 			{!data.xpLeaderboard && data.season === Seasons.current()?.nth ? (

@@ -10,7 +10,10 @@ import { Placement } from "~/components/Placement";
 import { UserLink } from "~/components/UserLink";
 import { useUser } from "~/features/auth/core/user";
 import { ImageExportDialog } from "~/features/img-export/components/ImageExportDialog";
-import { TournamentRunGraphic } from "~/features/img-export/components/TournamentRunGraphic";
+import {
+	TournamentRunGraphic,
+	type TournamentRunGraphicSeriesWin,
+} from "~/features/img-export/components/TournamentRunGraphic";
 import { useTournament } from "~/features/tournament/tournament-context";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
 import type { TournamentMaplistSource } from "~/modules/tournament-map-list-generator/types";
@@ -50,6 +53,7 @@ export const meta: MetaFunction<typeof loader> = (args) => {
 };
 
 export default function TournamentTeamPage() {
+	const { t } = useTranslation(["tournament"]);
 	const data = useLoaderData<typeof loader>();
 	const tournament = useTournament();
 	const teamIndex = tournament.ctx.teams.findIndex(
@@ -70,7 +74,7 @@ export default function TournamentTeamPage() {
 						to={teamPage(team.team.customUrl)}
 						className="text-xxs text-center"
 					>
-						Team page
+						{t("tournament:team.teamPage")}
 					</Link>
 				) : null}
 			</div>
@@ -191,6 +195,15 @@ function RunImageExport() {
 		]),
 	);
 
+	const seriesWins = seriesWinsForGraphic({
+		placement: data.placement,
+		previousWins: fetcher.data?.previousSeriesWins,
+		currentWin: {
+			name: tournament.ctx.name,
+			startTime: tournament.ctx.startsAt,
+		},
+	});
+
 	const activePlayers = data.activePlayers ?? [];
 	const ownPlayers =
 		activePlayers.length > 0
@@ -250,7 +263,6 @@ function RunImageExport() {
 			filename={`tournament-${tournament.ctx.id}-run`}
 		>
 			{fetcher.data ? (
-				// xxx: pass seriesWins so 1st place finishes show the series titles row
 				<TournamentRunGraphic
 					tournamentId={tournament.ctx.id}
 					tournamentTeamId={data.tournamentTeamId}
@@ -271,6 +283,7 @@ function RunImageExport() {
 					matches={matches}
 					teamsCount={tournament.ctx.teams.length}
 					playersCount={data.participatedUsersCount}
+					seriesWins={seriesWins}
 				/>
 			) : null}
 		</ImageExportDialog>
@@ -370,7 +383,9 @@ function SetInfo({
 				</div>
 			</div>
 			<div className={styles.teamSetOpponent}>
-				<div className={styles.teamSetOpponentVs}>vs.</div>
+				<div className={styles.teamSetOpponentVs}>
+					{t("tournament:team.vs")}
+				</div>
 				<Link
 					to={tournamentTeamPage({
 						tournamentTeamId: set.opponent.id,
@@ -394,4 +409,23 @@ function SetInfo({
 			</div>
 		</div>
 	);
+}
+
+/** The current win is part of the count, but only shown when the team has no earlier title. */
+function seriesWinsForGraphic({
+	placement,
+	previousWins,
+	currentWin,
+}: {
+	placement?: number;
+	previousWins?: TournamentRunGraphicSeriesWin[] | null;
+	currentWin: TournamentRunGraphicSeriesWin;
+}) {
+	if (placement !== 1 || !previousWins) return;
+
+	return {
+		totalCount: previousWins.length + 1,
+		first: previousWins[0] ?? currentWin,
+		latest: previousWins.length > 1 ? previousWins.at(-1) : undefined,
+	};
 }

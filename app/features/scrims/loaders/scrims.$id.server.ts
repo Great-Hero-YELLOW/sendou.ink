@@ -1,9 +1,8 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { chatAccessible } from "~/features/chat/chat-utils";
+import type { RouteChatRoom } from "~/features/chat/chat-types";
 import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
-import { databaseTimestampToDate } from "~/utils/dates";
 import { notFoundIfNullish } from "../../../utils/remix.server";
 import {
 	type AuthenticatedUser,
@@ -54,15 +53,11 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			include: { friendCode: true },
 		})),
 		post,
-		chatCode:
-			(user.roles.includes("STAFF") || participantIds.includes(user.id)) &&
-			chatAccessible({
-				isStaff: user.roles.includes("STAFF"),
-				expiresAfterDays: 1,
-				comparedTo: databaseTimestampToDate(Scrim.getStartTime(post)),
-			})
-				? post.chatCode
-				: undefined,
+		// staff observers chat alongside the participants
+		chatRooms: (post.chatRoomId !== null &&
+		(participantIds.includes(user.id) || user.roles.includes("STAFF"))
+			? [{ roomId: post.chatRoomId, autoOpen: true }]
+			: []) satisfies RouteChatRoom[],
 		anyUserPrefersNoScreen,
 		mapByMap,
 	};
@@ -83,7 +78,11 @@ async function resolveMapByMap({
 	const pool = mapLists.length > 0 ? ScrimMapByMap.unionPool(mapLists) : null;
 	const currentMap = maps.find((m) => m.reportedAt === null) ?? null;
 	const viewerSide = Scrim.sideOfUser(post, user.id);
-	const locked = Scrim.isTrackingLocked(maps, mapLists);
+	const locked = Scrim.isTrackingLocked({
+		startTime: Scrim.getStartTime(post),
+		maps,
+		mapLists,
+	});
 
 	const ownList = viewerSide
 		? mapLists.find((l) => l.side === viewerSide)

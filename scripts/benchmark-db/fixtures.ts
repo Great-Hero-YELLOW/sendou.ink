@@ -1,14 +1,17 @@
-import { sub } from "date-fns";
+import { addWeeks, sub } from "date-fns";
 import { sql } from "kysely";
 import { db } from "~/db/sql";
 import type { Tables } from "~/db/tables";
+import * as Availability from "~/features/availability/core/Availability";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
+import type { ChatRoomType } from "~/features/chat/chat-types";
 import type { SkillTeamIdentifier } from "~/features/mmr/mmr-utils";
 import type {
 	MainWeaponId,
 	ModeShort,
 	StageId,
 } from "~/modules/in-game-lists/types";
-import { databaseTimestampToDate } from "~/utils/dates";
+import { databaseTimestampNow, databaseTimestampToDate } from "~/utils/dates";
 import { logger } from "~/utils/logger";
 
 export interface Fixtures {
@@ -41,10 +44,30 @@ export interface Fixtures {
 	recentTournamentIds: number[] | null;
 	heavyTeam: { id: number; customUrl: string; memberUserId: number } | null;
 	heavyCalendarEventId: number | null;
+	/** Chat room with the most messages. Null until the prod copy has chat data (`pnpm run bench:db:seed-chat`). */
+	heavyChatRoomId: number | null;
+	/** Newest chat message. Null until the prod copy has chat data. */
+	heavyChatMessageId: number | null;
+	/** The two users the chat room list is heaviest for; the open-room lookup and the fan-out over the result peak on different ones. */
+	heavyChatUsers: {
+		/** In the most open rooms, so the room list fans out the widest. */
+		busiest: { id: number; openRoomIds: number[] };
+		/** The most membership rows, which is what the open-room lookup walks. */
+		mostConnectedId: number;
+	} | null;
+	/** Open rooms per type, as many as one resolve pass batches. Types with no open room are left out. */
+	openChatRoomIdsByType: Partial<Record<ChatRoomType, number[]>> | null;
 	resultsEventId: number | null;
 	calendarAuthorId: number | null;
 	calendarWindow: { startTime: Date; endTime: Date } | null;
 	scrimWindow: { startTime: Date; endTime: Date } | null;
+	/** The horizon availability reads cover: the current week's start, and the current-plus-next week as a range. */
+	availabilityWindow: {
+		weekStartsAt: number;
+		startsAt: number;
+		endsAt: number;
+	} | null;
+	teamEventId: number | null;
 	heavyScrimPostId: number | null;
 	scrimUserIds: number[] | null;
 	heavyOrg: {
@@ -72,6 +95,7 @@ export interface Fixtures {
 		wins: { trophyId: number; userId: number };
 	} | null;
 	manyUserIds: number[] | null;
+	manyTournamentTeamIds: number[] | null;
 	notification: { userId: number; type: Tables["Notification"]["type"] } | null;
 	heavyAssociation: {
 		id: number;
@@ -113,10 +137,8 @@ export interface Fixtures {
 }
 
 /**
- * Resolves "worst-case" benchmark arguments by sampling the heaviest rows from
- * the database (user with most tournament results, tournament with most teams
- * and so on). Fields resolve to null when the source table is empty which
- * causes the dependent benchmark cases to be skipped.
+ * Resolves worst-case benchmark arguments by sampling the heaviest rows (user with most
+ * results, tournament with most teams...). Fields resolve to null when the source table is empty, skipping their cases.
  */
 export async function resolveFixtures(): Promise<Fixtures> {
 	const heavyUser = await resolveHeavyUser();
@@ -150,10 +172,16 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		recentTournamentIds: await resolveRecentTournamentIds(),
 		heavyTeam: await resolveHeavyTeam(),
 		heavyCalendarEventId: await resolveHeavyCalendarEventId(),
+		heavyChatRoomId: await resolveHeavyChatRoomId(),
+		heavyChatMessageId: await resolveHeavyChatMessageId(),
+		heavyChatUsers: await resolveHeavyChatUsers(),
+		openChatRoomIdsByType: await resolveOpenChatRoomIdsByType(),
 		resultsEventId: await resolveResultsEventId(),
 		calendarAuthorId: await resolveCalendarAuthorId(),
 		calendarWindow: await resolveCalendarWindow(),
 		scrimWindow: await resolveScrimWindow(),
+		availabilityWindow: resolveAvailabilityWindow(),
+		teamEventId: await resolveTeamEventId(),
 		heavyScrimPostId,
 		scrimUserIds: await resolveScrimUserIds(heavyScrimPostId, heavyUser),
 		heavyOrg: await resolveHeavyOrg(),
@@ -168,6 +196,8 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		badgeManagerUserId: await resolveBadgeManagerUserId(),
 		trophy: await resolveTrophy(),
 		manyUserIds: await resolveManyUserIds(heavyTournamentId),
+		manyTournamentTeamIds:
+			await resolveManyTournamentTeamIds(heavyTournamentId),
 		notification: await resolveNotification(),
 		heavyAssociation: await resolveHeavyAssociation(),
 		lfgAuthorId: await resolveLfgAuthorId(),
@@ -593,6 +623,164 @@ async function resolveCalendarAuthorId() {
 		.executeTakeFirst();
 
 	return row?.authorId ?? null;
+}
+
+async function resolveHeavyChatRoomId() {
+	const row = await db
+		.selectFrom("ChatMessage")
+		.select(({ fn }) => ["roomId", fn.countAll<number>().as("count")])
+		.groupBy("roomId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.roomId ?? null;
+}
+
+/** As many rooms of one type as a single resolve pass batches together. */
+const CHAT_ROOM_BATCH_SIZE = 25;
+
+/**
+ * The two users the open-room lookup is worst for. Tournament match rooms are
+ * left out of the search: their participants hang off the JSON opponent ids,
+ * which no index covers, so counting them would mean a scan per open room.
+ */
+async function resolveHeavyChatUsers() {
+	const openRooms = () =>
+		db
+			.selectFrom("ChatRoom")
+			.where("ChatRoom.closedAt", "is", null)
+			.where("ChatRoom.expiresAt", ">", databaseTimestampNow());
+
+	const participations = await Promise.all([
+		openRooms()
+			.innerJoin("Group", "Group.chatRoomId", "ChatRoom.id")
+			.innerJoin("GroupMember", "GroupMember.groupId", "Group.id")
+			.select("GroupMember.userId")
+			.execute(),
+		openRooms()
+			.innerJoin("GroupMatch", "GroupMatch.chatRoomId", "ChatRoom.id")
+			.innerJoin("GroupMember", (join) =>
+				join.on((eb) =>
+					eb.or([
+						eb("GroupMember.groupId", "=", eb.ref("GroupMatch.alphaGroupId")),
+						eb("GroupMember.groupId", "=", eb.ref("GroupMatch.bravoGroupId")),
+					]),
+				),
+			)
+			.select("GroupMember.userId")
+			.execute(),
+		openRooms()
+			.innerJoin("TournamentTeam", "TournamentTeam.chatRoomId", "ChatRoom.id")
+			.innerJoin(
+				"TournamentTeamMember",
+				"TournamentTeamMember.tournamentTeamId",
+				"TournamentTeam.id",
+			)
+			.select("TournamentTeamMember.userId")
+			.execute(),
+		openRooms()
+			.innerJoin("ScrimPost", "ScrimPost.chatRoomId", "ChatRoom.id")
+			.innerJoin("ScrimPostUser", "ScrimPostUser.scrimPostId", "ScrimPost.id")
+			.select("ScrimPostUser.userId")
+			.execute(),
+	]);
+
+	const roomCountByUserId = new Map<number, number>();
+	for (const row of participations.flat()) {
+		roomCountByUserId.set(
+			row.userId,
+			(roomCountByUserId.get(row.userId) ?? 0) + 1,
+		);
+	}
+
+	let busiestUserId: number | null = null;
+	let busiestCount = 0;
+	for (const [userId, count] of roomCountByUserId) {
+		if (count > busiestCount) {
+			busiestUserId = userId;
+			busiestCount = count;
+		}
+	}
+	if (busiestUserId === null) return null;
+
+	const openRoomIds =
+		await ChatRepository.findAllOpenRoomIdsByUserId(busiestUserId);
+	if (openRoomIds.length === 0) return null;
+
+	const mostConnectedId = await resolveMostConnectedUserId();
+	if (mostConnectedId === null) return null;
+
+	return { busiest: { id: busiestUserId, openRoomIds }, mostConnectedId };
+}
+
+/** The longest membership history the open-room lookup has to walk, open rooms or not. */
+async function resolveMostConnectedUserId() {
+	const memberships = await Promise.all([
+		db.selectFrom("GroupMember").select("GroupMember.userId").execute(),
+		db
+			.selectFrom("TournamentTeamMember")
+			.select("TournamentTeamMember.userId")
+			.execute(),
+		db.selectFrom("ScrimPostUser").select("ScrimPostUser.userId").execute(),
+	]);
+
+	const countByUserId = new Map<number, number>();
+	for (const row of memberships.flat()) {
+		countByUserId.set(row.userId, (countByUserId.get(row.userId) ?? 0) + 1);
+	}
+
+	let mostConnectedId: number | null = null;
+	let mostConnectedCount = 0;
+	for (const [userId, count] of countByUserId) {
+		if (count > mostConnectedCount) {
+			mostConnectedId = userId;
+			mostConnectedCount = count;
+		}
+	}
+
+	return mostConnectedId;
+}
+
+async function resolveOpenChatRoomIdsByType() {
+	const rows = await db
+		.selectFrom("ChatRoom")
+		.select(["ChatRoom.id", "ChatRoom.type"])
+		.where("ChatRoom.closedAt", "is", null)
+		.where("ChatRoom.expiresAt", ">", databaseTimestampNow())
+		.execute();
+	if (rows.length === 0) return null;
+
+	const idsByType: Partial<Record<ChatRoomType, number[]>> = {};
+	for (const row of rows) {
+		const ids = idsByType[row.type] ?? [];
+		if (ids.length < CHAT_ROOM_BATCH_SIZE) ids.push(row.id);
+		idsByType[row.type] = ids;
+	}
+
+	return idsByType;
+}
+
+async function resolveManyTournamentTeamIds(heavyTournamentId: number | null) {
+	if (heavyTournamentId === null) return null;
+
+	const rows = await db
+		.selectFrom("TournamentTeam")
+		.select("id")
+		.where("tournamentId", "=", heavyTournamentId)
+		.limit(64)
+		.execute();
+
+	return rows.length > 0 ? rows.map((row) => row.id) : null;
+}
+
+async function resolveHeavyChatMessageId() {
+	const row = await db
+		.selectFrom("ChatMessage")
+		.select(({ fn }) => fn.max("ChatMessage.id").as("id"))
+		.executeTakeFirst();
+
+	return row?.id ?? null;
 }
 
 async function resolveCalendarWindow() {
@@ -1241,6 +1429,27 @@ async function resolveScannerIngestSendouq() {
 		atMs: latestMatch.createdAt * 1000,
 		sinceTimestamp: latestMatch.createdAt - SCANNER_INGEST_SINCE_WINDOW_SECONDS,
 	};
+}
+
+function resolveAvailabilityWindow() {
+	const current = Availability.weekRange(new Date(), "UTC");
+
+	return {
+		weekStartsAt: current.startsAt,
+		startsAt: current.startsAt,
+		endsAt: Availability.weekRange(addWeeks(new Date(), 1), "UTC").endsAt,
+	};
+}
+
+async function resolveTeamEventId() {
+	const row = await db
+		.selectFrom("TeamEvent")
+		.select("id")
+		.orderBy("startsAt", "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.id ?? null;
 }
 
 async function resolveCastedTournamentId() {

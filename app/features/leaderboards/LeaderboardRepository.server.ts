@@ -33,7 +33,7 @@ function addPowers<T extends { ordinal: number }>(entries: T[]) {
 	}));
 }
 
-/** Numbers the entries by placement. A skipped team keeps its spot in the order but takes no number, the one below it getting the number it would have had. */
+/** Numbers the entries by placement; a skipped team keeps its spot but no number, which passes to the one below. */
 function addPlacementRank<T extends { isSkipped: boolean }>(entries: T[]) {
 	let placementRank = 0;
 
@@ -121,7 +121,7 @@ export async function findTeamLeaderboardBySeason({
 	season: number;
 	onlyOneEntryPerUser: boolean;
 }) {
-	// skipping is about the season finale qualification which the all rosters leaderboard is not concerned with
+	// skipping concerns season finale qualification, not the all rosters leaderboard
 	const entries = addSkipped({
 		entries: await teamLeaderboardBySeasonQuery(season).execute(),
 		skippedIdentifiers: onlyOneEntryPerUser
@@ -315,10 +315,9 @@ function xpLeaderboardQuery(where?: {
 	mode?: RankedModeShort;
 	weaponSplId?: MainWeaponId;
 }) {
-	// walks placements from the highest power down (power-descending indexes
-	// keeping only each player's best placement, so it can
-	// stop at the 500th distinct player instead of aggregating every player's
-	// max power first
+	// walks placements from the highest power down (power-descending indexes),
+	// keeping only each player's best placement, so it can stop at the 500th
+	// distinct player instead of aggregating every player's max power first
 	return db
 		.selectFrom((eb) => {
 			let placements = eb

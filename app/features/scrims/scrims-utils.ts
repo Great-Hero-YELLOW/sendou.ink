@@ -1,7 +1,12 @@
 import { differenceInMinutes } from "date-fns";
 import * as R from "remeda";
+import { AVAILABILITY } from "~/features/availability/availability-constants";
+import type { TimeRange } from "~/features/availability/availability-types";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
-import { databaseTimestampToDate } from "~/utils/dates";
+import {
+	databaseTimestampToDate,
+	dateToDatabaseTimestamp,
+} from "~/utils/dates";
 import * as Scrim from "./core/Scrim";
 import { LUTI_DIVS } from "./scrims-constants";
 import type { LutiDiv, ScrimPost } from "./scrims-types";
@@ -54,10 +59,7 @@ export const parseLutiDiv = (div: number): LutiDiv => {
 	return String(div) as LutiDiv;
 };
 
-/**
- * Extracts the LUTI division (e.g. `"X"`, `"2"`) from a tournament name such as
- * "LUTI: Season 15 - Division 2". Returns `null` if no valid division token is found.
- */
+/** The LUTI division (e.g. `"X"`, `"2"`) of a name like "LUTI: Season 15 - Division 2", or `null`. */
 export const parseLutiDivFromName = (name: string): LutiDiv | null => {
 	const match = name.match(/\bdiv(?:ision)?\.?\s*(X|11|10|[1-9])\b/i);
 	if (!match) return null;
@@ -73,6 +75,42 @@ export const serializeLutiDiv = (div: LutiDiv): number => {
 
 	return Number(div);
 };
+
+/** Starts a request can still be made for: the post's start, the half hours inside its flexibility and its end, past ones dropped. No flexibility left offers `now` ("looking now"). */
+export function requestStarts({
+	post,
+	now,
+}: {
+	post: Pick<ScrimPost, "startsAt" | "rangeEndsAt">;
+	now: number;
+}): Array<number> {
+	const starts = post.rangeEndsAt
+		? generateTimeOptions(
+				databaseTimestampToDate(post.startsAt),
+				databaseTimestampToDate(post.rangeEndsAt),
+			).map((timestamp) => dateToDatabaseTimestamp(new Date(timestamp)))
+		: [post.startsAt];
+
+	const upcoming = starts.filter((startsAt) => startsAt >= now);
+
+	return upcoming.length > 0 ? upcoming : [now];
+}
+
+/** The whole span the scrim could take up: earliest start still on offer to the end of a scrim from the latest one. */
+export function postSpan({
+	post,
+	now,
+}: {
+	post: Pick<ScrimPost, "startsAt" | "rangeEndsAt">;
+	now: number;
+}): TimeRange {
+	const starts = requestStarts({ post, now });
+
+	return {
+		startsAt: starts[0],
+		endsAt: starts[starts.length - 1] + AVAILABILITY.SCRIM_COMMITMENT_SECONDS,
+	};
+}
 
 export function generateTimeOptions(startDate: Date, endDate: Date): number[] {
 	const timestamps = new Set<number>();

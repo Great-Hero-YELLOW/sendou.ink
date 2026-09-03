@@ -33,8 +33,7 @@ describe("findByTournamentTeamId", () => {
 	});
 
 	test("preserves stage order: matches from an earlier stage come first even when later stage has lower group numbers", async () => {
-		// the pools stage numbers its groups 1..2 while the final is group 1 of its
-		// own stage, so the team page has to order by stage before group
+		// pools are groups 1..2 while the final is group 1 of its own stage, so order by stage before group
 		const tournament = await TournamentFactory.createPlayed(
 			{
 				authorId: users.id(1),
@@ -65,5 +64,24 @@ describe("findByTournamentTeamId", () => {
 			lastPoolMatch.id,
 			finalMatch.id,
 		]);
+	});
+
+	test("resolves which side of the match the team is on", async () => {
+		const tournament = await TournamentFactory.createPlayed(
+			{ authorId: users.id(1), minMembersPerTeam: 1 },
+			{ teamRosters: [[users.id(1)], [users.id(2)]] },
+		);
+		const match = tournament.matches[0];
+
+		const [winnerSet] = await TournamentMatchRepository.findByTournamentTeamId(
+			match.winnerTeamId,
+		);
+		const [loserSet] = await TournamentMatchRepository.findByTournamentTeamId(
+			match.loserTeamId,
+		);
+
+		expect(winnerSet.teamSide).toBe(winnerSet.winnerSide);
+		expect(loserSet.teamSide).not.toBe(loserSet.winnerSide);
+		expect(winnerSet.teamSide).not.toBe(loserSet.teamSide);
 	});
 });

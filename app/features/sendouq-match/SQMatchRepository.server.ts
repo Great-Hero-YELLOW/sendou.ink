@@ -1,4 +1,4 @@
-import { startOfYear } from "date-fns";
+import { addHours, startOfYear } from "date-fns";
 import type {
 	Expression,
 	ExpressionBuilder,
@@ -10,6 +10,7 @@ import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import { MATCHES_COUNT_NEEDED_FOR_LEADERBOARD } from "~/features/leaderboards/leaderboards-constants";
 import * as Seasons from "~/features/mmr/core/Seasons";
 import {
@@ -26,7 +27,6 @@ import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import { shortNanoid } from "~/utils/id";
 import invariant from "~/utils/invariant";
 import {
 	commonUserSelect,
@@ -55,6 +55,8 @@ import * as MatchSkillRepository from "./MatchSkillRepository.server";
 import * as PlayerStatRepository from "./PlayerStatRepository.server";
 import * as ReportedWeaponRepository from "./ReportedWeaponRepository.server";
 
+const CHAT_ROOM_LIFESPAN_HOURS = 24;
+
 /** Whether a GroupMatch with the given id exists. */
 export async function exists(id: number) {
 	const row = await db
@@ -66,6 +68,40 @@ export async function exists(id: number) {
 	return Boolean(row);
 }
 
+/** Matches owning the given chat rooms, with both groups' members' user ids. */
+export async function findAllByChatRoomIds(chatRoomIds: number[]) {
+	if (chatRoomIds.length === 0) return [];
+
+	return db
+		.selectFrom("GroupMatch")
+		.select((eb) => [
+			"GroupMatch.id",
+			"GroupMatch.chatRoomId",
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMember")
+					.select("GroupMember.userId")
+					.where((inner) =>
+						inner.or([
+							inner(
+								"GroupMember.groupId",
+								"=",
+								inner.ref("GroupMatch.alphaGroupId"),
+							),
+							inner(
+								"GroupMember.groupId",
+								"=",
+								inner.ref("GroupMatch.bravoGroupId"),
+							),
+						]),
+					),
+			).as("members"),
+		])
+		.where("GroupMatch.chatRoomId", "in", chatRoomIds)
+		.$narrowType<{ chatRoomId: NotNull }>()
+		.execute();
+}
+
 export async function findById(id: number) {
 	const result = await db
 		.selectFrom("GroupMatch")
@@ -74,7 +110,7 @@ export async function findById(id: number) {
 			"GroupMatch.createdAt",
 			"GroupMatch.confirmedAt",
 			"GroupMatch.confirmedByUserId",
-			"GroupMatch.chatCode",
+			"GroupMatch.chatRoomId",
 			"GroupMatch.cancelRequestedByUserId",
 			"GroupMatch.cancelAcceptedByUserId",
 			"GroupMatch.noScreen",
@@ -209,7 +245,7 @@ function groupWithTeamAndMembers(
 			.selectFrom("Group")
 			.select(({ eb }) => [
 				"Group.id",
-				"Group.chatCode",
+				"Group.chatRoomId",
 				"Group.matchmade",
 				"Group.tierName",
 				"Group.tierIsPlus",
@@ -277,9 +313,7 @@ function groupWithTeamAndMembers(
 	);
 }
 
-/**
- * Retrieves the pages count of results for a specific user and season. Counting both SendouQ matches and ranked tournaments.
- */
+/** Page count of a user's season results, counting both SendouQ matches and ranked tournaments. */
 export async function countSeasonResultPagesByUserId({
 	userId,
 	season,
@@ -405,9 +439,8 @@ const rosterSp = sql<
 	end`;
 
 /**
- * The SP a rating change was worth, or `null` while the rating is still being calculated
- * and so has never been shown. Reads the columns
- * {@link previousRatingColumns} adds, plus `ordinal`, off the named selection.
+ * The SP a rating change was worth, or `null` while the rating is still being calculated and so
+ * has never been shown. Reads the columns {@link previousRatingColumns} adds, plus `ordinal`.
  */
 const spDiffOf = (of: "userSkill" | "rosterSkill") =>
 	sql<
@@ -417,9 +450,8 @@ const spDiffOf = (of: "userSkill" | "rosterSkill") =>
 		end`;
 
 /**
- * Season's Skill rows partitioned by `partitionBy`, each carrying the rating it replaced.
- * Rows from SendouQ sets are included and not just the tournament ones the seasons page
- * shows, because a tournament rating's predecessor is just as often a SendouQ set.
+ * Season's Skill rows partitioned by `partitionBy`, each carrying the rating it replaced. SendouQ
+ * rows are included too, since a tournament rating's predecessor is just as often a SendouQ set.
  */
 const previousRatingColumns = (
 	eb: ExpressionBuilder<DB, "Skill">,
@@ -436,9 +468,7 @@ const previousRatingColumns = (
 			.as("previousMatchesCount"),
 	] as const;
 
-/**
- * Retrieves results of given user, competitive season & page. Both SendouQ matches and ranked tournaments.
- */
+/** A page of a user's season results, both SendouQ matches and ranked tournaments. */
 export async function findSeasonResultsByUserId({
 	userId,
 	season,
@@ -760,11 +790,7 @@ export async function findCancelNominationCountsByUserIds({
 	});
 }
 
-/**
- * Creates a match between two groups. Every match made in the app comes from a
- * ready check, which is resolved as part of the same transaction; only seeds and
- * tests, which have no check to resolve, leave `readyCheckId` out.
- */
+/** Creates a match between two groups, resolving its ready check in the same transaction; only seeds and tests leave `readyCheckId` out. */
 export function insert({
 	alphaGroupId,
 	bravoGroupId,
@@ -803,12 +829,20 @@ export function insert({
 			.where("User.noScreen", "=", 1)
 			.executeTakeFirst();
 
+		const chatRoom = await ChatRepository.insertRoom(
+			{
+				type: "SQ_MATCH",
+				expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+			},
+			trx,
+		);
+
 		const match = await trx
 			.insertInto("GroupMatch")
 			.values({
 				alphaGroupId,
 				bravoGroupId,
-				chatCode: shortNanoid(),
+				chatRoomId: chatRoom.id,
 				noScreen: memberPreferringNoScreen ? 1 : 0,
 			})
 			.returningAll()
@@ -868,11 +902,7 @@ export interface MatchTiers {
 	}>;
 }
 
-/**
- * Records the tiers on the groups and members themselves, so that the match page keeps showing
- * what was held when it was played. Recomputing could not: tier thresholds are percentiles of
- * the season's live distribution and so shift as the season goes on.
- */
+/** Snapshots tiers on the groups and members: thresholds are percentiles of the live distribution, so recomputing later would show different tiers. */
 async function snapshotTiers(tiers: MatchTiers, trx: Transaction<DB>) {
 	for (const group of tiers.groups) {
 		await trx
@@ -935,14 +965,14 @@ async function validateCreatedMatch(
 	}
 }
 
-export function lockMatchWithoutSkillChange(
-	groupMatchId: number,
+export async function lockMatchWithoutSkillChange(
+	match: { id: number; chatRoomId: number | null },
 	trx?: Transaction<DB>,
 ) {
-	return (trx ?? db)
+	await (trx ?? db)
 		.insertInto("Skill")
 		.values({
-			groupMatchId,
+			groupMatchId: match.id,
 			identifier: null,
 			mu: -1,
 			season: CANCELED_MATCH_SEASON,
@@ -952,6 +982,7 @@ export function lockMatchWithoutSkillChange(
 			matchesCount: 0,
 		})
 		.execute();
+	await ChatRepository.updateRoomsInactive([match.chatRoomId], true, trx);
 }
 
 export type CancelMatchResult =
@@ -988,7 +1019,7 @@ export async function cancelMatch({
 				.execute();
 			await SQGroupRepository.setAsInactive(match.groupAlpha.id, trx);
 			await SQGroupRepository.setAsInactive(match.groupBravo.id, trx);
-			await lockMatchWithoutSkillChange(match.id, trx);
+			await lockMatchWithoutSkillChange(match, trx);
 			await trx
 				.updateTable("GroupMatch")
 				.set({ cancelRequestedByUserId: null })
@@ -1048,7 +1079,7 @@ export async function cancelMatch({
 
 	await db.transaction().execute(async (trx) => {
 		await SQGroupRepository.setAsInactive(reporterGroupId, trx);
-		await lockMatchWithoutSkillChange(match.id, trx);
+		await lockMatchWithoutSkillChange(match, trx);
 	});
 	return { status: "CANCEL_CONFIRMED", shouldRefreshCaches: true };
 }
@@ -1157,7 +1188,7 @@ export async function acceptCancelMatch({
 
 		await SQGroupRepository.setAsInactive(requesterGroupId, trx);
 		await SQGroupRepository.setAsInactive(accepterGroupId, trx);
-		await lockMatchWithoutSkillChange(match.id, trx);
+		await lockMatchWithoutSkillChange(match, trx);
 		await trx
 			.updateTable("GroupMatch")
 			.set({ cancelAcceptedByUserId: acceptedByUserId })
@@ -1525,6 +1556,7 @@ async function finalizeMatch({
 		if (isLocked || confirmedAt) return false;
 
 		if (preFinalize) await preFinalize(trx);
+		await ChatRepository.updateRoomsInactive([match.chatRoomId], true, trx);
 		await trx
 			.updateTable("GroupMatch")
 			.set({
@@ -1573,7 +1605,7 @@ function findLockState(matchId: number, trx: Transaction<DB>) {
 export function findUnfinishedMatchesCreatedBefore(cutoff: Date) {
 	return db
 		.selectFrom("GroupMatch")
-		.select(["GroupMatch.id", "GroupMatch.chatCode"])
+		.select(["GroupMatch.id", "GroupMatch.chatRoomId"])
 		.where("GroupMatch.confirmedAt", "is", null)
 		.where("GroupMatch.createdAt", "<", dateToDatabaseTimestamp(cutoff))
 		.where(({ not, exists, selectFrom }) =>
@@ -1593,11 +1625,7 @@ export type ResolveUnfinishedMatchResult =
 	| { status: "CONFIRMED" }
 	| { status: "ALREADY_LOCKED" };
 
-/**
- * Resolves a match the teams never finished: cancels it if the score is not
- * decisive, otherwise confirms the one team's report on the other's behalf.
- * Leaves `confirmedByUserId` empty as no user acted.
- */
+/** Resolves a never-finished match: cancels when the score is not decisive, else confirms the one report on the other team's behalf. `confirmedByUserId` stays empty. */
 export async function resolveUnfinishedMatch(
 	matchId: number,
 ): Promise<ResolveUnfinishedMatchResult> {
@@ -1619,7 +1647,7 @@ export async function resolveUnfinishedMatch(
 				.execute();
 			await SQGroupRepository.setAsInactive(match.groupAlpha.id, trx);
 			await SQGroupRepository.setAsInactive(match.groupBravo.id, trx);
-			await lockMatchWithoutSkillChange(match.id, trx);
+			await lockMatchWithoutSkillChange(match, trx);
 			await trx
 				.updateTable("GroupMatch")
 				.set({ cancelRequestedByUserId: null })

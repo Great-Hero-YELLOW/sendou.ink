@@ -56,6 +56,7 @@ import {
 	useTheme,
 } from "./features/theme/core/provider";
 import { getThemeSession } from "./features/theme/core/theme-session.server";
+import { timezoneMiddleware } from "./features/timezone/timezone-middleware.server";
 import { UnsavedChangesGuard } from "./form/UnsavedChangesGuard";
 import { useUserIntlPreference } from "./hooks/intl/useUserIntlPreference";
 import { useHydrated } from "./hooks/useHydrated";
@@ -79,12 +80,15 @@ import { isRevalidation, metaTags, type SerializeFrom } from "./utils/remix";
 import { requestContextMiddleware } from "./utils/request-context-middleware.server";
 import { APP_ICON_URL, pwaSplashScreenImageUrl } from "./utils/urls";
 
+const PRELOAD_TRANSLATION_TIMEOUT_MS = 3000;
+
 export const middleware: Route.MiddlewareFunction[] = [
 	redirectsMiddleware,
 	requestContextMiddleware,
 	sessionIdMiddleware,
 	userMiddleware,
 	i18nMiddleware,
+	timezoneMiddleware,
 ];
 
 import "~/styles/fonts.css";
@@ -95,10 +99,19 @@ import "~/styles/utils.css";
 import "~/styles/flags.css";
 import "nprogress/nprogress.css";
 
-// Anchor the loading bar to the header so it sits between the sidebars. Set at
-// module scope (not in an effect) so the very first navigation's NProgress.start
-// already targets the header instead of briefly rendering over the sidebar.
+// anchors the loading bar to the header (between the sidebars); at module scope so
+// even the very first navigation's NProgress.start doesn't render over the sidebar
 NProgress.configure({ parent: `#${NPROGRESS_ANCHOR_ID}` });
+
+type DevFaviconColors = { fill: string; stroke: string };
+
+// tints the favicon per local dev instance so the browser tabs of parallel
+// worktrees are told apart, matching each one's VS Code (Peacock) colors
+const DEV_FAVICON_COLORS: Record<string, DevFaviconColors | undefined> = {
+	yellow: { fill: "#eae4c8", stroke: "#dcd2a3" },
+	pink: { fill: "#eac8dd", stroke: "#dca3c6" },
+	cyan: { fill: "#c8e3ea", stroke: "#a3d0dc" },
+};
 
 export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
 	if (isMatchResultsScopedRevalidation(args)) return false;
@@ -160,6 +173,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 					}
 				: undefined,
 			customTheme: isSupporter(user) ? user?.customTheme : undefined,
+			devFaviconColors: devFaviconColors(request),
 			...layoutData,
 		},
 		{
@@ -245,6 +259,9 @@ function Document({
 					/>
 				))}
 				<ThemeHead />
+				{data?.devFaviconColors ? (
+					<DevFavicon colors={data.devFaviconColors} />
+				) : null}
 				<link rel="manifest" href="/app.webmanifest" />
 				<PWALinks />
 				<Fonts />
@@ -278,11 +295,7 @@ function Document({
 
 const ABSOLUTE_URL_REGEX = /^[a-z][a-z\d+\-.]*:/i;
 
-/**
- * Href every React Aria link (menu items, buttons, tabs) is rendered with.
- * `useHref` resolves its argument against the current route, which would turn an
- * absolute URL such as a Twitch link into a path of our own.
- */
+/** Href for React Aria links: `useHref` would resolve an absolute URL like a Twitch link into a path of our own. */
 function useExternalAwareHref(href: string) {
 	const resolved = useHref(href);
 
@@ -339,7 +352,21 @@ function useLoadingIndicator() {
 
 function usePreloadTranslation() {
 	React.useEffect(() => {
-		void generalI18next.loadNamespaces(allI18nNamespaces());
+		const loadAll = () =>
+			void generalI18next.loadNamespaces(allI18nNamespaces());
+
+		if (typeof window.requestIdleCallback !== "function") {
+			const timeoutId = window.setTimeout(
+				loadAll,
+				PRELOAD_TRANSLATION_TIMEOUT_MS,
+			);
+			return () => window.clearTimeout(timeoutId);
+		}
+
+		const idleId = window.requestIdleCallback(loadAll, {
+			timeout: PRELOAD_TRANSLATION_TIMEOUT_MS,
+		});
+		return () => window.cancelIdleCallback(idleId);
 	}, []);
 }
 
@@ -375,10 +402,6 @@ function useCustomThemeVars() {
 }
 
 export default function App() {
-	// prop drilling data instead of using useLoaderData in the child components directly because
-	// useLoaderData can't be used in CatchBoundary and layout is rendered in it as well
-	//
-	// Update 14.10.23: not sure if this still applies as the CatchBoundary is gone
 	const data = useLoaderData<RootLoaderData>();
 
 	// Move overflow:hidden from html to body to allow position: sticky and position: fixed
@@ -471,10 +494,29 @@ function HydrationTestIndicator() {
 			data-testid="hydrated"
 			data-router-idle={routerIdle ? "true" : undefined}
 			data-router-busy={routerIdle ? undefined : busy.join(" | ")}
-			// the rendered search, trailing the browser's own by a commit: only
-			// once the toast params are gone from here have the forms keyed on
-			// the location (see SendouForm) finished remounting
+			// the rendered search trails the browser's by a commit: once the toast params are
+			// gone from here the forms keyed on the location (see SendouForm) have remounted
 			data-location-search={location.search}
+		/>
+	);
+}
+
+function devFaviconColors(request: Request) {
+	if (process.env.NODE_ENV !== "development") return;
+
+	const [subdomain] = new URL(request.url).hostname.split(".");
+
+	return DEV_FAVICON_COLORS[subdomain];
+}
+
+function DevFavicon({ colors }: { colors: DevFaviconColors }) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="8" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="4" /></svg>`;
+
+	return (
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href={`data:image/svg+xml,${encodeURIComponent(svg)}`}
 		/>
 	);
 }

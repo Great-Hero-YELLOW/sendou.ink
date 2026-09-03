@@ -11,6 +11,7 @@ import type { MetaFunction } from "react-router";
 import { useLoaderData } from "react-router";
 import { Ability } from "~/components/Ability";
 import { BuildCard } from "~/components/BuildCard";
+import { EmptyState } from "~/components/EmptyState";
 import { LinkButton, SendouButton } from "~/components/elements/Button";
 import { FilterBar } from "~/components/filter-bar/FilterBar";
 import { ModeImage } from "~/components/Image";
@@ -22,7 +23,7 @@ import { modesShort } from "~/modules/in-game-lists/modes";
 import type { Ability as AbilityType } from "~/modules/in-game-lists/types";
 import { useSearchParamsTyped } from "~/modules/search-params/hooks";
 import { dateToYYYYMMDD, isValidDate } from "~/utils/dates";
-import { metaTags, type SerializeFrom } from "~/utils/remix";
+import { metaTags, ogPageImage, type SerializeFrom } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import {
 	BUILDS_PAGE,
@@ -56,6 +57,7 @@ export const meta: MetaFunction<typeof loader> = (args) => {
 		title: `${args.loaderData.weaponName} builds`,
 		ogTitle: `${args.loaderData.weaponName} Splatoon 3 builds`,
 		description: `Collection of ${args.loaderData.weaponName} builds from the top competitive players. Find the best combination of abilities and level up your gameplay.`,
+		image: ogPageImage("builds"),
 		location: args.location,
 	});
 };
@@ -113,6 +115,9 @@ export default function WeaponsBuildsPage() {
 			date,
 		});
 
+	const hasFilters =
+		abilityConditions.length > 0 || mode !== null || date !== null;
+
 	return (
 		<Main className="stack lg">
 			<div className={styles.buildsButtons}>
@@ -136,7 +141,15 @@ export default function WeaponsBuildsPage() {
 					</LinkButton>
 				</div>
 			</div>
-			<BuildCards data={data} />
+			{data.builds.length > 0 ? (
+				<BuildCards data={data} />
+			) : (
+				<EmptyState navItem="builds">
+					{hasFilters
+						? t("builds:noBuildsMatchingFilters")
+						: t("builds:noBuildsForWeapon")}
+				</EmptyState>
+			)}
 			{data.limit < BUILDS_PAGE_MAX_BUILDS && data.hasMoreBuilds ? (
 				<LinkButton
 					className="m-0-auto"

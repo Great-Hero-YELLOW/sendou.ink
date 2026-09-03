@@ -21,8 +21,7 @@ import type { SeededTeams } from "./teams";
 import type { SeededTrophies } from "./trophies";
 import type { SeededUsers } from "./users";
 
-/** Series the played-out tournaments of the past are named off. The four the seed
- * puts in a state worth opening are named off a series of their own. */
+/** Series the past tournaments are named off; the four in a state worth opening have series of their own. */
 const TOURNAMENT_NAME_STEMS = [
 	{ name: "PICNIC", avatarFileName: "picnic.png" },
 	{ name: "The Depths", avatarFileName: "the-depths.png" },
@@ -32,8 +31,7 @@ const TOURNAMENT_NAME_STEMS = [
 const HISTORICAL_COUNT = 5;
 /** Showcase users seeded into every played tournament, so their results paginate. */
 const CORE_PLAYER_COUNT = 8;
-/** Share of a tournament's teams that register as one of the site's teams, the rest
- * being pickups put together for the tournament. */
+/** Share of teams registering as one of the site's teams, the rest being pickups. */
 const REGISTERED_TEAM_SHARE = 0.4;
 /** Solo players looking for a team in a tournament whose registration has closed. */
 const SUB_COUNT = 7;
@@ -121,7 +119,13 @@ const SWISS_TO_SINGLE_ELIMINATION: Progression = [
 
 export type SeededTournaments = {
 	/** The one with registration still open, which the notifications are about. */
-	regOpen: { id: number; name: string };
+	regOpen: {
+		id: number;
+		name: string;
+		startsAt: number;
+		/** The roster the admin registered on. */
+		memberUserIds: number[];
+	};
 	/** Teams N-ZAP played on in the tournaments that were played to the end. */
 	nzapTeamIds: number[];
 };
@@ -145,6 +149,7 @@ export async function seedTournaments({
 		users,
 		organizations,
 		rosters,
+		teams,
 		trophies,
 	});
 	await seedPaddlingPool({ users, organizations, rosters });
@@ -168,22 +173,26 @@ type Ctx = {
 	rosters: ReturnType<typeof rosterBuilder>;
 };
 
-/** #1 double elim, TO maps — reg open and a couple of days out, so it has both
- * registered teams (some of them still short of a full roster) and LFG teams. */
+/**
+ * #1 double elim, TO maps — reg open, a couple of days out: registered teams (some short of a full roster)
+ * and LFG teams. The admin's Alliance Rogue roster mixes every availability state the panel can show.
+ */
 async function seedInTheZone({
 	users,
 	organizations,
 	rosters,
+	teams,
 	trophies,
-}: Ctx & { trophies: SeededTrophies }) {
+}: Ctx & { teams: SeededTeams; trophies: SeededTrophies }) {
 	const name = nameFor("In The Zone");
+	const startsAt = dateToDatabaseTimestamp(daysFromNow(2));
 
 	const tournament = await TournamentFactory.create({
 		name,
 		authorId: users.adminId,
 		organizationId: organizations[0]?.id,
 		avatarFileName: "in-the-zone.png",
-		startTimes: [dateToDatabaseTimestamp(daysFromNow(2))],
+		startTimes: [startsAt],
 		mapPickingStyle: "TO",
 		mapPoolMaps: toSetMapPool(),
 		bracketProgression: DOUBLE_ELIMINATION,
@@ -191,10 +200,27 @@ async function seedInTheZone({
 		trophyId: trophies.ids[0],
 	});
 
+	// in roster order: admin and multiRange fully available, weekend free from an hour in, unavailable
+	// submitted an empty week, the captain (N-ZAP) reports nothing
+	const [, multiRangeId, , unavailableId, weekendId] =
+		teams.allianceRogue.playerUserIds;
+	const allianceRogueRoster: Roster = {
+		teamId: teams.allianceRogueId,
+		name: teams.squads.find((squad) => squad.teamId === teams.allianceRogueId)!
+			.name,
+		memberUserIds: [
+			users.adminId,
+			multiRangeId,
+			weekendId,
+			unavailableId,
+			users.nzapId,
+		],
+	};
+
 	const teamRosters = rosters.take({
 		teamCount: 10,
 		teamSize: 4,
-		pinned: [{ teamIdx: 0, userId: users.adminId }],
+		preset: [allianceRogueRoster],
 	});
 
 	for (const [i, roster] of teamRosters.entries()) {
@@ -210,12 +236,15 @@ async function seedInTheZone({
 
 	await seedTournamentExtras(tournament.id, users);
 
-	return { id: tournament.id, name };
+	return {
+		id: tournament.id,
+		name,
+		startsAt,
+		memberUserIds: teamRosters[0].memberUserIds,
+	};
 }
 
-/** #2 double elim with an underground bracket, AUTO_SZ, ranked — bracket started,
- * not a single set reported yet. N-ZAP is seeded past the byes of the first round,
- * so he has a match of his own going on. */
+/** #2 double elim + underground, AUTO_SZ, ranked — started, nothing reported. N-ZAP is seeded past the byes so he has a match going. */
 async function seedPaddlingPool({ users, rosters }: Ctx) {
 	const tournament = await TournamentFactory.create({
 		name: nameFor("Paddling Pool"),
@@ -272,8 +301,7 @@ async function seedLowInk({ users, rosters }: Ctx) {
 	await TournamentFactory.playOut(tournament.id, 0);
 }
 
-/** #4 round robin → SE, TO maps — everybody checked in, first bracket not started.
- * The one upcoming tournament N-ZAP is not registered in, so it is his saved one. */
+/** #4 round robin → SE, TO maps — everybody checked in, not started. N-ZAP isn't registered, so it is his saved one. */
 async function seedSwimOrSink({ users, rosters }: Ctx) {
 	const tournament = await TournamentFactory.create({
 		name: nameFor("Swim or Sink"),
@@ -343,8 +371,7 @@ async function seedHistoricalTournaments({
 			{ tier: ((i % 3) + 1) as TournamentTierNumber },
 		);
 
-		// on the top seed of the first one, so that a win of his is finalized, and
-		// further down another, so his result list is not all first places
+		// top seed of the first (a finalized win), further down in another so his results aren't all firsts
 		const nzapRosterIdx = i === 0 ? 0 : i === 2 ? 5 : null;
 
 		const teamRosters = rosters.take({
@@ -374,8 +401,7 @@ async function seedHistoricalTournaments({
 	return nzapTeamIds;
 }
 
-/** Every edition of a series shares the one logo image of it, an image row not being
- * allowed the url of another. */
+/** Editions of a series share one logo image, an image row not being allowed the url of another. */
 async function seriesLogoImgId(
 	imgIds: Map<string, number>,
 	stem: (typeof TOURNAMENT_NAME_STEMS)[number],
@@ -393,9 +419,7 @@ async function seriesLogoImgId(
 	return image.id;
 }
 
-/** Solo players looking to sub in a tournament whose registration has closed, the
- * admin among them so that the state of having posted is one of the two profiles'.
- * Drawn from the tail of the crowd, which no tournament roster reaches. */
+/** Subs for a closed-registration tournament, the admin among them. Drawn from the tail of the crowd no roster reaches. */
 async function seedSubs(tournamentId: number, users: SeededUsers) {
 	const userIds = [
 		users.adminId,
@@ -417,7 +441,8 @@ async function seedTournamentExtras(tournamentId: number, users: SeededUsers) {
 		await TournamentStreamerFactory.create({ tournamentId, twitchAccount });
 	}
 
-	const lfgUserIds = [users.nzapId, ...users.showcaseIds.slice(90, 95)];
+	// not N-ZAP: he registers with Alliance Rogue and a player can't both be on a team and look for one
+	const lfgUserIds = users.showcaseIds.slice(90, 96);
 
 	const lfgTeamIds: number[] = [];
 	for (const [i, userId] of lfgUserIds.entries()) {
@@ -471,20 +496,25 @@ function rosterBuilder(users: SeededUsers, teams: SeededTeams) {
 	];
 
 	return {
-		/** Rosters for one tournament: some of the site's teams registering as
-		 * themselves, core players spread over the rest, and the remaining seats drawn
-		 * without replacement within the tournament. A `pinned` user is added to a
-		 * roster of their own as its owner, and kept out of everybody else's. */
+		/**
+		 * Some site teams register as themselves, core players spread over the rest, remaining seats drawn without
+		 * replacement. A `pinned` user owns a roster of their own; a `preset` roster takes the first slots as given.
+		 */
 		take({
 			teamCount,
 			teamSize,
 			pinned = [],
+			preset = [],
 		}: {
 			teamCount: number;
 			teamSize: number;
 			pinned?: Array<{ teamIdx: number; userId: number }>;
+			preset?: Roster[];
 		}): Roster[] {
-			const pinnedUserIds = new Set(pinned.map((pin) => pin.userId));
+			const pinnedUserIds = new Set([
+				...pinned.map((pin) => pin.userId),
+				...preset.flatMap((roster) => roster.memberUserIds),
+			]);
 			const registering = faker.helpers
 				.shuffle(
 					teams.squads.filter((squad) =>
@@ -494,7 +524,10 @@ function rosterBuilder(users: SeededUsers, teams: SeededTeams) {
 				.slice(0, Math.round(teamCount * REGISTERED_TEAM_SHARE));
 
 			// a tournament can not have two teams of the same name
-			const takenNames = new Set(registering.map((squad) => squad.name));
+			const takenNames = new Set([
+				...registering.map((squad) => squad.name),
+				...preset.map((roster) => roster.name),
+			]);
 
 			const takenUserIds = new Set([
 				...pinnedUserIds,
@@ -505,13 +538,15 @@ function rosterBuilder(users: SeededUsers, teams: SeededTeams) {
 			const shuffled = faker.helpers.shuffle(pool.filter(isFree));
 			const freeCorePlayers = corePlayers.filter(isFree);
 
-			// the teams of the site take the first team slots a pin does not want
+			// site teams take the first slots a preset or a pin does not want
 			const pinnedIdxs = new Set(pinned.map((pin) => pin.teamIdx));
 			const registeringIdxs = Array.from({ length: teamCount }, (_, i) => i)
-				.filter((i) => !pinnedIdxs.has(i))
+				.filter((i) => !pinnedIdxs.has(i) && i >= preset.length)
 				.slice(0, registering.length);
 
 			return Array.from({ length: teamCount }, (_, i) => {
+				if (i < preset.length) return preset[i];
+
 				const registeringIdx = registeringIdxs.indexOf(i);
 				if (registeringIdx !== -1) {
 					const squad = registering[registeringIdx];

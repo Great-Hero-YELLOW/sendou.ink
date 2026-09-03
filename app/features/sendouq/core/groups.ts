@@ -3,9 +3,7 @@ import { databaseTimestampToDate } from "~/utils/dates";
 import type { GroupExpiryStatus } from "../q-types";
 import type { SQGroup } from "./SendouQ.server";
 
-// logic is that team who is bigger decides the settings
-// but if groups are the same size then the one who liked
-// is basically consenting that other team's setting are used
+/** Whose settings two morphing groups keep: the bigger group's, or at equal size the liked group's. */
 export function groupAfterMorph({
 	ourGroup,
 	theirGroup,
@@ -40,10 +38,7 @@ export function isInLookingPool(group: {
 	return group.status === "ACTIVE" && !group.matchId;
 }
 
-/**
- * Whether the group's members can suggest other groups to each other. A suggestion
- * is a pointer for teammates, so a solo group has no one to point at anything.
- */
+/** Whether members can suggest groups to each other; a solo group has no one to point at anything. */
 export function canSuggest(group: { members: unknown[] }) {
 	return group.members.length > 1;
 }

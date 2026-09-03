@@ -13,11 +13,10 @@ import { refreshStreamsCache } from "~/features/sendouq-streams/core/streams.ser
 import { databaseTimestampToDate } from "~/utils/dates";
 import {
 	SENDOUQ,
-	SENDOUQ_LOOKING_ROOM,
-	sqGroupWebsocketRoom,
+	SENDOUQ_LOOKING_CHANNEL,
+	sqGroupChannel,
 } from "../q-constants";
 import { resolveFutureMatchModes } from "../q-utils";
-import { setGroupChatMetadata, setMatchChatMetadata } from "../q-utils.server";
 import { refreshSendouQInstance, SendouQ } from "./SendouQ.server";
 
 export type ReadyCheck = NonNullable<
@@ -26,7 +25,7 @@ export type ReadyCheck = NonNullable<
 
 type ReadyCheckGroup = {
 	id: number;
-	chatCode: string | null;
+	chatRoomId: number | null;
 	members: Array<{ id: number }>;
 };
 
@@ -43,11 +42,7 @@ export function hasExpired(readyCheck: { createdAt: number }) {
 	return expiresAt(readyCheck) <= new Date();
 }
 
-/**
- * Starts a ready check between two groups that matched up. Both leave the
- * looking pool while their members confirm they are ready to play. The user
- * starting it counts as ready right away.
- */
+/** Starts a ready check between two matched groups; both leave the looking pool while members confirm. The starter counts as ready right away. */
 export async function start({
 	ownGroup,
 	theirGroup,
@@ -65,34 +60,18 @@ export async function start({
 
 	await refreshSendouQInstance();
 
-	// extend the group chat rooms' expiry so they last through the match
-	for (const group of [ownGroup, theirGroup]) {
-		if (group.chatCode) {
-			setGroupChatMetadata({
-				chatCode: group.chatCode,
-				members: group.members,
-			});
-		}
-	}
-
-	// Both groups revalidate (→ sent to the ready check by their looking loader)
-	// and play the ready check sound. Sent to the groups' topics so it reaches
-	// every member reliably, not just live chat participants.
+	// both groups revalidate (→ sent to the ready check by their looking loader) and play
+	// the sound; sent to the groups' topics so it reaches every member, not just chat participants
 	ChatSystemMessage.send([
 		{
-			room: sqGroupWebsocketRoom(ownGroup.id),
+			channel: sqGroupChannel(ownGroup.id),
 			type: "READY_CHECK_STARTED",
-			revalidateOnly: true,
 		},
 		{
-			room: sqGroupWebsocketRoom(theirGroup.id),
+			channel: sqGroupChannel(theirGroup.id),
 			type: "READY_CHECK_STARTED",
-			revalidateOnly: true,
 		},
-		{
-			room: SENDOUQ_LOOKING_ROOM,
-			revalidateOnly: true,
-		},
+		{ channel: SENDOUQ_LOOKING_CHANNEL },
 	]);
 
 	notify({
@@ -107,11 +86,7 @@ export async function start({
 	});
 }
 
-/**
- * Records the user as ready to play. Once everyone from both groups has, the
- * match is created.
- * @returns Id of the created match, or `null` if others are still to confirm or the ready check already ended
- */
+/** Records the user as ready; once everyone from both groups is, the match is created. @returns its id, or `null` if others are still to confirm or the check already ended */
 export async function confirm({
 	readyCheck,
 	userId,
@@ -147,11 +122,7 @@ export async function confirm({
 	return createMatch({ readyCheck, actorUserId: userId });
 }
 
-/**
- * Ends a ready check that ran out of time. Both groups go back to looking with
- * their challenges gone, and the members who never confirmed are marked as
- * having missed it so the rest of their group can kick them.
- */
+/** Ends a timed-out ready check: both groups go back to looking with challenges gone, and unconfirmed members are marked as having missed it so the rest can kick them. */
 export async function expire(readyCheck: {
 	id: number;
 	alphaGroupId: number;
@@ -161,10 +132,7 @@ export async function expire(readyCheck: {
 	await endReadyCheck(readyCheck, { markMissedMembers: true });
 }
 
-/**
- * Ends a ready check that can no longer result in a match. Both groups go back to
- * looking with nobody marked as having missed the check, as nobody is at fault.
- */
+/** Ends a ready check that can no longer result in a match; both groups go back to looking with nobody marked as having missed it. */
 export async function abort(readyCheck: {
 	id: number;
 	alphaGroupId: number;
@@ -198,10 +166,7 @@ async function endReadyCheck(
 
 	revalidateGroups(readyCheck);
 	// both groups return to the looking pool, so its shape changed for everyone
-	ChatSystemMessage.send({
-		room: SENDOUQ_LOOKING_ROOM,
-		revalidateOnly: true,
-	});
+	ChatSystemMessage.send({ channel: SENDOUQ_LOOKING_CHANNEL });
 }
 
 async function createMatch({
@@ -245,29 +210,16 @@ async function createMatch({
 	await refreshSendouQInstance();
 	refreshStreamsCache();
 
-	if (createdMatch.chatCode) {
-		setMatchChatMetadata({
-			id: createdMatch.id,
-			chatCode: createdMatch.chatCode,
-			participantUserIds: readyCheck.members.map((member) => member.userId),
-		});
-	}
-
 	ChatSystemMessage.send([
 		{
-			room: sqGroupWebsocketRoom(readyCheck.alphaGroupId),
+			channel: sqGroupChannel(readyCheck.alphaGroupId),
 			type: "MATCH_STARTED",
-			revalidateOnly: true,
 		},
 		{
-			room: sqGroupWebsocketRoom(readyCheck.bravoGroupId),
+			channel: sqGroupChannel(readyCheck.bravoGroupId),
 			type: "MATCH_STARTED",
-			revalidateOnly: true,
 		},
-		{
-			room: SENDOUQ_LOOKING_ROOM,
-			revalidateOnly: true,
-		},
+		{ channel: SENDOUQ_LOOKING_CHANNEL },
 	]);
 
 	notify({
@@ -295,13 +247,7 @@ function revalidateGroups(readyCheck: {
 	bravoGroupId: number;
 }) {
 	ChatSystemMessage.send([
-		{
-			room: sqGroupWebsocketRoom(readyCheck.alphaGroupId),
-			revalidateOnly: true,
-		},
-		{
-			room: sqGroupWebsocketRoom(readyCheck.bravoGroupId),
-			revalidateOnly: true,
-		},
+		{ channel: sqGroupChannel(readyCheck.alphaGroupId) },
+		{ channel: sqGroupChannel(readyCheck.bravoGroupId) },
 	]);
 }

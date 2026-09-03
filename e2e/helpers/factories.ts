@@ -35,6 +35,9 @@ export async function loadFactories(parallelIndex: number) {
 		ApiTokenFactory: await import("~/db/seed/factories/ApiTokenFactory"),
 		ArtFactory: await import("~/db/seed/factories/ArtFactory"),
 		AssociationFactory: await import("~/db/seed/factories/AssociationFactory"),
+		AvailabilityWeekFactory: await import(
+			"~/db/seed/factories/AvailabilityWeekFactory"
+		),
 		BadgeFactory: await import("~/db/seed/factories/BadgeFactory"),
 		BuildFactory: await import("~/db/seed/factories/BuildFactory"),
 		CalendarEventFactory: await import(
@@ -80,6 +83,7 @@ export async function loadFactories(parallelIndex: number) {
 		SQReportedWeaponFactory: await import(
 			"~/db/seed/factories/SQReportedWeaponFactory"
 		),
+		TeamEventFactory: await import("~/db/seed/factories/TeamEventFactory"),
 		TeamFactory: await import("~/db/seed/factories/TeamFactory"),
 		TournamentFactory: await import("~/db/seed/factories/TournamentFactory"),
 		TournamentLFGTeamFactory: await import(
@@ -108,9 +112,8 @@ export async function loadFactories(parallelIndex: number) {
 }
 
 /**
- * Brings the worker's database to the state every test starts from: empty except
- * for the anchor users whose ids production permission logic keys off, with the
- * server's caches flushed. Runs as an auto-use fixture, tests do not call it.
+ * Resets the worker's database to the state every test starts from: empty except for the anchor
+ * users whose ids permission logic keys off, caches flushed. An auto-use fixture, tests don't call it.
  */
 export async function resetForTest(page: Page, factories: Factories) {
 	const { dbReset } = await import("~/db/reset");
@@ -128,11 +131,7 @@ export async function resetForTest(page: Page, factories: Factories) {
 	await flushIfDirty(page, { resetDevOverrides: true });
 }
 
-/**
- * Refreshes the server's in-process caches if anything was written since the last
- * flush. Called by the helpers that make the browser talk to the server — tests do
- * not call it themselves.
- */
+/** Refreshes the server's caches if anything was written since the last flush. Called by the helpers, not tests. */
 export async function flushIfDirty(
 	page: Page,
 	{ resetDevOverrides = false } = {},

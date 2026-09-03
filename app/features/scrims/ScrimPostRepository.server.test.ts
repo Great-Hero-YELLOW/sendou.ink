@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 import * as ScrimPostFactory from "~/db/seed/factories/ScrimPostFactory";
 import * as TeamFactory from "~/db/seed/factories/TeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
+import { db } from "~/db/sql";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { DuplicateEntryError } from "~/utils/errors";
+import { withUserId } from "~/utils/Test";
 import * as ScrimPostRepository from "./ScrimPostRepository.server";
 
 const users = UserFactory.pool();
@@ -17,6 +19,40 @@ const WINDOW = {
 	startTime: dbTs(sub(BOOKED_AT, { hours: 1 })),
 	endTime: dbTs(add(BOOKED_AT, { hours: 1 })),
 };
+
+/**
+ * A "flexible time" post whose window opened `windowOpensInMinutes` from now,
+ * booked by a request that picked a start `bookedInMinutes` from now.
+ */
+async function createBookedRangeScrim({
+	windowOpensInMinutes,
+	bookedInMinutes,
+}: {
+	windowOpensInMinutes: number;
+	bookedInMinutes: number;
+}) {
+	const now = new Date();
+	const bookedAt = add(now, { minutes: bookedInMinutes });
+
+	const { id } = await ScrimPostFactory.create(
+		{
+			startsAt: dbTs(add(now, { minutes: windowOpensInMinutes })),
+			rangeEndsAt: dbTs(add(now, { minutes: windowOpensInMinutes + 120 })),
+			users: [{ userId: users.id(1), isOwner: 1 }],
+		},
+		{
+			requests: [
+				{
+					startsAt: dbTs(bookedAt),
+					users: [{ userId: users.id(2), isOwner: 1 }],
+					isAccepted: true,
+				},
+			],
+		},
+	);
+
+	return { id, bookedAt: dbTs(bookedAt) };
+}
 
 describe("findPendingOverlapsForUsers", () => {
 	beforeEach(async () => {
@@ -249,6 +285,68 @@ describe("findUserScrims", () => {
 		expect(postOwnerScrims).toHaveLength(1);
 		expect(postOwnerScrims[0]!.status).toBe("booked");
 	});
+
+	test("lists a booked range scrim whose post window opened before the booked start", async () => {
+		const { id } = await createBookedRangeScrim({
+			windowOpensInMinutes: -30,
+			bookedInMinutes: 45,
+		});
+
+		const scrims = await ScrimPostRepository.findUserScrims(users.id(1));
+
+		expect(scrims.map((scrim) => scrim.id)).toContain(id);
+	});
+
+	test("reports the booked start of a range scrim, not the start of its window", async () => {
+		const { id, bookedAt } = await createBookedRangeScrim({
+			windowOpensInMinutes: 30,
+			bookedInMinutes: 90,
+		});
+
+		const scrims = await ScrimPostRepository.findUserScrims(users.id(2));
+		const scrim = scrims.find((scrim) => scrim.id === id);
+
+		expect(scrim?.status).toBe("booked");
+		expect(scrim?.startsAt).toBe(bookedAt);
+	});
+});
+
+describe("findAcceptedScrimsBetweenTwoTimestamps", () => {
+	beforeEach(async () => {
+		await users.create(2);
+	});
+
+	const startingWithinTheHour = async () => {
+		const now = new Date();
+
+		return ScrimPostRepository.findAcceptedScrimsBetweenTwoTimestamps({
+			startTime: now,
+			endTime: add(now, { hours: 1 }),
+			excludeRecentlyCreated: add(now, { minutes: 1 }),
+		});
+	};
+
+	test("finds a range scrim booked to start inside the window", async () => {
+		const { id } = await createBookedRangeScrim({
+			windowOpensInMinutes: -30,
+			bookedInMinutes: 45,
+		});
+
+		const scrims = await startingWithinTheHour();
+
+		expect(scrims.map((scrim) => scrim.id)).toContain(id);
+	});
+
+	test("leaves out a range scrim booked to start after the window", async () => {
+		const { id } = await createBookedRangeScrim({
+			windowOpensInMinutes: 30,
+			bookedInMinutes: 120,
+		});
+
+		const scrims = await startingWithinTheHour();
+
+		expect(scrims.map((scrim) => scrim.id)).not.toContain(id);
+	});
 });
 
 describe("insertRequest", () => {
@@ -322,5 +420,122 @@ describe("insertRequest", () => {
 
 		const otherPost = await ScrimPostRepository.findById(otherPostId);
 		expect(otherPost!.requests).toHaveLength(1);
+	});
+});
+
+describe("acceptRequest", () => {
+	beforeEach(async () => {
+		await users.create(3);
+	});
+
+	const setupPostWithRequest = async ({
+		requestStartsAt,
+	}: {
+		requestStartsAt?: Date;
+	} = {}) => {
+		const { id: postId } = await ScrimPostFactory.create({
+			startsAt: dbTs(BOOKED_AT),
+			users: [{ userId: users.id(1), isOwner: 1 }],
+		});
+		const team = await TeamFactory.create({ memberUserIds: [users.id(2)] });
+		const requestId = await ScrimPostRepository.insertRequest({
+			scrimPostId: postId,
+			teamId: team.id,
+			message: null,
+			startsAt: requestStartsAt ? dbTs(requestStartsAt) : null,
+			users: [{ userId: users.id(2), isOwner: 1 }],
+		});
+
+		return { postId, requestId };
+	};
+
+	const roomOfPost = async (postId: number) => {
+		const post = await ScrimPostRepository.findById(postId);
+		return db
+			.selectFrom("ChatRoom")
+			.selectAll()
+			.where("id", "=", post!.chatRoomId!)
+			.executeTakeFirstOrThrow();
+	};
+
+	test("creates a SCRIM chat room expiring a day after the scrim's start time", async () => {
+		const { postId, requestId } = await setupPostWithRequest();
+
+		await ScrimPostRepository.acceptRequest(requestId);
+
+		const room = await roomOfPost(postId);
+		expect(room.type).toBe("SCRIM");
+		expect(room.expiresAt).toBe(dbTs(BOOKED_AT) + 24 * 60 * 60);
+	});
+
+	test("room expiry follows the accepted request's start time when it has one", async () => {
+		const requestStartsAt = add(BOOKED_AT, { hours: 5 });
+		const { postId, requestId } = await setupPostWithRequest({
+			requestStartsAt,
+		});
+
+		await ScrimPostRepository.acceptRequest(requestId);
+
+		const room = await roomOfPost(postId);
+		expect(room.expiresAt).toBe(dbTs(requestStartsAt) + 24 * 60 * 60);
+	});
+});
+
+describe("deleteById", () => {
+	beforeEach(async () => {
+		await users.create(3);
+	});
+
+	test("deletes the scrim's chat room with the post", async () => {
+		const { id: postId } = await ScrimPostFactory.create({
+			startsAt: dbTs(BOOKED_AT),
+			users: [{ userId: users.id(1), isOwner: 1 }],
+		});
+		const team = await TeamFactory.create({ memberUserIds: [users.id(2)] });
+		const requestId = await ScrimPostRepository.insertRequest({
+			scrimPostId: postId,
+			teamId: team.id,
+			message: null,
+			startsAt: null,
+			users: [{ userId: users.id(2), isOwner: 1 }],
+		});
+		await ScrimPostRepository.acceptRequest(requestId);
+
+		await ScrimPostRepository.deleteById(postId);
+
+		const rooms = await db.selectFrom("ChatRoom").selectAll().execute();
+		expect(rooms).toHaveLength(0);
+	});
+});
+
+describe("cancelScrim", () => {
+	beforeEach(async () => {
+		await users.create(3);
+	});
+
+	test("marks the scrim's chat room inactive", async () => {
+		const { id: postId } = await ScrimPostFactory.create({
+			startsAt: dbTs(BOOKED_AT),
+			users: [{ userId: users.id(1), isOwner: 1 }],
+		});
+		const team = await TeamFactory.create({ memberUserIds: [users.id(2)] });
+		const requestId = await ScrimPostRepository.insertRequest({
+			scrimPostId: postId,
+			teamId: team.id,
+			message: null,
+			startsAt: null,
+			users: [{ userId: users.id(2), isOwner: 1 }],
+		});
+		await ScrimPostRepository.acceptRequest(requestId);
+
+		await withUserId(users.id(1), () =>
+			ScrimPostRepository.cancelScrim(postId, "Can't make it"),
+		);
+
+		const room = await db
+			.selectFrom("ChatRoom")
+			.selectAll()
+			.executeTakeFirstOrThrow();
+		expect(room.inactive).toBe(1);
 	});
 });

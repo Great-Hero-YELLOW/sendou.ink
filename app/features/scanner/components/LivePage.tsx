@@ -65,21 +65,15 @@ import { thumbnailFromBlob } from "./thumbnail";
 const SAMPLE_FPS = 2;
 
 /**
- * A slow parse (a browsed battle-log entry, a CJK splash-tag name) can
- * occupy the worker for seconds to tens of seconds; buffering the frames
- * sampled meanwhile (analyzed late, VoD-style) keeps what happened during
- * the stall from being missed. 24 frames hold ~12s at full density; past
- * that the backlog is decimated toward even spacing over the whole stall
- * (worker/frame-queue.ts) instead of dropping its oldest frames, so a
- * results screen mid-stall survives as a few frames.
+ * A slow parse (a browsed battle-log entry, a CJK splash-tag name) can occupy
+ * the worker for seconds to tens of seconds; buffering the frames sampled
+ * meanwhile keeps the stall from being missed. 24 frames hold ~12s at full
+ * density; past that the backlog is decimated toward even spacing over the
+ * stall (worker/frame-queue.ts) so a results screen mid-stall survives.
  */
 const FRAME_QUEUE_LIMIT = 24;
 
-/**
- * How often a running capture rechecks whether a match sendou.ink could not
- * link yet is due for another attempt (the backoff itself lives in
- * sendou-ingest.ts).
- */
+/** How often a running capture rechecks unlinked matches for a retry (backoff in sendou-ingest.ts). */
 const UNLINKED_RETRY_TICK_MS = 15_000;
 
 /** The scan knows the on-screen sides only, not who is playing. */
@@ -127,29 +121,49 @@ export function LivePage({
 	const [liveSend, setLiveSend] = useState(false);
 	const liveSendRef = useRef(false);
 	const sendingRef = useRef(false);
+	const pendingSendsRef = useRef<
+		Array<(built: BuiltMatch<StoredEvent>) => boolean>
+	>([]);
 
+	// every saved event asks for a refresh, ~2-3 a second during a match; requests
+	// landing while one runs coalesce into a single trailing pass
+	const refreshStateRef = useRef({ running: false, queued: false });
 	const refreshFeed = useCallback(() => {
+		const state = refreshStateRef.current;
+		if (state.running) {
+			state.queued = true;
+			return;
+		}
+		state.running = true;
 		void (async () => {
-			const events = await listEvents();
-			// objective reads grouped into a known non-SZ match slipped past the
-			// live block (e.g. the mode read arrived after them) — delete them
-			const invalid = new Set(
-				invalidObjectiveEvents(buildScannerMatches(events)),
-			);
-			if (invalid.size > 0) {
-				await deleteEvents(
-					[...invalid]
-						.map((event) => event.id)
-						.filter((id): id is number => id !== undefined),
-				);
+			try {
+				do {
+					state.queued = false;
+					const events = await listEvents();
+					// objective reads grouped into a known non-SZ match slipped past the live
+					// block (e.g. the mode read arrived after them) — delete them
+					const invalid = new Set(
+						invalidObjectiveEvents(buildScannerMatches(events)),
+					);
+					if (invalid.size > 0) {
+						await deleteEvents(
+							[...invalid]
+								.map((event) => event.id)
+								.filter((id): id is number => id !== undefined),
+						);
+					}
+					setFeed(
+						events
+							.filter((event) => !invalid.has(event))
+							.sort(
+								(a, b) =>
+									b.detectedAt - a.detectedAt || (b.id ?? 0) - (a.id ?? 0),
+							),
+					);
+				} while (state.queued);
+			} finally {
+				state.running = false;
 			}
-			setFeed(
-				events
-					.filter((event) => !invalid.has(event))
-					.sort(
-						(a, b) => b.detectedAt - a.detectedAt || (b.id ?? 0) - (a.id ?? 0),
-					),
-			);
 		})();
 	}, []);
 
@@ -162,23 +176,37 @@ export function LivePage({
 		};
 	}, [refreshFeed]);
 
-	/** Sends the matches `include` selects; serialized so sends never overlap. */
+	/** Sends the matches `include` selects; serialized so sends never overlap (a send requested mid-flight runs right after). */
 	const send = async (
 		include: (built: BuiltMatch<StoredEvent>) => boolean,
 		{ manual = false } = {},
 	) => {
-		if (sendingRef.current) return;
+		if (sendingRef.current) {
+			pendingSendsRef.current.push(include);
+			return;
+		}
 		sendingRef.current = true;
 		if (manual) setSendouError(null);
 		try {
-			const events = await listEvents();
-			const { sentMatches, failedMatches } = await sendMatches({
-				events,
-				include,
-				onStatus: refreshFeed,
-			});
-			if (manual && sentMatches + failedMatches === 0) {
-				setSendouError("nothing to send — no complete match selected");
+			let next: typeof include | undefined = include;
+			let firstPass = true;
+			while (next) {
+				const events = await listEvents();
+				const { sentMatches, failedMatches } = await sendMatches({
+					events,
+					include: next,
+					onStatus: refreshFeed,
+				});
+				if (manual && firstPass && sentMatches + failedMatches === 0) {
+					setSendouError("nothing to send — no complete match selected");
+				}
+				firstPass = false;
+				const pending = pendingSendsRef.current;
+				pendingSendsRef.current = [];
+				next =
+					pending.length > 0
+						? (built) => pending.some((fn) => fn(built))
+						: undefined;
 			}
 		} finally {
 			sendingRef.current = false;
@@ -283,11 +311,16 @@ export function LivePage({
 			stopRef.current = startSampler(video, SAMPLE_FPS, (bitmap, t) => {
 				clientRef.current?.analyze(bitmap, t);
 			});
-			// a match sent the moment its scoreboard closed usually beats the
-			// players to reporting the game, so sendou.ink had nothing to link
-			// it to; give those another go while the capture runs
+			// a match sent the moment its scoreboard closed usually beats the players to
+			// reporting it, so sendou.ink had nothing to link to; retry those while the
+			// capture runs, along with closed matches whose close-send was never attempted
 			retryTimerRef.current ??= setInterval(() => {
-				if (liveSendRef.current) void send(retryableUnlinkedMatches);
+				if (liveSendRef.current) {
+					void send(
+						(built) =>
+							retryableUnlinkedMatches(built) || unsentClosedMatches(built),
+					);
+				}
 			}, UNLINKED_RETRY_TICK_MS);
 			setStatus("watching");
 			setRunning(true);
@@ -434,10 +467,9 @@ export function LivePage({
 						renderMatch={(built, justFormed) => {
 							const id = built.sources[0]!.id!;
 							const skipReason = skipReasons.get(built);
-							// counter reads render as one timeline chart, not a card each --
-							// from the builder's samples, whose sides are team-stable (raw
-							// reads follow the specced player on casts); a non-SZ match's
-							// reads (objective null) are never shown
+							// counter reads render as one timeline chart, not a card each, from the
+							// builder's samples, whose sides are team-stable (raw reads follow the
+							// specced player on casts); a non-SZ match's reads (objective null) are hidden
 							const objectiveEvents = (
 								built.match.objective?.samples ?? []
 							).map((sample) => ({ t: sample.t, data: sample }));
@@ -582,5 +614,19 @@ function LiveMenu({
 				Clear feed
 			</SendouMenuItem>
 		</SendouMenu>
+	);
+}
+
+/**
+ * A closed match whose send was never attempted: a match-close send can be
+ * skipped (a page reload loses the queue), so the retry tick flushes these.
+ * Sent/unlinked/failed matches follow their own paths.
+ */
+function unsentClosedMatches(built: BuiltMatch<StoredEvent>): boolean {
+	return (
+		built.sources.some((e) => SCOREBOARD_EVENT_TYPES.includes(e.type)) &&
+		built.sources.every(
+			(e) => e.send === undefined || e.send.state === "queued",
+		)
 	);
 }

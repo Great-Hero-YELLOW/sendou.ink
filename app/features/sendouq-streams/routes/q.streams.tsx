@@ -2,6 +2,7 @@ import { User } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { MetaFunction } from "react-router";
 import { Link, useLoaderData } from "react-router";
+import { EmptyState } from "~/components/EmptyState";
 import { TierImage, WeaponImage } from "~/components/Image";
 import { Main } from "~/components/Main";
 import { UserLink } from "~/components/UserLink";
@@ -9,7 +10,7 @@ import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { useHydrated } from "~/hooks/useHydrated";
 import { twitchThumbnailUrlToSrc } from "~/modules/twitch/utils";
 import { databaseTimestampToDate } from "~/utils/dates";
-import { metaTags } from "~/utils/remix";
+import { metaTags, ogPageImage } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { FAQ_PAGE, sendouQMatchPage, twitchUrl } from "~/utils/urls";
 
@@ -27,6 +28,7 @@ export const meta: MetaFunction = (args) => {
 	return metaTags({
 		title: "SendouQ - Streams",
 		description: "Streams of SendouQ matches in progress.",
+		image: ogPageImage("sendouq"),
 		location: args.location,
 	});
 };
@@ -44,9 +46,11 @@ export default function SendouQStreamsPage() {
 
 	if (data.streams.length === 0) {
 		return (
-			<Main className="text-lighter text-lg font-bold text-center">
-				{t("q:streams.noStreams")}
-				{ownStreamNote}
+			<Main>
+				<EmptyState navItem="sendouq">
+					{t("q:streams.noStreams")}
+					{ownStreamNote}
+				</EmptyState>
 			</Main>
 		);
 	}

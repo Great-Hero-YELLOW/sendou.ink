@@ -1,11 +1,15 @@
-import { type Insertable, sql, type Transaction } from "kysely";
+import { type Insertable, type NotNull, sql, type Transaction } from "kysely";
 import { db } from "~/db/sql";
 import type { DB } from "~/db/tables";
 import type { TournamentRoundMaps } from "~/db/tables-json";
 import type { Side } from "~/features/tournament-bracket/core/engine/types";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import invariant from "~/utils/invariant";
-import { commonUserSelect, jsonArrayFrom } from "~/utils/kysely.server";
+import {
+	commonUserSelect,
+	jsonArrayFrom,
+	tournamentLogoWithDefault,
+} from "~/utils/kysely.server";
 import { toDBBoolean } from "~/utils/sql";
 import type { Unwrapped } from "~/utils/types";
 
@@ -17,6 +21,36 @@ const opponentOneScore = sql<
 const opponentTwoScore = sql<
 	number | null
 >`"TournamentMatch"."opponentTwo" ->> '$.score'`;
+
+/** Matches owning the given chat rooms, with the tournament they belong to. */
+export async function findAllByChatRoomIds(chatRoomIds: number[]) {
+	if (chatRoomIds.length === 0) return [];
+
+	return db
+		.selectFrom("TournamentMatch")
+		.innerJoin(
+			"TournamentStage",
+			"TournamentStage.id",
+			"TournamentMatch.stageId",
+		)
+		.innerJoin(
+			"CalendarEvent",
+			"CalendarEvent.tournamentId",
+			"TournamentStage.tournamentId",
+		)
+		.select((eb) => [
+			"TournamentMatch.id",
+			"TournamentMatch.chatRoomId",
+			"TournamentMatch.opponentOne",
+			"TournamentMatch.opponentTwo",
+			"TournamentStage.tournamentId",
+			"CalendarEvent.name as tournamentName",
+			tournamentLogoWithDefault(eb).as("logoUrl"),
+		])
+		.where("TournamentMatch.chatRoomId", "in", chatRoomIds)
+		.$narrowType<{ chatRoomId: NotNull }>()
+		.execute();
+}
 
 export type FindMatchById = NonNullable<Unwrapped<typeof findMatchById>>;
 export async function findMatchById(id: number) {
@@ -39,7 +73,7 @@ export async function findMatchById(id: number) {
 			"TournamentMatch.opponentOne",
 			"TournamentMatch.opponentTwo",
 			"TournamentMatch.winnerSide",
-			"TournamentMatch.chatCode",
+			"TournamentMatch.chatRoomId",
 			"TournamentMatch.startedAt",
 			"Tournament.mapPickingStyle",
 			"TournamentRound.id as roundId",
@@ -234,7 +268,7 @@ export interface AllMatchResult {
 		mode: ModeShort;
 		winnerTeamId: number;
 		participants: Array<{
-			// in the DB this can actually also be null, but for new tournaments it should always be a number
+			// nullable in the DB, but always a number for new tournaments
 			tournamentTeamId: number;
 			userId: number;
 		}>;
@@ -289,26 +323,15 @@ export async function findAllResultsByTournamentId(
 					.select("TournamentTeamMember.userId")
 					.whereRef("TournamentTeamMember.tournamentTeamId", "=", "Team2.id"),
 			).as("opponentTwoMembers"),
+			// participants are fetched flat below: nesting made SQLite build and re-parse a JSON document per game
 			jsonArrayFrom(
 				eb
 					.selectFrom("TournamentMatchGameResult")
-					.select(({ eb: innerEb }) => [
+					.select([
+						"TournamentMatchGameResult.id",
 						"TournamentMatchGameResult.stageId",
 						"TournamentMatchGameResult.mode",
 						"TournamentMatchGameResult.winnerTeamId",
-						jsonArrayFrom(
-							innerEb
-								.selectFrom("TournamentMatchGameResultParticipant")
-								.select([
-									"TournamentMatchGameResultParticipant.tournamentTeamId",
-									"TournamentMatchGameResultParticipant.userId",
-								])
-								.whereRef(
-									"TournamentMatchGameResultParticipant.matchGameResultId",
-									"=",
-									"TournamentMatchGameResult.id",
-								),
-						).as("participants"),
 					])
 					.whereRef(
 						"TournamentMatchGameResult.matchId",
@@ -320,9 +343,12 @@ export async function findAllResultsByTournamentId(
 		])
 		.where("TournamentStage.tournamentId", "=", tournamentId)
 		.where("TournamentMatch.winnerSide", "is not", null)
-		// strictly speaking the order by condition is not accurate, future improvement would be to add order conditions that match the tournament structure
+		// not strictly accurate, ordering by the tournament structure would be an improvement
 		.orderBy("TournamentMatch.id", "asc")
 		.execute();
+
+	const participantsByGameResultId =
+		await findFinishedMatchParticipantsByTournamentId(tournamentId);
 
 	return rows.map((row) => {
 		const opponentOne: AllMatchResultOpponent = {
@@ -347,16 +373,18 @@ export async function findAllResultsByTournamentId(
 			opponentTwo,
 			winnerSide: row.winnerSide,
 			roundMaps: row.roundMaps,
-			maps: row.maps.map((map) => {
-				invariant(map.participants.length > 0, "No participants found");
+			maps: row.maps.map(({ id, ...map }) => {
+				const participants = participantsByGameResultId.get(id) ?? [];
+
+				invariant(participants.length > 0, "No participants found");
 				invariant(
-					map.participants.every(
+					participants.every(
 						(participant) => typeof participant.tournamentTeamId === "number",
 					),
 					"Some participants have no team id",
 				);
 				invariant(
-					map.participants.every(
+					participants.every(
 						(participant) =>
 							participant.tournamentTeamId === row.opponentOneId ||
 							participant.tournamentTeamId === row.opponentTwoId,
@@ -364,10 +392,56 @@ export async function findAllResultsByTournamentId(
 					"Some participants have an invalid team id",
 				);
 
-				return map;
+				return { ...map, participants };
 			}),
 		};
 	});
+}
+
+/** Participants of every game of the tournament's finished matches, keyed by game result id. */
+async function findFinishedMatchParticipantsByTournamentId(
+	tournamentId: number,
+) {
+	const rows = await db
+		.selectFrom("TournamentMatchGameResultParticipant")
+		.innerJoin(
+			"TournamentMatchGameResult",
+			"TournamentMatchGameResult.id",
+			"TournamentMatchGameResultParticipant.matchGameResultId",
+		)
+		.innerJoin(
+			"TournamentMatch",
+			"TournamentMatch.id",
+			"TournamentMatchGameResult.matchId",
+		)
+		.innerJoin(
+			"TournamentStage",
+			"TournamentStage.id",
+			"TournamentMatch.stageId",
+		)
+		.select([
+			"TournamentMatchGameResultParticipant.matchGameResultId",
+			"TournamentMatchGameResultParticipant.tournamentTeamId",
+			"TournamentMatchGameResultParticipant.userId",
+		])
+		.where("TournamentStage.tournamentId", "=", tournamentId)
+		.where("TournamentMatch.winnerSide", "is not", null)
+		.execute();
+
+	const result = new Map<
+		number,
+		AllMatchResult["maps"][number]["participants"]
+	>();
+	for (const { matchGameResultId, ...participant } of rows) {
+		const participants = result.get(matchGameResultId);
+		if (participants) {
+			participants.push(participant);
+		} else {
+			result.set(matchGameResultId, [participant]);
+		}
+	}
+
+	return result;
 }
 
 export async function findUserParticipationByTournamentId(
@@ -431,6 +505,10 @@ export function findByTournamentTeamId(tournamentTeamId: number) {
 		)
 		.select(({ eb }) => [
 			"TournamentMatch.id as tournamentMatchId",
+			"TournamentMatch.winnerSide",
+			sql<Side>`iif(${opponentOneId} = ${tournamentTeamId}, 'opponent1', 'opponent2')`.as(
+				"teamSide",
+			),
 			opponentOneScore.as("opponentOneScore"),
 			opponentTwoScore.as("opponentTwoScore"),
 			"otherTeam.name as otherTeamName",

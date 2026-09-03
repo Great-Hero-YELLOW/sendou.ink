@@ -5,6 +5,8 @@ import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import invariant from "~/utils/invariant";
 import { getBracketProgressionLabel } from "../tournament-utils";
 
+const MATCH_SIDES = ["opponent1", "opponent2"] as const;
+
 export type TournamentStandingsResult =
 	| { type: "single"; standings: Standing[] }
 	| {
@@ -25,13 +27,8 @@ export function flattenStandings(
 }
 
 /**
- * Re-numbers placements in a sorted standings array so that tied placements stay
- * grouped (e.g. `[1, 1, 3, 3, 5]`) while non-tied positions reflect the true
- * number of teams above them. Useful after filtering or merging standings where
- * the original placement numbers no longer match the team count.
- *
- * Pass `offset` to shift every placement downwards — used when the returned
- * standings will be appended below standings from another bracket.
+ * Re-numbers placements of sorted standings keeping ties grouped (`[1, 1, 3, 3, 5]`), for after
+ * filtering or merging. `offset` shifts every placement down, for appending below another bracket's standings.
  */
 export function reNumberPlacements<T extends { placement: number }>(
 	standings: T[],
@@ -52,87 +49,96 @@ export function reNumberPlacements<T extends { placement: number }>(
 	});
 }
 
-/** Calculates SPR (Seed Performance Rating) - see https://web.archive.org/web/20250513034545/https://www.pgstats.com/articles/introducing-spr-and-uf */
-export function calculateSPR({
-	standings,
-	teamId,
-}: {
-	standings: Standing[];
-	teamId: number;
-}) {
-	const uniquePlacements = R.unique(
-		standings.map((standing) => standing.placement),
-	).sort((a, b) => a - b);
-
-	const teamStanding = standings.find(
-		(standing) => standing.team.id === teamId,
+/**
+ * SPR (Seed Performance Rating) of every team in the standings, keyed by tournament team id.
+ * See https://web.archive.org/web/20250513034545/https://www.pgstats.com/articles/introducing-spr-and-uf
+ */
+export function sprByTeamId(standings: Standing[]): Map<number, number> {
+	const indexByPlacement = new Map(
+		R.unique(standings.map((standing) => standing.placement))
+			.sort((a, b) => a - b)
+			.map((placement, index) => [placement, index]),
 	);
-	// defensive check to avoid crashing
-	if (!teamStanding) {
-		return 0;
+
+	const result = new Map<number, number>();
+
+	for (const standing of standings) {
+		const expectedPlacement =
+			standings[(standing.team.seed ?? 0) - 1]?.placement;
+		const expectedIndex = expectedPlacement
+			? indexByPlacement.get(expectedPlacement)
+			: undefined;
+		const actualIndex = indexByPlacement.get(standing.placement);
+
+		if (typeof expectedIndex !== "number" || typeof actualIndex !== "number") {
+			result.set(standing.team.id, 0);
+			continue;
+		}
+
+		result.set(standing.team.id, expectedIndex - actualIndex);
 	}
 
-	const expectedPlacement =
-		standings[(teamStanding.team.seed ?? 0) - 1]?.placement;
-	// defensive check to avoid crashing
-	if (!expectedPlacement) {
-		return 0;
-	}
-
-	const teamPlacement = teamStanding.placement;
-	const actualIndex = uniquePlacements.indexOf(teamPlacement);
-	const expectedIndex = uniquePlacements.indexOf(expectedPlacement);
-
-	return expectedIndex - actualIndex;
+	return result;
 }
 
-/** Every match the team played, in the order they were played in */
-export function matchesPlayed({
-	tournament,
-	teamId,
-}: {
-	tournament: Tournament;
-	teamId: number;
-}) {
+export type MatchPlayed = {
+	id: number;
+	vsSeed: number;
+	result: "win" | "loss";
+	bracketIdx: number;
+};
+
+/**
+ * Every match each team played, in the order they were played in, keyed by tournament team id.
+ * Teams that played no match are absent from the map.
+ */
+export function matchesPlayedByTeamId(
+	tournament: Tournament,
+): Map<number, MatchPlayed[]> {
 	const bracketsInPlayedOrder = R.sortBy(
 		tournament.brackets,
 		(bracket) => bracket.createdAt ?? Number.POSITIVE_INFINITY,
 		(bracket) => bracket.idx,
 	);
 
-	const matches = bracketsInPlayedOrder.flatMap((bracket) =>
-		bracket.data.match
-			.filter(
-				(match) =>
-					match.opponent1 &&
-					match.opponent2 &&
-					(match.opponent1?.id === teamId || match.opponent2?.id === teamId) &&
-					match.winnerSide,
-			)
-			.map((match) => ({
-				...match,
-				bracketIdx: bracket.idx,
-			})),
-	);
+	const seeds = new Map<number, number>();
+	const seedOf = (teamId: number) => {
+		const cached = seeds.get(teamId);
+		if (typeof cached === "number") return cached;
 
-	return matches.map((match) => {
-		const opponentId = (
-			match.opponent1?.id === teamId ? match.opponent2?.id : match.opponent1?.id
-		)!;
-		const team = tournament.teamById(opponentId);
+		const seed = tournament.teamById(teamId)?.seed ?? 0;
+		seeds.set(teamId, seed);
 
-		const teamSide = match.opponent1?.id === teamId ? "opponent1" : "opponent2";
-		const result: "win" | "loss" =
-			match.winnerSide === teamSide ? "win" : "loss";
+		return seed;
+	};
 
-		return {
-			id: match.id,
-			// defensive fallback
-			vsSeed: team?.seed ?? 0,
-			result,
-			bracketIdx: match.bracketIdx,
-		};
-	});
+	const result = new Map<number, MatchPlayed[]>();
+
+	for (const bracket of bracketsInPlayedOrder) {
+		for (const match of bracket.data.match) {
+			if (!match.winnerSide) continue;
+
+			for (const side of MATCH_SIDES) {
+				const teamId = match[side]?.id;
+				const opponentId =
+					match[side === "opponent1" ? "opponent2" : "opponent1"]?.id;
+				if (typeof teamId !== "number" || typeof opponentId !== "number") {
+					continue;
+				}
+
+				const played = result.get(teamId) ?? [];
+				played.push({
+					id: match.id,
+					vsSeed: seedOf(opponentId),
+					result: match.winnerSide === side ? "win" : "loss",
+					bracketIdx: bracket.idx,
+				});
+				result.set(teamId, played);
+			}
+		}
+	}
+
+	return result;
 }
 
 type PersistedResultRow = {
@@ -143,11 +149,9 @@ type PersistedResultRow = {
 };
 
 /**
- * Standings of a finalized tournament reconstructed from the per-user results persisted at
- * finalization, instead of recomputing them from bracket match data. Returns null when the
- * persisted rows cannot back the standings (no rows, a team no longer in the tournament
- * context, or a division label the progression no longer produces) so the caller can fall
- * back to {@link tournamentStandings}.
+ * Standings of a finalized tournament from the per-user results persisted at finalization. Null
+ * when those can't back the standings (no rows, a team no longer in the tournament, a division
+ * label the progression no longer produces) so the caller can fall back to {@link tournamentStandings}.
  */
 export function standingsFromPersistedResults({
 	tournament,
@@ -204,15 +208,9 @@ export function standingsFromPersistedResults({
 }
 
 /**
- * Computes the standings for a given tournament by aggregating results from relevant brackets.
- *
- * For example if the tournament format is round robin (where 2 out of 4 teams per group advance) to single elimination,
- * the top teams are decided by the single elimination bracket, and the teams who failed to make the bracket are ordered
- * by their performance in the round robin group stage.
- *
- * Returns a discriminated union:
- * - For tournaments with a single starting bracket, returns type 'single' with overall standings
- * - For tournaments with multiple starting brackets, returns type 'multi' with standings per division
+ * Standings aggregated across brackets: e.g. in RR → SE the top teams come from the SE bracket and
+ * the teams that missed it are ordered by their group performance. Type `single` with overall
+ * standings for one starting bracket, `multi` with standings per division for several.
  */
 export function tournamentStandings(
 	tournament: Tournament,
@@ -258,11 +256,7 @@ export function tournamentStandings(
 	};
 }
 
-/**
- * Computes the standings for a given tournament starting from a specific bracket.
- * If bracketIdx is undefined, computes overall standings for the entire tournament.
- * Otherwise, only includes brackets that are reachable from the given bracketIdx.
- */
+/** Standings over the brackets reachable from `bracketIdx`, or the whole tournament when undefined. */
 function tournamentStandingsForBracket(
 	tournament: Tournament,
 	bracketIdx: number | undefined,
@@ -299,7 +293,7 @@ function tournamentStandingsForBracket(
 		const bracket = tournament.bracketByIdx(idx);
 		invariant(bracket);
 
-		// sometimes a bracket might not be played so then we ignore it from the standings
+		// a bracket that never got played is left out
 		if (isSingleStartingBracket && finalBracketIsOver && bracket.preview) {
 			continue;
 		}
@@ -327,11 +321,9 @@ function tournamentStandingsForBracket(
 }
 
 /**
- * Underground brackets are left out of the standings but the teams playing them are tied in their source
- * bracket (e.g. everyone who lost the quarterfinals shares the same placement), so their underground run
- * decides the order within each such tie. Teams that skipped the underground bracket stay tied last.
- *
- * An underground bracket that is still in progress is ignored, as the teams still alive in it have no
+ * Underground brackets are left out of the standings, but their teams are tied in the source bracket
+ * (e.g. all quarterfinal losers), so the underground run orders each such tie; teams that skipped it
+ * stay tied last. An underground bracket still in progress is ignored: its live teams have no
  * placement yet and would sort below the teams it already eliminated.
  */
 function tiebrokenByUndergroundBrackets({

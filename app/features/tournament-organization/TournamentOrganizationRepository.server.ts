@@ -1,7 +1,8 @@
 import { isFuture } from "date-fns";
-import { sql } from "kysely";
+import { type ExpressionBuilder, type NotNull, sql } from "kysely";
+import * as R from "remeda";
 import { db } from "~/db/sql";
-import type { Tables, TablesInsertable } from "~/db/tables";
+import type { DB, Tables, TablesInsertable } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
 import {
 	TIER_HISTORY_LENGTH,
@@ -372,6 +373,60 @@ export async function findEventsByMonth({
 	return events.map(mapEvent);
 }
 
+/** Every tournament series of every organization. */
+export function findAllSeries() {
+	return db
+		.selectFrom("TournamentOrganizationSeries")
+		.select([
+			"TournamentOrganizationSeries.organizationId",
+			"TournamentOrganizationSeries.substringMatches",
+			"TournamentOrganizationSeries.tierHistory",
+		])
+		.execute();
+}
+
+/**
+ * Team counts of each organization's started tournaments within the window, oldest first.
+ * Counts what the tournament page shows: placeholder teams excluded, dropped out ones included.
+ */
+export function findAllOrganizedTournamentTeamCounts({
+	startedAfter,
+}: {
+	startedAfter: number;
+}) {
+	return db
+		.selectFrom("CalendarEvent")
+		.innerJoin(
+			"CalendarEventDate",
+			"CalendarEventDate.eventId",
+			"CalendarEvent.id",
+		)
+		.select((eb) => [
+			"CalendarEvent.name",
+			"CalendarEvent.organizationId",
+			eb.fn.min("CalendarEventDate.startsAt").as("startsAt"),
+			eb
+				.selectFrom("TournamentTeam")
+				.select(({ fn }) => fn.countAll<number>().as("count"))
+				.whereRef(
+					"TournamentTeam.tournamentId",
+					"=",
+					"CalendarEvent.tournamentId",
+				)
+				.where("TournamentTeam.isPlaceholder", "=", 0)
+				.as("teamCount"),
+		])
+		.$narrowType<{ organizationId: NotNull; teamCount: NotNull }>()
+		.where("CalendarEvent.organizationId", "is not", null)
+		.where("CalendarEvent.tournamentId", "is not", null)
+		.where("CalendarEvent.hidden", "=", 0)
+		.where("CalendarEventDate.startsAt", ">=", startedAfter)
+		.where("CalendarEventDate.startsAt", "<=", databaseTimestampNow())
+		.groupBy("CalendarEvent.id")
+		.orderBy("startsAt", "asc")
+		.execute();
+}
+
 export function findAllUnfinalizedEvents(organizationId: number) {
 	return db
 		.selectFrom("Tournament")
@@ -420,9 +475,8 @@ export async function findPaginatedEventsBySeries({
 }
 
 /**
- * Every event of the series, newest first. Selects only what the leaderboard and the series header
- * need - the winners of {@link findPaginatedEventsBySeries} are far too costly across a whole
- * series.
+ * Every event of the series, newest first, with only what the leaderboard and series header need:
+ * the winners of {@link findPaginatedEventsBySeries} are far too costly across a whole series.
  */
 export async function findAllEventsBySeries({
 	organizationId,
@@ -460,13 +514,115 @@ export async function findAllEventsBySeries({
 	return events.map(mapEvent);
 }
 
+/** Series belonging to any of the given organizations. */
+export async function findAllSeriesByOrganizationIds(
+	organizationIds: number[],
+) {
+	if (organizationIds.length === 0) return [];
+
+	return db
+		.selectFrom("TournamentOrganizationSeries")
+		.select([
+			"TournamentOrganizationSeries.id",
+			"TournamentOrganizationSeries.name",
+			"TournamentOrganizationSeries.organizationId",
+			"TournamentOrganizationSeries.substringMatches",
+		])
+		.where("TournamentOrganizationSeries.organizationId", "in", organizationIds)
+		.execute();
+}
+
 /**
- * Counts the distinct players who participated in at least one match of a
- * tournament hosted by the organization, whose event started within the
- * `[startTime, endTime]` range. Only players belonging to teams that checked
- * in (and did not check out) are included.
- *
- * `startTime` and `endTime` are database timestamps (seconds).
+ * Events of the series the user won, oldest first, hosted tournaments and hand-reported results
+ * alike. Only finalized tournaments have results, so ongoing events are never included.
+ */
+export async function findAllSeriesWinsByUserId({
+	organizationId,
+	substringMatches,
+	userId,
+	excludeTournamentId,
+}: {
+	organizationId: number;
+	substringMatches: string[];
+	userId: number;
+	excludeTournamentId: number;
+}) {
+	const isEventOfTheSeries = (eb: ExpressionBuilder<DB, "CalendarEvent">) =>
+		eb.and([
+			eb("CalendarEvent.organizationId", "=", organizationId),
+			eb("CalendarEvent.hidden", "=", 0),
+			eb.or(
+				substringMatches.map((match) =>
+					eb("CalendarEvent.name", "like", `%${match}%`),
+				),
+			),
+		]);
+
+	const [tournamentWins, reportedWins] = await Promise.all([
+		db
+			.selectFrom("TournamentResult")
+			.innerJoin(
+				"CalendarEvent",
+				"CalendarEvent.tournamentId",
+				"TournamentResult.tournamentId",
+			)
+			.innerJoin(
+				"CalendarEventDate",
+				"CalendarEventDate.eventId",
+				"CalendarEvent.id",
+			)
+			.select(({ fn }) => [
+				"CalendarEvent.name",
+				fn.min("CalendarEventDate.startsAt").as("startsAt"),
+			])
+			.where("TournamentResult.userId", "=", userId)
+			.where("TournamentResult.placement", "=", 1)
+			.where("TournamentResult.tournamentId", "!=", excludeTournamentId)
+			.where(isEventOfTheSeries)
+			.groupBy("CalendarEvent.id")
+			.execute(),
+		db
+			.selectFrom("CalendarEventResultPlayer")
+			.innerJoin(
+				"CalendarEventResultTeam",
+				"CalendarEventResultTeam.id",
+				"CalendarEventResultPlayer.teamId",
+			)
+			.innerJoin(
+				"CalendarEvent",
+				"CalendarEvent.id",
+				"CalendarEventResultTeam.eventId",
+			)
+			.innerJoin(
+				"CalendarEventDate",
+				"CalendarEventDate.eventId",
+				"CalendarEvent.id",
+			)
+			.select(({ fn }) => [
+				"CalendarEvent.name",
+				fn.min("CalendarEventDate.startsAt").as("startsAt"),
+			])
+			.where("CalendarEventResultPlayer.userId", "=", userId)
+			.where("CalendarEventResultTeam.placement", "=", 1)
+			// a tournament of the site reports its own results, counted above
+			.where("CalendarEvent.tournamentId", "is", null)
+			.where(isEventOfTheSeries)
+			.groupBy("CalendarEvent.id")
+			.execute(),
+	]);
+
+	return R.sortBy(
+		[...tournamentWins, ...reportedWins].map((win) => ({
+			name: win.name,
+			startTime: databaseTimestampToDate(win.startsAt),
+		})),
+		(win) => win.startTime.getTime(),
+	);
+}
+
+/**
+ * Distinct players on checked-in (not checked out) teams who played at least one match of the
+ * organization's tournaments starting within `[startTime, endTime]` (database timestamps, seconds).
  */
 export async function countActiveParticipants({
 	organizationId,
@@ -542,8 +698,7 @@ export function update({
 				.where("id", "=", id)
 				.executeTakeFirst();
 
-			// the logo got removed or replaced, so the old submitted image row is
-			// no longer referenced by anything and is cleaned up
+			// a removed or replaced logo leaves its submitted image row unreferenced
 			if (current?.avatarImgId && current.avatarImgId !== avatarImgId) {
 				await trx
 					.deleteFrom("UnvalidatedUserSubmittedImage")
@@ -674,9 +829,7 @@ export function deleteOwnMembership(organizationId: number) {
 		.execute();
 }
 
-/**
- * Inserts a user to the banned list for a tournament organization or updates the existing entry if already exists.
- */
+/** Bans a user from the organization, updating the entry if they already are. */
 export function upsertBannedUser(
 	args: Omit<TablesInsertable["TournamentOrganizationBannedUser"], "updatedAt">,
 ) {
@@ -686,9 +839,7 @@ export function upsertBannedUser(
 		.execute();
 }
 
-/**
- * Removes a user from the banned list for a tournament organization
- */
+/** Removes a user from the organization's banned list. */
 export function unbanUser({
 	organizationId,
 	userId,
@@ -703,9 +854,7 @@ export function unbanUser({
 		.execute();
 }
 
-/**
- * Returns all banned users for a specific tournament organization
- */
+/** All users banned by the organization. */
 export function findAllBannedUsersByOrganizationId(organizationId: number) {
 	return db
 		.selectFrom("TournamentOrganizationBannedUser")
@@ -725,9 +874,7 @@ export function findAllBannedUsersByOrganizationId(organizationId: number) {
 		.execute();
 }
 
-/**
- * Checks if a user is banned by a specific organization
- */
+/** Whether the organization has banned the user. */
 export async function isUserBannedByOrganization({
 	organizationId,
 	userId,
@@ -749,9 +896,7 @@ export async function isUserBannedByOrganization({
 	return isFuture(databaseTimestampToDate(result.expiresAt));
 }
 
-/**
- * Returns the number of organizations a user is a member of.
- */
+/** How many organizations the user is a member of. */
 export async function countOrganizationsByUserId(userId: number) {
 	const result = await db
 		.selectFrom("TournamentOrganizationMember")
@@ -762,9 +907,7 @@ export async function countOrganizationsByUserId(userId: number) {
 	return Number(result.count);
 }
 
-/**
- * Updates the isEstablished status for a tournament organization.
- */
+/** Sets the organization's `isEstablished` flag. */
 export function updateIsEstablished(
 	organizationId: number,
 	isEstablished: boolean,
@@ -780,13 +923,6 @@ export function deleteById(organizationId: number) {
 	return db
 		.deleteFrom("TournamentOrganization")
 		.where("id", "=", organizationId)
-		.execute();
-}
-
-export function findAllSeriesWithTierHistory() {
-	return db
-		.selectFrom("TournamentOrganizationSeries")
-		.select(["organizationId", "substringMatches", "tierHistory"])
 		.execute();
 }
 

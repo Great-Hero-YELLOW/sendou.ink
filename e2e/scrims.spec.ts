@@ -1,6 +1,14 @@
-import { addDays, addHours, setHours, setMinutes, startOfHour } from "date-fns";
+import {
+	addDays,
+	addHours,
+	addWeeks,
+	setHours,
+	setMinutes,
+	startOfHour,
+} from "date-fns";
 import { NZAP_TEST_ID } from "~/db/seed/constants";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
+import * as Availability from "~/features/availability/core/Availability";
 import { serializeLutiDiv } from "~/features/scrims/scrims-utils";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
@@ -11,7 +19,9 @@ import {
 	expect,
 	impersonate,
 	isNotVisible,
+	MACHINE_TIMEZONE,
 	navigate,
+	setTimezoneCookie,
 	test,
 } from "./helpers/playwright";
 import { AnythingAdder } from "./pages/layout/anything-adder";
@@ -25,6 +35,8 @@ const TOURNAMENT_NAME = "Swim or Sink";
 const ASSOCIATION_NAME = "Inkling Alliance";
 const PICKUP_NAMES = ["Pickup One", "Pickup Two", "Pickup Three"];
 const GROUP_SIZE = 4;
+const DAY_SECONDS = 24 * 60 * 60;
+const WEDNESDAY = 2;
 const TOURNAMENT_MAP_POOL: Array<{ mode: ModeShort; stageId: StageId }> = [
 	{ mode: "SZ", stageId: 1 },
 	{ mode: "TC", stageId: 2 },
@@ -347,7 +359,6 @@ test.describe("Scrims", () => {
 			isAccepted: true,
 		});
 
-		// the admin opens the Action tab — the map list form is shown immediately
 		await impersonate(page, ADMIN_ID);
 
 		const scrim = new ScrimPage(page);
@@ -356,10 +367,8 @@ test.describe("Scrims", () => {
 
 		await expect(scrim.locators.mapListForm).toBeVisible();
 
-		// the post's tournament is the default source for the author's side, so they
-		// can submit without running the tournament search. A first map is generated
-		// immediately, so the page moves on to the report UI with the map-list
-		// manager collapsed.
+		// the post's tournament is the author's default source, so no tournament search is
+		// needed; the first map is generated right away, collapsing the map-list manager
 		await scrim.submitMapList();
 
 		await expect(scrim.locators.reportScoreButton).toBeVisible();
@@ -368,8 +377,7 @@ test.describe("Scrims", () => {
 
 		await expect(scrim.mapListRow("ALPHA")).toContainText(TOURNAMENT_NAME);
 
-		// N-ZAP submits a pool-URL-based map list. They have no list yet, so the
-		// map-list manager is already expanded on mount.
+		// N-ZAP has no list yet, so the map-list manager is already expanded on mount
 		await impersonate(page, NZAP_TEST_ID);
 		await scrim.goto(post.id);
 		await scrim.openTab("action");
@@ -378,21 +386,19 @@ test.describe("Scrims", () => {
 		await expect(scrim.locators.reportScoreButton).toBeVisible();
 		await expect(scrim.mapListRow("BRAVO")).toContainText("Pool");
 
-		// map 1: ALPHA wins → next map auto-generated
+		// every reported map auto-generates the next one
 		await scrim.reportMapWinner("ALPHA");
 		await expect(scrim.locators.reportScoreButton).toBeVisible();
 
-		// map 2: BRAVO wins → next map auto-generated
 		await scrim.reportMapWinner("BRAVO");
 		await expect(scrim.locators.reportScoreButton).toBeVisible();
 
-		// map 3: ALPHA wins → undo (un-reports map 3, deletes auto-gen map 4)
+		// undo un-reports map 3 and deletes the generated map 4
 		await scrim.reportMapWinner("ALPHA");
 		await expect(scrim.locators.undoMapButton).toBeVisible();
 		await scrim.undoMap();
 		await expect(scrim.locators.reportScoreButton).toBeVisible();
 
-		// re-report map 3 as BRAVO wins → next map auto-generated
 		await scrim.reportMapWinner("BRAVO");
 
 		// replaying replaces the generated map with a copy of the previous one
@@ -400,7 +406,6 @@ test.describe("Scrims", () => {
 		await scrim.replayMap();
 		await scrim.reportMapWinner("ALPHA");
 
-		// back as the admin to change their list
 		await impersonate(page, ADMIN_ID);
 		await scrim.goto(post.id);
 		await scrim.openTab("action");
@@ -442,12 +447,127 @@ function createNamedUsers(factories: Factories, names: string[]) {
 	}));
 }
 
+test.describe("Scrim schedule picker", () => {
+	test("picks a start and its flexibility from the roster's shared free time", async ({
+		page,
+		factories,
+	}) => {
+		const { memberUserIds } = await createTeamFor(factories, NZAP_TEST_ID);
+		const evening = nextWeekSlot(WEDNESDAY, "18:00", "23:00");
+
+		for (const userId of memberUserIds.slice(0, memberUserIds.length - 1)) {
+			await factories.AvailabilityWeekFactory.create({
+				userId,
+				weekStartsAt: nextWeek().startsAt,
+				timezone: MACHINE_TIMEZONE,
+				slots: [evening],
+			});
+		}
+
+		await impersonate(page, NZAP_TEST_ID);
+		await setTimezoneCookie(page);
+
+		const newPost = new NewScrimPostPage(page);
+		await newPost.goto();
+		await newPost.locators.nextWeekToggle.click();
+
+		// the roster's last member never filled the week in, so the shared
+		// evening is one player short of a full team
+		await expect(newPost.locators.scheduleUnknown).toBeVisible();
+		const slot = newPost.locators.scheduleSlots;
+		await expect(slot).toHaveCount(1);
+		await expect(slot).toHaveAttribute("data-tier", "ONE_SHORT");
+
+		await slot.click();
+
+		// 18:00, with the flexibility that still leaves an hour of the window
+		// to play whichever start is settled on, capped at the longest option
+		await expect(newPost.startSegment("hour")).toHaveText("6");
+		await expect(newPost.startSegment("minute")).toHaveText("00");
+		await expect(newPost.startSegment("AM/PM")).toHaveText("PM");
+		await expect(newPost.locators.flexibility).toHaveValue("+3hours");
+		await expect(slot).toHaveAttribute("data-picked", "true");
+	});
+});
+
+test.describe("Scrim fit indicator", () => {
+	test("shows how much of the viewer's roster could play a post", async ({
+		page,
+		factories,
+	}) => {
+		const { memberUserIds } = await createTeamFor(factories, NZAP_TEST_ID);
+		const evening = nextWeekSlot(WEDNESDAY, "18:00", "23:00");
+		const withoutSchedule = memberUserIds[memberUserIds.length - 1];
+
+		for (const userId of memberUserIds.filter(
+			(userId) => userId !== withoutSchedule,
+		)) {
+			await factories.AvailabilityWeekFactory.create({
+				userId,
+				weekStartsAt: nextWeek().startsAt,
+				timezone: MACHINE_TIMEZONE,
+				slots: [evening],
+			});
+		}
+
+		await factories.ScrimPostFactory.create({
+			users: await createGroup(factories),
+			startsAt: evening.startsAt,
+			isScheduledForFuture: true,
+		});
+
+		await impersonate(page, NZAP_TEST_ID);
+
+		const scrims = new ScrimsPage(page);
+		await scrims.goto();
+		await scrims.openTab("available");
+
+		await expect(scrims.locators.fitIndicator).toContainText("3/4 available");
+
+		await scrims.locators.fitIndicator.click();
+
+		await expect(scrims.availabilityRow(NZAP_TEST_ID)).toHaveAttribute(
+			"data-status",
+			"available",
+		);
+		await expect(scrims.availabilityRow(withoutSchedule)).toHaveAttribute(
+			"data-status",
+			"unknown",
+		);
+
+		await page.keyboard.press("Escape");
+		await scrims.requestFirst();
+
+		// the same breakdown, for the slot the request would be made for
+		await expect(scrims.availabilityRow(NZAP_TEST_ID)).toHaveAttribute(
+			"data-status",
+			"available",
+		);
+	});
+});
+
 async function createTeamFor(factories: Factories, userId: number) {
 	const teammates = await factories.UserFactory.createMany(GROUP_SIZE - 1);
 
 	return factories.TeamFactory.create({
 		memberUserIds: [userId, ...teammates.map((user) => user.id)],
 	});
+}
+
+function nextWeek() {
+	return Availability.weekRange(addWeeks(new Date(), 1), MACHINE_TIMEZONE);
+}
+
+/** Wall-clock range on a day of next week, so it is always ahead of "now". */
+function nextWeekSlot(dayIndex: number, start: string, end: string) {
+	const date = Availability.dateInTimezone(
+		nextWeek().startsAt + dayIndex * DAY_SECONDS + DAY_SECONDS / 2,
+		MACHINE_TIMEZONE,
+	);
+	const at = (time: string) =>
+		Availability.localToTimestamp({ date, time, timezone: MACHINE_TIMEZONE });
+
+	return { startsAt: at(start), endsAt: at(end) };
 }
 
 /** A pick-up sized group of users, `userId` its owner if one is given. */

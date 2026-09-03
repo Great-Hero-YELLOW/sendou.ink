@@ -9,7 +9,6 @@ import {
 import { containerClassName, Main } from "~/components/Main";
 import { Placeholder } from "~/components/Placeholder";
 import { isMatchResultsScopedRevalidation } from "~/features/chat/revalidation-scope";
-import { useChatContext } from "~/features/chat/useChatContext";
 import { TournamentProvider } from "~/features/tournament/tournament-context";
 import { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import { useHydrated } from "~/hooks/useHydrated";
@@ -75,9 +74,7 @@ export const handle: SendouRouteHandle = {
 export default function TournamentLayoutShell() {
 	const isHydrated = useHydrated();
 
-	// tournaments are something that people like to refresh a lot
-	// which can cause spikes that are hard for the server to handle
-	// this is just making sure the SSR for this page is as fast as possible in prod
+	// tournament pages get refreshed a lot causing spikes, so keep the SSR as fast as possible in prod
 	if (!isHydrated)
 		return (
 			<Main bigger>
@@ -100,9 +97,7 @@ export function TournamentLayout() {
 	);
 	const [bracketExpanded, setBracketExpanded] = React.useState(true);
 
-	useTournamentChatLabels(tournament);
-
-	// this is nice to debug with tournament in browser console
+	// for debugging in the browser console
 	if (process.env.NODE_ENV === "development") {
 		React.useEffect(() => {
 			// @ts-expect-error for dev purposes
@@ -129,8 +124,7 @@ export function TournamentLayout() {
 		</>
 	);
 
-	// Always render within the breakout container so the nav (and content) keep a
-	// consistent width across routes, avoiding a layout shift when switching tabs.
+	// always in the breakout container so the nav keeps its width across routes, avoiding a layout shift
 	return (
 		<Main breakoutContainer>
 			<div className={containerClassName("wide")}>{content}</div>
@@ -165,42 +159,4 @@ export function useTournamentPreparedMaps() {
 
 export function useTournamentVods() {
 	return useOutletContext<TournamentContext>().vods;
-}
-
-function useTournamentChatLabels(tournament: Tournament) {
-	const chatContext = useChatContext();
-	const setChatLabels = chatContext?.setChatLabels;
-	const clearChatLabels = chatContext?.clearChatLabels;
-
-	React.useEffect(() => {
-		if (!setChatLabels || !clearChatLabels) return;
-
-		const labels: Record<number, string> = {};
-
-		labels[tournament.ctx.author.id] = "TO";
-
-		for (const staff of tournament.ctx.staff) {
-			if (staff.role === "ORGANIZER") {
-				labels[staff.id] = "TO";
-			} else if (staff.role === "STREAMER") {
-				labels[staff.id] = "Stream";
-			}
-		}
-
-		if (tournament.ctx.organization) {
-			for (const member of tournament.ctx.organization.members) {
-				if (["ADMIN", "ORGANIZER"].includes(member.role)) {
-					labels[member.userId] = "TO";
-				} else if (member.role === "STREAMER") {
-					labels[member.userId] = "Stream";
-				}
-			}
-		}
-
-		setChatLabels(labels);
-
-		return () => {
-			clearChatLabels();
-		};
-	}, [setChatLabels, clearChatLabels, tournament]);
 }

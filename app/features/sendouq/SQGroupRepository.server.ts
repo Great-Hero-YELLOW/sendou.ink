@@ -1,4 +1,4 @@
-import { sub } from "date-fns";
+import { addHours, sub } from "date-fns";
 import {
 	type ExpressionBuilder,
 	type NotNull,
@@ -9,6 +9,7 @@ import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import type { UserMapModePreferences } from "~/db/tables-json";
 import { actorId } from "~/features/auth/core/user.server";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import {
@@ -21,6 +22,8 @@ import { errorIsSqliteForeignKeyConstraintFailure } from "~/utils/sql";
 import { userIsBanned } from "../ban/core/banned.server";
 import { FULL_GROUP_SIZE } from "./q-constants";
 import { SendouQError } from "./q-utils.server";
+
+const CHAT_ROOM_LIFESPAN_HOURS = 12;
 
 export async function findMapModePreferencesByGroupId(groupId: number) {
 	const group = await db
@@ -57,6 +60,27 @@ export async function findMapModePreferencesByGroupId(groupId: number) {
 		.execute();
 }
 
+/** Groups owning the given chat rooms, with their members' user ids. */
+export async function findAllByChatRoomIds(chatRoomIds: number[]) {
+	if (chatRoomIds.length === 0) return [];
+
+	return db
+		.selectFrom("Group")
+		.select((eb) => [
+			"Group.chatRoomId",
+			"Group.status",
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMember")
+					.select("GroupMember.userId")
+					.whereRef("GroupMember.groupId", "=", "Group.id"),
+			).as("members"),
+		])
+		.where("Group.chatRoomId", "in", chatRoomIds)
+		.$narrowType<{ chatRoomId: NotNull }>()
+		.execute();
+}
+
 export async function findCurrentGroups() {
 	return (
 		db
@@ -74,7 +98,7 @@ export async function findCurrentGroups() {
 			)
 			.select(({ eb }) => [
 				"Group.id",
-				"Group.chatCode",
+				"Group.chatRoomId",
 				"Group.inviteCode",
 				"Group.latestActionAt",
 				"Group.status",
@@ -112,11 +136,19 @@ type CreateGroupArgs = {
 };
 export async function insert(args: CreateGroupArgs) {
 	return db.transaction().execute(async (trx) => {
+		const chatRoom = await ChatRepository.insertRoom(
+			{
+				type: "SQ_GROUP",
+				expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+			},
+			trx,
+		);
+
 		const createdGroup = await trx
 			.insertInto("Group")
 			.values({
 				inviteCode: shortNanoid(),
-				chatCode: shortNanoid(),
+				chatRoomId: chatRoom.id,
 				status: args.status,
 			})
 			.returning("id")
@@ -134,12 +166,12 @@ export async function insert(args: CreateGroupArgs) {
 			throw new SendouQError("Group has a member in multiple groups");
 		}
 
-		const chatCodeToRevalidate = await recordImplicitRejoinNoVote(
+		const chatRoomIdToRevalidate = await recordImplicitRejoinNoVote(
 			args.userId,
 			trx,
 		);
 
-		return { id: createdGroup.id, chatCodeToRevalidate };
+		return { id: createdGroup.id, chatRoomIdToRevalidate };
 	});
 }
 
@@ -154,20 +186,48 @@ export async function insertFromPrevious(
 	const status = args.status ?? "PREPARING";
 
 	return db.transaction().execute(async (trx) => {
+		const previousGroup = await trx
+			.selectFrom("Group")
+			.select(["Group.chatRoomId", "Group.matchmade"])
+			.where("Group.id", "=", args.previousGroupId)
+			.executeTakeFirstOrThrow();
+
+		// the successor group carries the previous group's chat over; the room's
+		// unique owner index requires the previous group to release it first
+		let chatRoomId = previousGroup.chatRoomId;
+		if (chatRoomId !== null) {
+			await trx
+				.updateTable("Group")
+				.set({ chatRoomId: null })
+				.where("Group.id", "=", args.previousGroupId)
+				.execute();
+			await ChatRepository.updateRoomExpiresAt(
+				{
+					roomId: chatRoomId,
+					expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+				},
+				trx,
+			);
+		} else {
+			chatRoomId = (
+				await ChatRepository.insertRoom(
+					{
+						type: "SQ_GROUP",
+						expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+					},
+					trx,
+				)
+			).id;
+		}
+
 		const createdGroup = await trx
 			.insertInto("Group")
-			.columns(["chatCode", "inviteCode", "status", "matchmade"])
-			.expression((eb) =>
-				eb
-					.selectFrom("Group")
-					.select((eb) => [
-						"Group.chatCode",
-						eb.val(shortNanoid()).as("inviteCode"),
-						eb.val(status).as("status"),
-						"Group.matchmade",
-					])
-					.where("Group.id", "=", args.previousGroupId),
-			)
+			.values({
+				chatRoomId,
+				inviteCode: shortNanoid(),
+				status,
+				matchmade: previousGroup.matchmade,
+			})
 			.returning("id")
 			.executeTakeFirstOrThrow();
 
@@ -193,11 +253,7 @@ export async function insertFromPrevious(
 	});
 }
 
-/**
- * Stamps the group as a team's, when a full group's worth of its members share one,
- * and clears the stamp otherwise. A team's group queues on the team's own map & mode
- * preferences rather than on those of its members.
- */
+/** Stamps the group as a team's when a full group's worth of members share one, else clears it. A team's group queues on the team's own map & mode preferences. */
 export async function syncTeamId(groupId: number, trx: Transaction<DB>) {
 	// the tables are joined directly instead of through `TeamMemberWithSecondary`,
 	// which SQLite materializes in full before the group filter narrows it down
@@ -260,11 +316,7 @@ function deleteSuggestionsByGroupId(groupId: number, trx: Transaction<DB>) {
 		.execute();
 }
 
-/**
- * Deletes every like and suggestion where the given group is on either side.
- * Called when the group's pending challenges and suggestions stop being
- * actionable e.g. its roster changed or it started a match.
- */
+/** Deletes every like and suggestion with the group on either side, for when they stop being actionable (roster changed, match started). */
 export async function deleteLikesAndSuggestionsByGroupId(
 	groupId: number,
 	trx: Transaction<DB>,
@@ -281,10 +333,24 @@ export function morphGroups({
 	otherGroupId: number;
 }) {
 	return db.transaction().execute(async (trx) => {
-		// reset chat code so previous messages are not visible, and mark as matchmade
+		const oldChatRooms = await trx
+			.selectFrom("Group")
+			.select(["Group.chatRoomId"])
+			.where("Group.id", "in", [survivingGroupId, otherGroupId])
+			.execute();
+
+		// fresh chat room so neither group's previous messages are visible, and
+		// mark as matchmade
+		const chatRoom = await ChatRepository.insertRoom(
+			{
+				type: "SQ_GROUP",
+				expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+			},
+			trx,
+		);
 		await trx
 			.updateTable("Group")
-			.set({ chatCode: shortNanoid(), matchmade: 1 })
+			.set({ chatRoomId: chatRoom.id, matchmade: 1 })
 			.where("Group.id", "=", survivingGroupId)
 			.execute();
 
@@ -297,6 +363,11 @@ export function morphGroups({
 		await syncTeamId(survivingGroupId, trx);
 		await deleteLikesAndSuggestionsByGroupId(survivingGroupId, trx);
 		await refreshGroup(survivingGroupId, trx);
+
+		await ChatRepository.deleteRoomsByIds(
+			oldChatRooms.map((room) => room.chatRoomId),
+			trx,
+		);
 
 		await trx
 			.deleteFrom("Group")
@@ -348,7 +419,7 @@ export async function insertMember(
 	groupId: number,
 	{ userId }: { userId: number },
 ) {
-	const chatCodeToRevalidate = await db.transaction().execute(async (trx) => {
+	const chatRoomIdToRevalidate = await db.transaction().execute(async (trx) => {
 		await trx
 			.insertInto("GroupMember")
 			.values({
@@ -369,7 +440,7 @@ export async function insertMember(
 		return recordImplicitRejoinNoVote(userId, trx);
 	});
 
-	return { chatCodeToRevalidate };
+	return { chatRoomIdToRevalidate };
 }
 
 export async function findAllLikesByGroupId(groupId: number) {
@@ -456,6 +527,8 @@ export async function findFriendsAndTeammates(userId: number) {
 			...commonUserSelect(eb),
 			"User.inGameName",
 			"TeamMemberWithSecondary.teamId",
+			"TeamMemberWithSecondary.role",
+			"TeamMemberWithSecondary.roleType",
 		])
 		.where(
 			"TeamMemberWithSecondary.teamId",
@@ -483,6 +556,8 @@ export async function findFriendsAndTeammates(userId: number) {
 					...commonUserSelect(eb),
 					"User.inGameName",
 					sql<any>`null`.as("teamId"),
+					sql<Tables["TeamMember"]["role"]>`null`.as("role"),
+					sql<Tables["TeamMember"]["roleType"]>`null`.as("roleType"),
 				]),
 		)
 		.execute();
@@ -577,7 +652,10 @@ export async function closeExpiredContinueVotes() {
 					.onRef("GroupMatchContinueVote.groupId", "=", "Group.id")
 					.onRef("GroupMatchContinueVote.userId", "=", "GroupMember.userId"),
 			)
-			.select(["Group.id as groupId", "GroupMatch.chatCode as matchChatCode"])
+			.select([
+				"Group.id as groupId",
+				"GroupMatch.chatRoomId as matchChatRoomId",
+			])
 			.where("Group.matchmade", "=", 1)
 			.where("GroupMatch.confirmedAt", "is not", null)
 			.where("GroupMatch.confirmedAt", "<", cutoff)
@@ -585,9 +663,9 @@ export async function closeExpiredContinueVotes() {
 			.groupBy("Group.id")
 			.execute();
 
-		const chatCodesToRevalidate = eligibleGroups
-			.map((group) => group.matchChatCode)
-			.filter((chatCode) => chatCode !== null);
+		const chatRoomIdsToRevalidate = eligibleGroups
+			.map((group) => group.matchChatRoomId)
+			.filter((chatRoomId) => chatRoomId !== null);
 
 		if (eligibleGroups.length > 0) {
 			const members = await trx
@@ -616,7 +694,7 @@ export async function closeExpiredContinueVotes() {
 		}
 
 		return {
-			chatCodesToRevalidate,
+			chatRoomIdsToRevalidate,
 			numAffectedGroups: eligibleGroups.length,
 		};
 	});
@@ -758,17 +836,13 @@ export function deleteAllLikesByGroupId(groupId: number) {
 	return db.transaction().execute((trx) => deleteLikesByGroupId(groupId, trx));
 }
 
-/**
- * Removes the user from their group, deleting the group if they were its last
- * member. A ready check the group was in is called off, its groups returning to
- * the looking pool. Returns the ids of the groups that were in that check.
- */
+/** Removes the user from their group (deleting it if they were last). A ready check the group was in is called off; returns the ids of the groups that were in it. */
 export function leaveGroup(userId: number) {
 	return db.transaction().execute(async (trx) => {
 		const userGroup = await trx
 			.selectFrom("GroupMember")
 			.innerJoin("Group", "Group.id", "GroupMember.groupId")
-			.select(["Group.id"])
+			.select(["Group.id", "Group.chatRoomId"])
 			.where("userId", "=", userId)
 			.where("Group.status", "!=", "INACTIVE")
 			.executeTakeFirstOrThrow();
@@ -814,6 +888,7 @@ export function leaveGroup(userId: number) {
 			.executeTakeFirst();
 
 		if (!remainingMember) {
+			await ChatRepository.deleteRoomsByIds([userGroup.chatRoomId], trx);
 			await trx.deleteFrom("Group").where("id", "=", userGroup.id).execute();
 			return { abortedReadyCheckGroupIds };
 		}
@@ -951,11 +1026,7 @@ export function findAllReadyChecksStartedBefore(date: Date) {
 		.execute();
 }
 
-/**
- * Starts a ready check between two groups, taking both out of the looking pool
- * along with everything they had pending. The user starting it counts as ready
- * right away.
- */
+/** Starts a ready check between two groups, taking both and everything they had pending out of the looking pool. The starter counts as ready right away. */
 export function insertReadyCheck({
 	alphaGroupId,
 	bravoGroupId,
@@ -1047,11 +1118,7 @@ export function insertReadyCheckConfirmation({
 	});
 }
 
-/**
- * Ends a ready check, returning both of its groups to the looking pool. With
- * `markMissedMembers` the members who never confirmed are marked as having
- * missed it, which is what lets the rest of their group kick them.
- */
+/** Ends a ready check, returning both groups to the looking pool. `markMissedMembers` marks the unconfirmed as having missed it, which lets the rest of their group kick them. */
 export function deleteReadyCheck(
 	{ id, markMissedMembers }: { id: number; markMissedMembers: boolean },
 	trx?: Transaction<DB>,
@@ -1115,16 +1182,14 @@ async function deleteReadyCheckInTrx(
 }
 
 /**
- * Records the user as not continuing with the group they last played a matchmade
- * match with, taking that group's votes in favour down with it. Getting a group
- * elsewhere overrides a vote already cast in favour: the group can no longer
- * continue at the size that vote was for, so the rest have to vote again. Once
- * their no vote is in, that group is settled and later queue actions leave it be.
+ * Records the user as not continuing with the group they last played a matchmade match with,
+ * clearing that group's yes votes: it can no longer continue at the size they were for, so the
+ * rest have to vote again. Once the no vote is in, later queue actions leave that group be.
  */
 async function recordImplicitRejoinNoVote(
 	userId: number,
 	trx: Transaction<DB>,
-): Promise<string | null> {
+): Promise<number | null> {
 	const candidate = await trx
 		.selectFrom("GroupMember")
 		.innerJoin("Group", "Group.id", "GroupMember.groupId")
@@ -1138,7 +1203,7 @@ async function recordImplicitRejoinNoVote(
 		)
 		.select((eb) => [
 			"Group.id as groupId",
-			"GroupMatch.chatCode as matchChatCode",
+			"GroupMatch.chatRoomId as matchChatRoomId",
 			hasVotedNo(eb, userId).as("alreadySettled"),
 		])
 		.where("GroupMember.userId", "=", userId)
@@ -1168,7 +1233,7 @@ async function recordImplicitRejoinNoVote(
 		)
 		.execute();
 
-	return candidate.matchChatCode;
+	return candidate.matchChatRoomId;
 }
 
 /** Matches the `Group` rows the given user has already voted against continuing with. */

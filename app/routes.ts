@@ -13,6 +13,11 @@ const devOnlyRoutes =
 					"/admin/generate-images",
 					"features/admin/routes/generate-images.tsx",
 				),
+				route("/admin/og-images", "features/admin/routes/og-images.tsx"),
+				route(
+					"/admin/changelog-image",
+					"features/changelog/routes/changelog-image.tsx",
+				),
 				route(
 					"/components",
 					"features/components-showcase/routes/components.tsx",
@@ -42,6 +47,12 @@ export default [
 	route("/patrons-list", "features/front-page/routes/patrons-list.ts"),
 
 	route("/sidenav", "features/layout/routes/sidenav.ts"),
+
+	route("/sse", "features/events/routes/sse.ts"),
+	route(
+		"/sse/:connectionId/topics",
+		"features/events/routes/sse.$connectionId.topics.ts",
+	),
 
 	route("/notifications", "features/notifications/routes/notifications.tsx"),
 	route(
@@ -241,6 +252,7 @@ export default [
 		route("roster", "features/team/routes/t.$customUrl.roster.tsx"),
 		route("join", "features/team/routes/t.$customUrl.join.tsx"),
 		route("results", "features/team/routes/t.$customUrl.results.tsx"),
+		route("schedule", "features/availability/routes/t.$customUrl.schedule.tsx"),
 	]),
 
 	...prefix("/vods", [
@@ -316,7 +328,16 @@ export default [
 
 	route("/admin", "features/admin/routes/admin.tsx"),
 	route("/admin/streams", "features/admin/routes/admin.streams.tsx"),
-	route("/api/chat-users", "features/chat/routes/api.chat-users.ts"),
+	route("/api/chat/rooms", "features/chat/routes/api.chat.rooms.ts"),
+	route("/api/chat/rooms/:id", "features/chat/routes/api.chat.rooms.$id.ts"),
+	route(
+		"/api/chat/rooms/:id/messages",
+		"features/chat/routes/api.chat.rooms.$id.messages.ts",
+	),
+	route(
+		"/api/chat/rooms/:id/read",
+		"features/chat/routes/api.chat.rooms.$id.read.ts",
+	),
 	route("/api/layout", "features/layout/routes/api.layout.ts"),
 	route(
 		"/api/notifications",

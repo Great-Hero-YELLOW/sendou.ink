@@ -1,17 +1,18 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useBlocker } from "react-router";
+import { type Location, useBlocker } from "react-router";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouDialog } from "~/components/elements/Dialog";
 
-const dirtyCheckers = new Set<() => boolean>();
+/** In-app navigations pass the locations so same-route ones can be ignored; a page unload passes nothing. */
+type UnsavedChangesChecker = (navigation?: {
+	currentLocation: Location;
+	nextLocation: Location;
+}) => boolean;
 
-/**
- * Confirms navigating away when any mounted form has unsaved changes.
- * Rendered once in the root layout because react-router supports only a
- * single active blocker at a time — individual forms register a checker via
- * `useUnsavedChangesChecker` instead of calling `useBlocker` themselves.
- */
+const dirtyCheckers = new Set<UnsavedChangesChecker>();
+
+/** Rendered once in root since react-router allows one active blocker; forms register via `useUnsavedChangesChecker`. */
 export function UnsavedChangesGuard() {
 	const { t } = useTranslation(["common", "forms"]);
 
@@ -19,7 +20,7 @@ export function UnsavedChangesGuard() {
 		({ currentLocation, nextLocation }) =>
 			(currentLocation.pathname !== nextLocation.pathname ||
 				currentLocation.search !== nextLocation.search) &&
-			hasUnsavedChanges(),
+			hasUnsavedChanges({ currentLocation, nextLocation }),
 	);
 
 	React.useEffect(() => {
@@ -59,16 +60,13 @@ export function UnsavedChangesGuard() {
 	);
 }
 
-/**
- * Registers a callback reporting whether the calling form currently has
- * unsaved changes. The ref indirection lets the callback read the latest
- * form state without re-registering on every render.
- */
+/** Registers a dirty checker; the ref lets it read the latest state without re-registering every render. */
 export function useUnsavedChangesChecker(
-	checkerRef: React.RefObject<() => boolean>,
+	checkerRef: React.RefObject<UnsavedChangesChecker>,
 ) {
 	React.useEffect(() => {
-		const checker = () => checkerRef.current();
+		const checker: UnsavedChangesChecker = (navigation) =>
+			checkerRef.current(navigation);
 		dirtyCheckers.add(checker);
 		return () => {
 			dirtyCheckers.delete(checker);
@@ -76,9 +74,9 @@ export function useUnsavedChangesChecker(
 	}, [checkerRef]);
 }
 
-function hasUnsavedChanges() {
+function hasUnsavedChanges(navigation?: Parameters<UnsavedChangesChecker>[0]) {
 	for (const checker of dirtyCheckers) {
-		if (checker()) return true;
+		if (checker(navigation)) return true;
 	}
 	return false;
 }

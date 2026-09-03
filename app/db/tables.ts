@@ -30,6 +30,10 @@ import type {
 import type { ApiTokenType } from "~/features/api/api-types";
 import type { AssociationVisibility } from "~/features/associations/associations-types";
 import type { CalendarEventTag } from "~/features/calendar/calendar-types";
+import type {
+	ChatRoomType,
+	PersistedSystemMessageType,
+} from "~/features/chat/chat-types";
 import type { LFGType } from "~/features/lfg/lfg-constants";
 import type { TierName } from "~/features/mmr/mmr-constants";
 import type { SkillTeamIdentifier } from "~/features/mmr/mmr-utils";
@@ -94,7 +98,7 @@ export interface Team {
 	name: string;
 	bsky: string | null;
 	mapModePreferences: JSONColumnTypeNullable<UserMapModePreferences>;
-	/** Team's tag, typically used in-game in front of users' names to indicate they are a member of the team. */
+	/** Shown in-game in front of members' names */
 	tag: string | null;
 }
 
@@ -296,8 +300,40 @@ export interface CalendarEventResultTeam {
 	placement: number;
 }
 
+export interface ChatRoom {
+	/** Set by a routine ~a month after `expiresAt`; messages are kept but access narrows to staff and tournament organizers. */
+	closedAt: number | null;
+	createdAt: Generated<number>;
+	expiresAt: number;
+	id: GeneratedAlways<number>;
+	/** The owner's activity has concluded, e.g. the set the room was for was finalized or canceled. Reverted if a tournament match is reopened. */
+	inactive: Generated<DBBoolean>;
+	type: ChatRoomType;
+}
+
+export interface ChatMessage {
+	/** The sender, or for a system message the actor it describes. `null` only when that account has since been deleted. */
+	authorUserId: number | null;
+	/** `null` for system messages, whose text is rendered client-side from {@link ChatMessage.type}. */
+	contents: string | null;
+	createdAt: Generated<number>;
+	id: GeneratedAlways<number>;
+	/** Client-generated nanoid, unique so a retried send can't double-insert. */
+	publicId: string;
+	roomId: number;
+	/** `null` = a regular user message. */
+	type: PersistedSystemMessageType | null;
+}
+
+export interface ChatMessageReadIndicator {
+	/** Id of the newest message the user has seen in the room; upserts keep the MAX. */
+	lastSeenMessageId: number;
+	roomId: number;
+	userId: number;
+}
+
 export interface Group {
-	chatCode: string | null;
+	chatRoomId: number | null;
 	createdAt: Generated<number>;
 	id: GeneratedAlways<number>;
 	inviteCode: string;
@@ -330,7 +366,7 @@ export interface GroupLike {
 export interface GroupMatch {
 	alphaGroupId: number;
 	bravoGroupId: number;
-	chatCode: string | null;
+	chatRoomId: number | null;
 	confirmedAt: number | null;
 	confirmedByUserId: number | null;
 	createdAt: Generated<number>;
@@ -643,18 +679,10 @@ export interface TournamentBadgeOwner {
 	count: Generated<number>;
 }
 
-/** A group is a logical structure used to group multiple rounds together.
-
-- In round-robin stages, a group is a pool.
-- In swiss, a group is also a pool (can have one or multiple groups)
-- In elimination stages, a group is a bracket.
-    - A single elimination stage can have one or two groups:
-      - The unique bracket.
-      - If enabled, the Consolation Final.
-    - A double elimination stage can have two or three groups:
-      - Upper and lower brackets.
-      - If enabled, the Grand Final.
-*/
+/**
+ * Groups rounds together. In round-robin and swiss a group is a pool; in elimination it is a bracket
+ * (single: the bracket + optional consolation final, double: upper, lower + optional grand final).
+ */
 export interface TournamentGroup {
 	id: GeneratedAlways<number>;
 	number: number;
@@ -662,7 +690,7 @@ export interface TournamentGroup {
 }
 
 export interface TournamentMatch {
-	chatCode: string | null;
+	chatRoomId: number | null;
 	groupId: number;
 	id: GeneratedAlways<number>;
 	number: number;
@@ -670,7 +698,7 @@ export interface TournamentMatch {
 	opponentTwo: JSONColumnTypeNullable<ParticipantResult>;
 	roundId: number;
 	stageId: number;
-	// set when the match becomes playable i.e. its status is "STARTED"
+	/** Set when the match becomes playable i.e. its status is "STARTED" */
 	startedAt: number | null;
 	/** The side that won the set. `null` while the match has no winner. */
 	winnerSide: Side | null;
@@ -713,23 +741,14 @@ export interface TournamentResult {
 	placement: number;
 	tournamentId: number;
 	tournamentTeamId: number;
-	/**
-	 * The result of sets in the tournament.
-	 * E.g. ["W", "L", null] would mean the user won the first set, lost the second and did not play the third.
-	 * */
+	/** E.g. ["W", "L", null] = won the first set, lost the second, did not play the third. */
 	setResults: JSONColumnType<WinLossParticipationArray>;
 	userId: number;
 	/** Division label for tournaments with multiple starting brackets (e.g., "D1", "D2") */
 	div: string | null;
 }
 
-/**
- * A round is a logical structure used to group multiple matches together.
-
-  - In round-robin stages, a round can be viewed as a list of matches that can be played at the same time.
-  - In swiss, a round is a list of matches that are played at the same time.
-  - In elimination stages, a round is a round of a bracket, e.g. 8th finals, semi-finals, etc.
- */
+/** Groups matches played at the same time (round-robin, swiss) or one round of a bracket (elimination). */
 export interface TournamentRound {
 	groupId: number;
 	id: GeneratedAlways<number>;
@@ -780,7 +799,7 @@ export interface TournamentTeam {
 	isLooking: Generated<DBBoolean>;
 	isPlaceholder: Generated<DBBoolean>;
 	lfgNote: string | null;
-	chatCode: Generated<string | null>;
+	chatRoomId: number | null;
 	/** A/B division assignment for bipartite round robin brackets. `0` = A, `1` = B, `null` = unassigned. */
 	abDivision: number | null;
 	/** The team's {@link TournamentTeamHistory} row, created lazily on its first audited event. */
@@ -807,7 +826,7 @@ export interface TournamentTeamMember {
 	isSub: Generated<DBBoolean>;
 	/** Set when the member was added to the roster by the tournament organizer instead of joining on their own. */
 	isOrganizerAdded: Generated<DBBoolean>;
-	// denormalized from TournamentTeam.isLooking
+	/** Denormalized from TournamentTeam.isLooking */
 	isLooking: Generated<DBBoolean>;
 }
 
@@ -825,7 +844,6 @@ export interface TournamentAuditLog {
 	id: GeneratedAlways<number>;
 	tournamentId: number;
 	type: TournamentAuditLogType;
-	/** The user who performed the action. */
 	actorUserId: number;
 	/** The affected member, for member-level events. `null` for team-level events. */
 	subjectUserId: number | null;
@@ -978,10 +996,10 @@ export interface User {
 	noScreen: Generated<DBBoolean>;
 	buildSorting: JSONColumnTypeNullable<BuildSort[]>;
 	preferences: JSONColumnTypeNullable<UserPreferences>;
-	/** User creation date. Can be null because we did not always save this. */
+	/** Can be null because we did not always save this. */
 	createdAt: number | null;
 	joinOrder: number | null;
-	/** User card banner default selection, stored as raw text (not JSON): either a hex code (e.g. "#8b0000") or a stage id in string form (e.g. "16"). Note: supporters can also upload banner (stored in UserSubmittedImage, referenced by `bannerImgId` which takes precedence) */
+	/** User card banner preset, raw text (not JSON): a hex code ("#8b0000") or a stage id ("16"). `bannerImgId` takes precedence. */
 	bannerPresetImg: string | null;
 	/** Supporter-uploaded user card banner (UserSubmittedImage id). Takes precedence over `bannerPresetImg`. */
 	bannerImgId: number | null;
@@ -1172,7 +1190,6 @@ export interface XRankPlacement {
 
 export interface ScrimPost {
 	id: GeneratedAlways<number>;
-	/** When is the scrim scheduled to happen */
 	startsAt: number;
 	/** Optional end of time range indicating team accepts scrims starting between startsAt and rangeEndsAt */
 	rangeEndsAt: number | null;
@@ -1180,21 +1197,14 @@ export interface ScrimPost {
 	maxDiv: number | null;
 	/** Lowest LUTI div accepted */
 	minDiv: number | null;
-	/** Who sees the post */
 	visibility: JSONColumnTypeNullable<AssociationVisibility>;
-	/** Any additional info */
 	text: string | null;
-	/** The key to access the scrim chat, used after scrim is scheduled with another team */
-	chatCode: string;
+	chatRoomId: number | null;
 	/** Refers to the team looking for the team (can also be a pick-up) */
 	teamId: number | null;
-	/** Indicates if anyone in the post can manage it */
 	managedByAnyone: DBBoolean;
-	/** When the scrim was canceled */
 	canceledAt: number | null;
-	/** User id who canceled the scrim */
 	canceledByUserId: number | null;
-	/** Reason for canceling the scrim */
 	cancelReason: string | null;
 	/** When the post was made was it scheduled for a future time slot (as opposed to looking now) */
 	isScheduledForFuture: Generated<DBBoolean>;
@@ -1230,13 +1240,11 @@ export interface ScrimMap {
 export interface ScrimPostUser {
 	scrimPostId: number;
 	userId: number;
-	/** User is the author of the post */
 	isOwner: DBBoolean;
 }
 
 export interface ScrimPickupRoster {
 	id: GeneratedAlways<number>;
-	/** User who used the pick-up roster */
 	userId: number;
 	/** When the roster was last used to make a scrim post */
 	usedAt: Generated<number>;
@@ -1261,7 +1269,6 @@ export interface ScrimPostRequest {
 
 export interface ScrimPostRequestUser {
 	scrimPostRequestId: number;
-	/** User that made the request */
 	userId: number;
 	isOwner: DBBoolean;
 }
@@ -1310,20 +1317,58 @@ export interface SplatoonRotation {
 	endsAt: number;
 }
 
+/** One week of availability a user reported. The row existing means the week was submitted, which is what tells "unavailable all week" (submitted, no slots) apart from "unknown" (no row). */
+export interface AvailabilityWeek {
+	id: GeneratedAlways<number>;
+	userId: number;
+	/** Monday 00:00 of the week, in `timezone` */
+	weekStartsAt: number;
+	/** IANA timezone the week was reported in, which the day notes' dates are relative to */
+	timezone: string;
+	createdAt: Generated<number>;
+	updatedAt: Generated<number>;
+}
+
+/** A range the user is available for. Absolute, so a range crossing midnight is one row like any other. */
+export interface AvailabilitySlot {
+	id: GeneratedAlways<number>;
+	availabilityWeekId: number;
+	startsAt: number;
+	endsAt: number;
+}
+
+export interface AvailabilityDayNote {
+	availabilityWeekId: number;
+	/** YYYY-MM-DD, in the week's `timezone` */
+	date: string;
+	text: string;
+}
+
+/** Something the team does together that is not a tournament or a scrim, e.g. a VoD review. Blocks the members' availability. */
+export interface TeamEvent {
+	id: GeneratedAlways<number>;
+	teamId: number;
+	/** User who created the event. Null if their account has since been deleted. */
+	authorId: number | null;
+	name: string;
+	startsAt: number;
+	endsAt: number;
+	createdAt: Generated<number>;
+}
+
+/** Participant of a team event limited to selected members. No rows for an event = the whole team takes part. */
+export interface TeamEventMember {
+	teamEventId: number;
+	userId: number;
+}
+
 export type Tables = { [P in keyof DB]: Selectable<DB[P]> };
 export type TablesInsertable = { [P in keyof DB]: Insertable<DB[P]> };
 
 /**
- * Every table and view available to query.
- *
- * Some entries are SQL **views**, not tables. They are marked below and can not
- * be inserted into or updated. Two naming conventions exist for the
- * table/view pairing, both meaning "base table vs. filtered view":
- * - `All` prefix on the table: `AllTeam` (table) / `Team` (view)
- * - `Unvalidated` prefix on the table: `UnvalidatedVideo` (table) / `Video` (view)
- *
- * In both cases write to the prefixed table and read from the unprefixed view
- * unless you specifically want the filtered-out rows.
+ * Every table and view. Views (marked below) are read-only. Base table / filtered view pairs use an
+ * `All` or `Unvalidated` prefix on the table (`AllTeam`/`Team`, `UnvalidatedVideo`/`Video`): write to
+ * the prefixed table, read from the view unless you want the filtered-out rows.
  */
 export interface DB {
 	/** Table backing the `Team` view. Includes soft-deleted teams. */
@@ -1352,6 +1397,9 @@ export interface DB {
 	CalendarEventDate: CalendarEventDate;
 	CalendarEventResultPlayer: CalendarEventResultPlayer;
 	CalendarEventResultTeam: CalendarEventResultTeam;
+	ChatMessage: ChatMessage;
+	ChatMessageReadIndicator: ChatMessageReadIndicator;
+	ChatRoom: ChatRoom;
 	ExternalStream: ExternalStream;
 	Group: Group;
 	GroupLike: GroupLike;
@@ -1457,4 +1505,9 @@ export interface DB {
 	NotificationUserSubscription: NotificationUserSubscription;
 	SavedCalendarEvent: SavedCalendarEvent;
 	SplatoonRotation: SplatoonRotation;
+	AvailabilityWeek: AvailabilityWeek;
+	AvailabilitySlot: AvailabilitySlot;
+	AvailabilityDayNote: AvailabilityDayNote;
+	TeamEvent: TeamEvent;
+	TeamEventMember: TeamEventMember;
 }

@@ -3,6 +3,7 @@ import {
 	type ActionFunctionArgs,
 	redirect,
 } from "react-router";
+import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import { notify } from "~/features/notifications/core/notify.server";
@@ -14,7 +15,6 @@ import {
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
-import { syncPickupChatMetadata } from "~/features/tournament-lfg/tournament-lfg-utils.server";
 import { parseFormDataWithImages } from "~/form/parse.server";
 import invariant from "~/utils/invariant";
 import { logger } from "~/utils/logger";
@@ -25,11 +25,7 @@ import { adminRegistrationFormSchemaServer } from "../tournament-admin-registrat
 export const action: ActionFunction = (args) =>
 	upsertRegistrationAction(args, { allowTournamentNameUpdates: true });
 
-/**
- * The registration upsert itself, shared with the public API's version of this
- * endpoint. That one passes `allowTournamentNameUpdates: false`: tournament names
- * are the admin form's business and the API can only read them.
- */
+/** Shared with the public API, which passes `allowTournamentNameUpdates: false` as it may only read tournament names. */
 export const upsertRegistrationAction = async (
 	{ request, params }: ActionFunctionArgs,
 	{ allowTournamentNameUpdates }: { allowTournamentNameUpdates: boolean },
@@ -93,8 +89,7 @@ export const upsertRegistrationAction = async (
 		return [{ userId: member.userId, inGameName: member.inGameName }];
 	});
 
-	// only a submission from someone allowed to edit tournament names says anything
-	// about them, everyone else leaves the names the players have untouched
+	// only a submission from someone allowed to edit tournament names says anything about them
 	const tournamentNameUpdates =
 		allowTournamentNameUpdates && tournament.canEditTournamentNames(user)
 			? submittedMembers.map((member) => ({
@@ -103,8 +98,7 @@ export const upsertRegistrationAction = async (
 				}))
 			: [];
 
-	// the map pool field is only shown while it can still be changed, so a submission
-	// from any other state says nothing about the pool the team has
+	// the map pool field is only shown while it can still be changed, other states say nothing about it
 	const mapPool =
 		tournament.teamsPrePickMaps && !tournament.hasStarted
 			? new MapPool(data.mapPool)
@@ -133,10 +127,12 @@ export const upsertRegistrationAction = async (
 	}
 
 	for (const addId of membersToAdd) {
-		await TournamentLFGRepository.leaveLfg({
-			userId: addId,
-			tournamentId,
-		});
+		ChatSystemMessage.notifyRoomsChanged(
+			await TournamentLFGRepository.leaveLfg({
+				userId: addId,
+				tournamentId,
+			}),
+		);
 		ShowcaseTournaments.addToCached({
 			tournamentId,
 			type: "participant",
@@ -148,18 +144,6 @@ export const upsertRegistrationAction = async (
 			tournamentId,
 			type: "participant",
 			userId: removeId,
-		});
-	}
-
-	if (team && (membersToAdd.length > 0 || membersToRemove.length > 0)) {
-		await syncPickupChatMetadata({
-			teamId: team.id,
-			tournament: {
-				id: tournamentId,
-				name: tournament.ctx.name,
-				logoUrl: tournament.ctx.logoUrl,
-				startTime: tournament.ctx.startsAt,
-			},
 		});
 	}
 

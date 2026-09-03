@@ -3,8 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 vi.mock("~/features/chat/ChatSystemMessage.server", () => ({
 	send: vi.fn(),
 	notifyNotificationsChanged: vi.fn(),
-	removeRoom: vi.fn(),
-	setMetadata: vi.fn(),
+	notifyRoomsChangedByRoomIds: vi.fn(),
 }));
 
 import type * as v from "valibot";
@@ -206,6 +205,17 @@ describe("Tournament match page", () => {
 			assertResponseErrored(res, "Invalid roster");
 		});
 
+		test("returns error if submitted active roster has the same player twice", async () => {
+			const res = await setActiveRosterAction(teamOne.id, [
+				organizerId,
+				organizerId,
+				organizerId,
+				organizerId,
+			]);
+
+			assertResponseErrored(res);
+		});
+
 		test("returns error if submitted active roster is not of correct length", async () => {
 			const res = await setActiveRosterAction(
 				teamOne.id,
@@ -269,8 +279,7 @@ describe("Tournament match page", () => {
 	describe("locked match", () => {
 		test("returns error when reporting score for a match waiting on previous matches", async () => {
 			await setActiveRosterAction();
-			// the state under test is one an earlier match of a larger bracket puts this
-			// row in, not one the match was created in
+			// a state an earlier match of a larger bracket puts this row in, not one it was created in
 			// biome-ignore lint/plugin: written rather than seeded, see above
 			await db
 				.updateTable("TournamentMatch")
@@ -285,8 +294,7 @@ describe("Tournament match page", () => {
 	});
 
 	describe("BYE matches", () => {
-		// as above: a BYE and a TBD opponent are states the surrounding bracket
-		// produces, so they are written here rather than seeded
+		// as above: a BYE and a TBD opponent are states the surrounding bracket produces, so written not seeded
 		test("404s when accessing a BYE match", async () => {
 			// biome-ignore lint/plugin: as above
 			await db

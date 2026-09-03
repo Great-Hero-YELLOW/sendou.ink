@@ -5,6 +5,7 @@ import { db } from "~/db/sql";
 import type { DB, Tables, TablesInsertable } from "~/db/tables";
 import type { CustomTheme, UserPreferences } from "~/db/tables-json";
 import { actorId } from "~/features/auth/core/user.server";
+import { PATRON_CHIP_THEME_VARS } from "~/features/theme/theme-constants";
 import {
 	BEST_TIER_NUMBER,
 	type TournamentTierNumber,
@@ -16,7 +17,11 @@ import type {
 } from "~/features/user-page/user-page-constants";
 import { userRoles } from "~/modules/permissions/mapper.server";
 import { isSupporter } from "~/modules/permissions/utils";
-import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
+import {
+	databaseTimestampNow,
+	dateToDatabaseTimestamp,
+	dateToYYYYMMDD,
+} from "~/utils/dates";
 import invariant from "~/utils/invariant";
 import {
 	asJson,
@@ -26,12 +31,11 @@ import {
 	jsonArrayFrom,
 	tournamentLogoOrNull,
 	userByIdentifierQuery,
-	userChatNameHue,
 	userProfileWeapons,
 } from "~/utils/kysely.server";
 import { logger } from "~/utils/logger";
+import { seededRandom } from "~/utils/random";
 import { bskyUrl, twitchUrl, youtubeUrl } from "~/utils/urls";
-import type { ChatUser } from "../chat/chat-types";
 import { sortBadgesByFavorites } from "./core/badge-sorting.server";
 import { findWidgetById } from "./core/widgets/portfolio";
 import { WIDGET_LOADERS } from "./core/widgets/portfolio-loaders.server";
@@ -146,8 +150,7 @@ export function findLayoutDataByIdentifier(
 				)
 				.whereRef("VideoMatchPlayer.playerUserId", "=", "User.id")
 				.as("vodsCount"),
-			// authored and tagged art counted via an indexed union: an OR spanning
-			// Art and ArtUserMetadata would make SQLite scan the whole Art table
+			// indexed union: an OR spanning Art and ArtUserMetadata would scan the whole Art table
 			eb
 				.selectFrom("Art")
 				.innerJoin("UserSubmittedImage", "UserSubmittedImage.id", "Art.imgId")
@@ -251,9 +254,7 @@ export async function findProfileByIdentifier(
 		return null;
 	}
 
-	// queried separately with a constant userId instead of correlating to
-	// "User"."id" so that SQLite can push the predicate down into both arms
-	// of the BadgeOwner view
+	// queried separately with a constant userId, see findOwnedBadgesByUserId
 	const badges = await findOwnedBadgesByUserId(row.id);
 
 	return {
@@ -270,11 +271,8 @@ export async function findProfileByIdentifier(
 }
 
 /**
- * Badges owned by the user (tournament wins + patreon supporter badges).
- *
- * Kept as its own query taking a constant userId on purpose: correlating
- * to an outer "User"."id" would prevent SQLite from pushing the predicate
- * down into both arms of the BadgeOwner view, materializing the full view.
+ * Takes a constant userId on purpose: correlating to an outer "User"."id" would stop SQLite
+ * pushing the predicate into both arms of the BadgeOwner view, materializing the full view.
  */
 export function findOwnedBadgesByUserId(userId: number) {
 	return db
@@ -501,11 +499,47 @@ export function findModInfoById(id: number) {
 export function findAllPatrons() {
 	return db
 		.selectFrom("User")
-		.select(["User.id", "User.discordId", "User.username", "User.patronTier"])
+		.select([
+			"User.id",
+			"User.discordId",
+			"User.username",
+			"User.patronTier",
+			asJson(
+				sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
+			).as("customTheme"),
+		])
 		.where("User.patronTier", "is not", null)
 		.orderBy("User.patronTier", "desc")
 		.orderBy("User.patronStartedAt", "asc")
 		.execute();
+}
+
+/** Patrons for the footer marquee, reshuffled each UTC day and slimmed to the fields the chip renders. */
+export async function findAllPatronsForFooter() {
+	const rows = await db
+		.selectFrom("User")
+		.select([
+			"User.id",
+			"User.discordId",
+			"User.username",
+			asJson(
+				sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
+			).as("customTheme"),
+		])
+		.where("User.patronTier", "is not", null)
+		.orderBy("User.id", "asc")
+		.execute();
+
+	const patrons = rows.map((row) => ({
+		...row,
+		customTheme: row.customTheme
+			? R.pick(row.customTheme, PATRON_CHIP_THEME_VARS)
+			: null,
+	}));
+
+	const { seededShuffle } = seededRandom(dateToYYYYMMDD(new Date()));
+
+	return seededShuffle(patrons);
 }
 
 export function findAllPlusServerMembers() {
@@ -530,22 +564,6 @@ export async function existingUserIds(userIds: Array<number>) {
 		.execute();
 
 	return rows.map((row) => row.id);
-}
-
-export async function findChatUsersByUserIds(userIds: number[]) {
-	const users = await db
-		.selectFrom("User")
-		.select((eb) => [...commonUserSelect(eb), "User.pronouns", userChatNameHue])
-		.where("User.id", "in", userIds)
-		.execute();
-
-	const result: Record<number, ChatUser> = {};
-
-	for (const user of users) {
-		result[user.id] = user;
-	}
-
-	return result;
 }
 
 export interface ResultsFilters {
@@ -984,8 +1002,7 @@ export async function search({
 	query: string;
 	limit: number;
 }) {
-	// single scan over User with exact matches ranked first instead of two
-	// separate scans (exact pass + fuzzy pass excluding exact ids)
+	// one scan over User with exact matches ranked first instead of an exact pass + a fuzzy pass
 	const exactConditions = (eb: ExpressionBuilder<DB, "User">) => [
 		eb("User.username", "like", query),
 		eb("User.inGameName", "like", query),
@@ -1002,8 +1019,7 @@ export async function search({
 
 	const includeExactMatches = query.length > 1;
 
-	// the trigram index needs at least 3 characters and can't replicate
-	// LIKE wildcard semantics, those queries fall back to scanning User
+	// the trigram index needs 3+ characters and can't do LIKE wildcards; those queries scan User
 	const canUseSearchIndex =
 		query.length >= 3 && !query.includes("%") && !query.includes("_");
 
@@ -1020,9 +1036,7 @@ export async function search({
 		);
 
 	if (canUseSearchIndex) {
-		// UserSearch match prefilters candidates via the trigram index (it
-		// matches a superset of the LIKE conditions, which stay above as the
-		// source of truth so results are identical to the fallback path)
+		// the trigram index prefilters a superset; the LIKE conditions above stay the source of truth
 		const ftsPhrase = `"${query.replaceAll('"', '""')}"`;
 		dbQuery = dbQuery
 			.innerJoin("UserSearch", "UserSearch.rowid", "User.id")
@@ -1107,7 +1121,7 @@ export async function findCurrentFriendCodeByUserId(userId: number) {
 		.executeTakeFirst();
 }
 
-/** Returns all friend codes submitted by a user (both present and past) */
+/** All friend codes a user has ever submitted. */
 export async function findFriendCodesByUserId(userId: number) {
 	return db
 		.selectFrom("UserFriendCode")
@@ -1267,8 +1281,7 @@ export function updateOwnProfile(args: UpdateProfileArgs) {
 	return db.transaction().execute(async (trx) => {
 		await trx.deleteFrom("UserWeapon").where("userId", "=", userId).execute();
 
-		// a removed or replaced custom avatar is no longer referenced by anything,
-		// so its submitted image row is cleaned up
+		// a removed or replaced custom avatar's image row is cleaned up
 		const current = await trx
 			.selectFrom("User")
 			.select("User.customAvatarImgId")
@@ -1567,7 +1580,7 @@ export function findIdsByTwitchUsernames(twitchUsernames: string[]) {
 		.execute();
 }
 
-/** Returns weapon pool entries with ten-star status for the given user. */
+/** Weapon pool entries with ten-star status. */
 export function findWeaponPoolByUserId(userId: number) {
 	return db
 		.selectFrom("UserWeaponPool")

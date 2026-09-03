@@ -1,7 +1,6 @@
 import { sub } from "date-fns";
 import {
 	Check,
-	Clipboard,
 	Eye,
 	EyeOff,
 	Map as MapIcon,
@@ -29,15 +28,15 @@ import {
 	SendouTabPanel,
 	SendouTabs,
 } from "~/components/elements/Tabs";
+import { InviteLinkInput } from "~/components/InviteLinkInput";
 import { LocaleTimeRange } from "~/components/LocaleTimeRange";
 import { useUser } from "~/features/auth/core/user";
-import { useWebsocketRevalidation } from "~/features/chat/chat-hooks";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
 import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import {
 	TournamentProvider,
 	useTournament,
 } from "~/features/tournament/tournament-context";
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useHydrated } from "~/hooks/useHydrated";
 import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
 import { useSearchParam } from "~/modules/search-params/hooks";
@@ -63,8 +62,8 @@ import {
 } from "../loaders/to.$id.brackets.server";
 import { tournamentBracketsSearchParams } from "../tournament-bracket-search-params";
 import {
-	tournamentBracketWebsocketRoom,
-	tournamentWebsocketRoom,
+	tournamentBracketChannel,
+	tournamentChannel,
 } from "../tournament-bracket-utils";
 
 export { action, loader };
@@ -110,14 +109,13 @@ function TournamentBracketsView() {
 
 	const bracket = tournament.bracketByIdx(data.bracketIdx);
 
-	useWebsocketRevalidation(
-		tournamentWebsocketRoom(tournament.ctx.id),
+	useTopicRevalidation(
+		tournamentChannel(tournament.ctx.id),
 		!tournament.ctx.isFinalized,
 	);
-	// results of the loaded bracket (and group) broadcast to their own room, so that
-	// another bracket's or group's live scores do not make this view refetch
-	useWebsocketRevalidation(
-		tournamentBracketWebsocketRoom({
+	// own room per bracket (and group) so another's live scores do not make this view refetch
+	useTopicRevalidation(
+		tournamentBracketChannel({
 			tournamentId: tournament.ctx.id,
 			bracketIdx: data.bracketIdx,
 			groupId: data.groupId,
@@ -276,11 +274,7 @@ export interface BracketsPageState {
 	scrollToMatchId?: number;
 }
 
-/**
- * Scrolls the match referenced by the navigation `state` into view on load, so
- * returning from a match page lands the user at that match's spot in the bracket
- * instead of the top.
- */
+/** Returning from a match page lands at that match's spot in the bracket instead of the top. */
 function useScrollToMatchOnLoad() {
 	const location = useLocation();
 	const scrollToMatchId = (location.state as BracketsPageState | null)
@@ -438,7 +432,6 @@ function MapPreparer({
 
 function AddSubsPopOver() {
 	const { t } = useTranslation(["common", "tournament"]);
-	const { copyToClipboard, copySuccess } = useCopyToClipboard();
 	const tournament = useTournament();
 	const user = useUser();
 	const data = useLoaderData<TournamentBracketsLoaderData>();
@@ -465,19 +458,7 @@ function AddSubsPopOver() {
 			{subsAvailableToAdd > 0 ? (
 				<>
 					<Divider className="my-2" />
-					<div>{t("tournament:actions.shareLink", { inviteLink })}</div>
-					<div className="mt-2 flex justify-center">
-						<SendouButton
-							size="small"
-							icon={copySuccess ? <Check /> : <Clipboard />}
-							onPress={() => copyToClipboard(inviteLink)}
-							variant="minimal"
-							className="tiny"
-							data-testid="copy-invite-link-button"
-						>
-							{t("common:actions.copyToClipboard")}
-						</SendouButton>
-					</div>
+					<InviteLinkInput link={inviteLink} />
 				</>
 			) : null}
 		</SubsPopover>
@@ -508,10 +489,8 @@ function SubsPopover({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Bracket switcher. Only the bracket the loader shipped the match data of is rendered;
- * switching navigates so that the newly selected bracket's data gets loaded, the
- * previously loaded bracket staying up until it arrives. Of a league only the brackets
- * of the division the loader resolved can be switched between.
+ * Only the bracket the loader shipped is rendered; switching navigates to load the new one, the previous
+ * staying up until it arrives. A league switches only within the loader's division.
  */
 function BracketTabs({
 	loadedBracketIdx,

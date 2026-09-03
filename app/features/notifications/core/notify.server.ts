@@ -4,7 +4,7 @@ import { type Urgency, WebPushError } from "web-push";
 import type { NotificationSubscription } from "~/db/tables-json";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import { IS_E2E_TEST_RUN } from "~/utils/e2e";
-import { APP_ICON_URL } from "~/utils/urls";
+import { APP_ICON_URL, type UserLinkArgs } from "~/utils/urls";
 import { getFixedTForLanguage } from "../../../modules/i18n/i18next.server";
 import { logger } from "../../../utils/logger";
 import * as NotificationRepository from "../NotificationRepository.server";
@@ -31,6 +31,7 @@ const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
 	PLUS_SUGGESTION_ADDED: "normal",
 	TAGGED_TO_ART: "normal",
 	SEASON_STARTED: "normal",
+	SEASON_ENDED: "normal",
 	SCRIM_NEW_REQUEST: "high",
 	SCRIM_SCHEDULED: "high",
 	SCRIM_CANCELED: "high",
@@ -38,29 +39,23 @@ const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
 	SCRIM_AUTO_DELETED: "normal",
 	COMMISSIONS_CLOSED: "normal",
 	FRIEND_REQUEST_RECEIVED: "normal",
+	TEAM_EVENT_ADDED: "normal",
+	SCHEDULE_TEAM_REMINDER: "normal",
 };
 
-/** How long a push notification is held back before sending. Anything marking the notification as seen during this window (the user addressing what it is about, opening the notification list, `defaultSeenUserIds`) cancels the push for that user. */
+/** How long a push is held back; anything marking the notification seen meanwhile (addressing it, opening the list, `defaultSeenUserIds`) cancels it for that user. */
 export const PUSH_NOTIFICATION_GRACE_PERIOD_MS = 15 * 1000;
 
-/**
- * Create notifications both in the database and send push notifications to users (if enabled).
- *
- * Pushes go out after {@link PUSH_NOTIFICATION_GRACE_PERIOD_MS} and only to
- * users whose notification is still unseen at that point, so users who already
- * saw the event happen in-app are not pushed about it.
- */
+/** Creates notifications and sends pushes (if enabled) after {@link PUSH_NOTIFICATION_GRACE_PERIOD_MS}, only to users whose notification is still unseen by then. */
 export async function notify({
 	userIds,
 	notification,
 	defaultSeenUserIds,
 	skipPushGracePeriod,
 }: {
-	/** Array of user ids to notify */
 	userIds: Array<number>;
-	/** Array of user ids that should have the notification marked as seen by default */
+	/** User ids that get the notification already marked as seen */
 	defaultSeenUserIds?: Array<number>;
-	/** Notification to send (same for all users) */
 	notification: Notification;
 	/** Send push notifications right away and await them (used by the send-test-notification script) */
 	skipPushGracePeriod?: boolean;
@@ -134,12 +129,13 @@ async function sendPushNotificationsToUnseen({
 	const limit = pLimit(50);
 
 	await Promise.all(
-		subscriptions.map(({ id, subscription }) =>
+		subscriptions.map(({ id, subscription, discordId, customUrl }) =>
 			limit(() =>
 				sendPushNotification({
 					subscription,
 					subscriptionId: id,
 					notification,
+					recipient: { discordId, customUrl },
 					t,
 				}),
 			),
@@ -155,14 +151,12 @@ export function clearSentNotificationsForTesting() {
 	sentNotifications.clear();
 }
 
-// deduplicates notifications as a failsafe & anti-abuse mechanism; entries
-// expire so a legitimately repeated identical notification (e.g. the same team
-// requesting a scrim again weeks later) still gets delivered
+// failsafe & anti-abuse dedupe; entries expire so a legitimately repeated identical
+// notification (the same team requesting a scrim again weeks later) still gets delivered
 function isNotificationAlreadySent(
 	notification: Notification,
 	userIds: Array<number>,
 ) {
-	// e2e tests should not be affected by this
 	if (IS_E2E_TEST_RUN) {
 		return false;
 	}
@@ -191,23 +185,25 @@ async function sendPushNotification({
 	subscription,
 	subscriptionId,
 	notification,
+	recipient,
 	t,
 }: {
 	subscription: NotificationSubscription;
 	subscriptionId: number;
 	notification: Notification;
+	recipient: UserLinkArgs;
 	t: TFunction<["common"], undefined>;
 }) {
 	try {
 		await webPush.sendNotification(
 			subscription,
-			JSON.stringify(pushNotificationOptions(notification, t)),
+			JSON.stringify(pushNotificationOptions(notification, recipient, t)),
 			{ urgency: NOTIFICATION_URGENCY[notification.type] },
 		);
 	} catch (err) {
 		if (!(err instanceof WebPushError)) {
 			logger.error("Failed to send push notification (unknown error)", err);
-			// if we get "Not Found" or "Gone" we should delete the subscription as it is expired or no longer valid
+			// "Not Found" / "Gone": the subscription is expired or no longer valid
 		} else if (err.statusCode === 404 || err.statusCode === 410) {
 			await NotificationRepository.deleteSubscriptionById(subscriptionId);
 		} else {
@@ -218,6 +214,7 @@ async function sendPushNotification({
 
 function pushNotificationOptions(
 	notification: Notification,
+	recipient: UserLinkArgs,
 	t: TFunction<["common"], undefined>,
 ): Parameters<ServiceWorkerRegistration["showNotification"]>[1] & {
 	title: string;
@@ -229,6 +226,6 @@ function pushNotificationOptions(
 			notificationMeta(notification),
 		),
 		icon: notification.pictureUrl ?? APP_ICON_URL,
-		data: { url: notificationLink(notification) },
+		data: { url: notificationLink(notification, recipient) },
 	};
 }

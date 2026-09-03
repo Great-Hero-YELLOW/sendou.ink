@@ -1,13 +1,17 @@
-import { sub } from "date-fns";
-import type { Insertable } from "kysely";
+import { addHours, sub } from "date-fns";
+import { type Insertable, type NotNull, sql } from "kysely";
 import type { Tables, TablesInsertable } from "~/db/tables";
 import { actorId, actorIdOrNull } from "~/features/auth/core/user.server";
-import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
+import {
+	databaseTimestampNow,
+	databaseTimestampToDate,
+	dateToDatabaseTimestamp,
+} from "~/utils/dates";
 import {
 	ConcurrentModificationError,
 	DuplicateEntryError,
 } from "~/utils/errors";
-import { shortNanoid } from "~/utils/id";
 import {
 	type CommonUser,
 	commonUserSelect,
@@ -23,6 +27,8 @@ import type { AssociationVisibility } from "../associations/associations-types";
 import * as Scrim from "./core/Scrim";
 import type { ScrimPost, ScrimPostUser } from "./scrims-types";
 import { getPostRequestCensor, parseLutiDiv } from "./scrims-utils";
+
+const CHAT_ROOM_LIFESPAN_HOURS = 24;
 
 type InsertArgs = Pick<
 	TablesInsertable["ScrimPost"],
@@ -60,7 +66,6 @@ export function insert(args: InsertArgs) {
 				maps: args.maps,
 				mapsTournamentId: args.mapsTournamentId,
 				visibility: args.visibility ? JSON.stringify(args.visibility) : null,
-				chatCode: shortNanoid(),
 				managedByAnyone: args.managedByAnyone ? 1 : 0,
 				isScheduledForFuture: args.isScheduledForFuture ? 1 : 0,
 			})
@@ -85,12 +90,7 @@ type InsertRequestArgs = Pick<
 	>;
 };
 
-/**
- * Inserts a new request to a scrim post.
- *
- * @returns id of the new request
- * @throws {DuplicateEntryError} If the team already has a request for the post
- */
+/** Inserts a request to a scrim post, returning its id. @throws {DuplicateEntryError} if the team already has one for the post. */
 export function insertRequest(args: InsertRequestArgs) {
 	invariant(args.users.length > 0, "At least one user must be provided");
 
@@ -137,7 +137,16 @@ export function insertRequest(args: InsertRequestArgs) {
 }
 
 export function deleteById(scrimPostId: number) {
-	return db.deleteFrom("ScrimPost").where("id", "=", scrimPostId).execute();
+	return db.transaction().execute(async (trx) => {
+		const post = await trx
+			.selectFrom("ScrimPost")
+			.select("ScrimPost.chatRoomId")
+			.where("id", "=", scrimPostId)
+			.executeTakeFirst();
+		await ChatRepository.deleteRoomsByIds([post?.chatRoomId ?? null], trx);
+
+		await trx.deleteFrom("ScrimPost").where("id", "=", scrimPostId).execute();
+	});
 }
 
 const baseFindQuery = db
@@ -230,6 +239,9 @@ const baseFindQuery = db
 		).as("requests"),
 	]);
 
+/** The booked start of a scrim: the accepted request's chosen time for a range post, the post's own otherwise. */
+const bookedStartsAt = sql<number>`coalesce((select "ScrimPostRequest"."startsAt" from "ScrimPostRequest" where "ScrimPostRequest"."scrimPostId" = "ScrimPost"."id" and "ScrimPostRequest"."isAccepted" = 1), "ScrimPost"."startsAt")`;
+
 function findMany() {
 	const min = sub(new Date(), { hours: 3 });
 
@@ -240,7 +252,7 @@ function findMany() {
 }
 
 const mapDBRowToScrimPost = (
-	row: Unwrapped<typeof findMany> & { chatCode?: string },
+	row: Unwrapped<typeof findMany> & { chatRoomId?: number | null },
 ): ScrimPost => {
 	const someRequestIsAccepted = row.requests.some(
 		(request) => request.isAccepted,
@@ -300,7 +312,7 @@ const mapDBRowToScrimPost = (
 					avatarUrl: row.mapsTournament.avatarUrl,
 				}
 			: null,
-		chatCode: row.chatCode ?? null,
+		chatRoomId: row.chatRoomId ?? null,
 		team: row.team.name
 			? {
 					name: row.team.name,
@@ -357,9 +369,51 @@ const mapDBRowToScrimPost = (
 	};
 };
 
+/** Posts owning the given chat rooms, with the users of the post and of its accepted request. */
+export async function findAllByChatRoomIds(chatRoomIds: number[]) {
+	if (chatRoomIds.length === 0) return [];
+
+	return db
+		.selectFrom("ScrimPost")
+		.select((eb) => [
+			"ScrimPost.id",
+			"ScrimPost.chatRoomId",
+			"ScrimPost.startsAt",
+			jsonArrayFrom(
+				eb
+					.selectFrom("ScrimPostUser")
+					.select("ScrimPostUser.userId")
+					.whereRef("ScrimPostUser.scrimPostId", "=", "ScrimPost.id"),
+			).as("postUsers"),
+			jsonArrayFrom(
+				eb
+					.selectFrom("ScrimPostRequestUser")
+					.innerJoin(
+						"ScrimPostRequest",
+						"ScrimPostRequest.id",
+						"ScrimPostRequestUser.scrimPostRequestId",
+					)
+					.select("ScrimPostRequestUser.userId")
+					.whereRef("ScrimPostRequest.scrimPostId", "=", "ScrimPost.id")
+					.where("ScrimPostRequest.isAccepted", "=", 1),
+			).as("acceptedRequestUsers"),
+			eb
+				.selectFrom("ScrimPostRequest")
+				.select("ScrimPostRequest.startsAt")
+				.whereRef("ScrimPostRequest.scrimPostId", "=", "ScrimPost.id")
+				.where("ScrimPostRequest.isAccepted", "=", 1)
+				.limit(1)
+				.$asScalar()
+				.as("acceptedRequestStartsAt"),
+		])
+		.where("ScrimPost.chatRoomId", "in", chatRoomIds)
+		.$narrowType<{ chatRoomId: NotNull }>()
+		.execute();
+}
+
 export async function findById(scrimPostId: number): Promise<ScrimPost | null> {
 	const row = await baseFindQuery
-		.select(["ScrimPost.chatCode"])
+		.select(["ScrimPost.chatRoomId"])
 		.where("ScrimPost.id", "=", scrimPostId)
 		.executeTakeFirst();
 
@@ -411,6 +465,36 @@ export function acceptRequest(scrimPostRequestId: number) {
 				"Another request for this scrim post was already accepted",
 			);
 		}
+
+		// the scrim is now scheduled, so its chat becomes available
+		const request = await trx
+			.selectFrom("ScrimPostRequest")
+			.select("ScrimPostRequest.startsAt")
+			.where("id", "=", scrimPostRequestId)
+			.executeTakeFirstOrThrow();
+		const post = await trx
+			.selectFrom("ScrimPost")
+			.select(["ScrimPost.chatRoomId", "ScrimPost.startsAt"])
+			.where("ScrimPost.id", "=", target.scrimPostId)
+			.executeTakeFirstOrThrow();
+
+		if (post.chatRoomId === null) {
+			const scrimStartsAt = databaseTimestampToDate(
+				request.startsAt ?? post.startsAt,
+			);
+			const chatRoom = await ChatRepository.insertRoom(
+				{
+					type: "SCRIM",
+					expiresAt: addHours(scrimStartsAt, CHAT_ROOM_LIFESPAN_HOURS),
+				},
+				trx,
+			);
+			await trx
+				.updateTable("ScrimPost")
+				.set({ chatRoomId: chatRoom.id })
+				.where("ScrimPost.id", "=", target.scrimPostId)
+				.execute();
+		}
 	});
 }
 
@@ -421,30 +505,38 @@ export function deleteRequest(scrimPostRequestId: number) {
 		.execute();
 }
 
-export async function cancelScrim(id: number, reason: string) {
-	await db
-		.updateTable("ScrimPost")
-		.set({
-			canceledAt: databaseTimestampNow(),
-			canceledByUserId: actorId(),
-			cancelReason: reason,
-		})
-		.where("id", "=", id)
-		.where("canceledAt", "is", null)
-		.execute();
+export function cancelScrim(id: number, reason: string) {
+	return db.transaction().execute(async (trx) => {
+		await trx
+			.updateTable("ScrimPost")
+			.set({
+				canceledAt: databaseTimestampNow(),
+				canceledByUserId: actorId(),
+				cancelReason: reason,
+			})
+			.where("id", "=", id)
+			.where("canceledAt", "is", null)
+			.execute();
+
+		const post = await trx
+			.selectFrom("ScrimPost")
+			.select("ScrimPost.chatRoomId")
+			.where("ScrimPost.id", "=", id)
+			.executeTakeFirst();
+
+		// the scrim is not happening anymore, so its chat belongs with the past ones
+		await ChatRepository.updateRoomsInactive(
+			[post?.chatRoomId ?? null],
+			true,
+			trx,
+		);
+	});
 }
 
-/**
- * Finds all accepted scrims scheduled within a specific time range.
- *
- * @returns Array of accepted (matched) scrim posts within the time range
- */
+/** Accepted scrims starting within [startTime, endTime), excluding ones created after `excludeRecentlyCreated`. */
 export async function findAcceptedScrimsBetweenTwoTimestamps({
-	/** The earliest scrim start time to include (inclusive) */
 	startTime,
-	/** The latest scrim start time to include (exclusive) */
 	endTime,
-	/** Exclude scrims created after this timestamp */
 	excludeRecentlyCreated,
 }: {
 	startTime: Date;
@@ -452,8 +544,8 @@ export async function findAcceptedScrimsBetweenTwoTimestamps({
 	excludeRecentlyCreated: Date;
 }) {
 	const rows = await baseFindQuery
-		.where("ScrimPost.startsAt", ">=", dateToDatabaseTimestamp(startTime))
-		.where("ScrimPost.startsAt", "<", dateToDatabaseTimestamp(endTime))
+		.where(bookedStartsAt, ">=", dateToDatabaseTimestamp(startTime))
+		.where(bookedStartsAt, "<", dateToDatabaseTimestamp(endTime))
 		.where("ScrimPost.canceledAt", "is", null)
 		.where(
 			"ScrimPost.createdAt",
@@ -465,13 +557,55 @@ export async function findAcceptedScrimsBetweenTwoTimestamps({
 	return rows.map(mapDBRowToScrimPost).filter((post) => Scrim.isAccepted(post));
 }
 
+/** Accepted, uncanceled scrims of the users whose resolved start (accepted request's time for a range post, else the post's) falls in the window; one row per participating user per scrim. */
+export async function findAllAcceptedByUserIds({
+	userIds,
+	startsAt,
+	endsAt,
+}: {
+	userIds: Array<number>;
+	startsAt: number;
+	endsAt: number;
+}) {
+	if (userIds.length === 0) return [];
+
+	const resolvedStartsAt = sql<number>`coalesce("ScrimPostRequest"."startsAt", "ScrimPost"."startsAt")`;
+
+	const acceptedInWindow = db
+		.selectFrom("ScrimPost")
+		.innerJoin("ScrimPostRequest", (join) =>
+			join
+				.onRef("ScrimPostRequest.scrimPostId", "=", "ScrimPost.id")
+				.on("ScrimPostRequest.isAccepted", "=", 1),
+		)
+		.where("ScrimPost.canceledAt", "is", null)
+		.where(resolvedStartsAt, ">=", startsAt)
+		.where(resolvedStartsAt, "<=", endsAt);
+
+	const [postSideUsers, requestSideUsers] = await Promise.all([
+		acceptedInWindow
+			.innerJoin("ScrimPostUser", "ScrimPostUser.scrimPostId", "ScrimPost.id")
+			.select(["ScrimPostUser.userId", resolvedStartsAt.as("startsAt")])
+			.where("ScrimPostUser.userId", "in", userIds)
+			.execute(),
+		acceptedInWindow
+			.innerJoin(
+				"ScrimPostRequestUser",
+				"ScrimPostRequestUser.scrimPostRequestId",
+				"ScrimPostRequest.id",
+			)
+			.select(["ScrimPostRequestUser.userId", resolvedStartsAt.as("startsAt")])
+			.where("ScrimPostRequestUser.userId", "in", userIds)
+			.execute(),
+	]);
+
+	return [...postSideUsers, ...requestSideUsers];
+}
+
 /**
- * Finds pending (unaccepted, uncanceled, future) scrim posts and requests
- * involving any of the given users whose time overlaps [startTime, endTime].
- * Used to auto-clean conflicting availability when a scrim is scheduled.
- *
- * @returns posts (with their member ids, for notifying) and request ids
- * (deleted silently) that should be removed
+ * Pending (unaccepted, uncanceled, future) posts and requests involving the users that overlap
+ * [startTime, endTime], for auto-cleaning when a scrim is scheduled: posts come with member ids
+ * for notifying, requests are deleted silently.
  */
 export async function findPendingOverlapsForUsers({
 	userIds,
@@ -580,7 +714,7 @@ export async function findUserScrims(userId: number): Promise<SidebarScrim[]> {
 
 	const rows = await baseFindQuery
 		.where("ScrimPost.canceledAt", "is", null)
-		.where("ScrimPost.startsAt", ">=", now)
+		.where(bookedStartsAt, ">=", now)
 		.where((eb) =>
 			eb.or([
 				eb.exists(
@@ -604,7 +738,7 @@ export async function findUserScrims(userId: number): Promise<SidebarScrim[]> {
 				),
 			]),
 		)
-		.orderBy("ScrimPost.startsAt", "asc")
+		.orderBy(bookedStartsAt, "asc")
 		.execute();
 
 	return rows

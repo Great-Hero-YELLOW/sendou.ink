@@ -1,3 +1,5 @@
+import { CHANNEL_PREFIX } from "~/features/events/events-types";
+
 export const SENDOUQ = {
 	SZ_MAP_COUNT: 6,
 	OTHER_MODE_MAP_COUNT: 3,
@@ -21,16 +23,14 @@ export const SENDOUQ_BEST_OF = 7;
 
 export const ACTION_TAB_AFTER_LOCKED_SECONDS = 24 * 60 * 60; // 24 hours
 
-/** Skalop topic that every user on the looking page subscribes to. */
-export const SENDOUQ_LOOKING_ROOM = "sq-looking";
+/** Event bus channel that every user on the looking page subscribes to. */
+export const SENDOUQ_LOOKING_CHANNEL = "sq-looking";
 
-/**
- * Skalop topic for revalidation messages targeted at a single group (e.g. a
- * received like)
- * */
-export const sqGroupWebsocketRoom = (groupId: number) => `sq-group__${groupId}`;
+/** Event bus channel for revalidation messages targeted at a single group (e.g. a received like) */
+export const sqGroupChannel = (groupId: number) =>
+	`${CHANNEL_PREFIX.sqGroup}${groupId}`;
 
 export const USER_SKILLS_CACHE_KEY = "user-skills";
 
-/** Breakpoint (in px) for the main container after which we switch from 3-column layout to tabs */
+/** Main container width (px) below which the 3-column layout switches to tabs */
 export const IS_Q_LOOKING_MOBILE_BREAKPOINT = 700;

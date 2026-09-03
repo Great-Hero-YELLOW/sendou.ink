@@ -1,7 +1,8 @@
 ## General
 
 - only rarely use comments, prefer descriptive variable and function names (leave existing comments as is).
-- if you encounter an existing TODO comment assume it is there for a reason and do not remove it
+- if you encounter an existing TODO or xxx comment assume it is there for a reason and do not remove it unless you specifically addressed what the comment is about
+- when a comment is needed, brevity is the key, less is more
 - task is not considered completely until `pnpm run checks` passes
 - normal file structure has constants at the top immediately followed by the main function body of the file. Helpers are used to structure the code and they are at the bottom of the file (main implementation first, at the top of the file)
 - note: any formatting issue (such as tabs vs. spaces) can be resolved by running the `pnpm run biome:fix` command
@@ -95,6 +96,27 @@
 - add only English translation and use `pnpm run i18n:sync` to initialize other jsons with empty string ready for translators
 - when using namespace e.g. `const { t } = useTranslation("settings"]);` it needs to be defined in the `handle` for that route e.g. `export const handle: SendouRouteHandle = { i18n: ["settings"], ... }`. Certain namespaces are always included and you don't have to worry about those: "common", "forms", "game-misc", "weapons", "front", "friends"
 - if changing translation key names make sure to port over any already translated values for non-english languages if the english language is unchanged
+
+## Changelog
+
+- every user facing change needs a changelog entry, added in the same commit as the change itself. One file per change, a commit can add several. Purely internal work (refactors, dependency bumps, dev tooling, tests) gets none
+- entries live at `changelog/YYYY-MM-DD-<slug>.md` and are never deleted, they are the update history
+- frontmatter is `type` (`feature` or `bug`) and optionally `navItem`, which picks the icon(s) shown next to the entry: one of `OG_IMAGE_PAGES` (`app/utils/urls.ts`), or a list of them (`navItem: [calendar, scrims]`) when the change spans several pages. Omitted = the sendou.ink logo. A change to a page with no nav item of its own is filed under the closest existing one
+- the body is either short (a one line headline) or long (headline followed by a markdown bullet list, for a big feature release)
+- write them for users and not developers: what changed for them, not how it was implemented
+
+```md
+---
+navItem: plans
+type: feature
+---
+Map planner improvements
+
+- Plans are saved and restored when you come back to the page
+- Undo & redo are back, now in the toolbar
+```
+
+- on update day these become the image posted on social media, see [how-to.md](./docs/dev/how-to.md)
 
 ## Commits
 

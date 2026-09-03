@@ -26,9 +26,10 @@ import { Main } from "~/components/Main";
 import { DAYS_SHOWN_AT_A_TIME } from "~/features/calendar/calendar-constants";
 import { useCollapsableEvents } from "~/features/calendar/calendar-hooks";
 import { calendarSearchParams } from "~/features/calendar/calendar-search-params";
+import { dragToScroll } from "~/hooks/useDragToScroll";
 import { useSearchParamsTyped } from "~/modules/search-params/hooks";
 import { dayMonthYearToDateValue } from "~/utils/dates";
-import { metaTags } from "~/utils/remix";
+import { metaTags, ogPageImage } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import type { DayMonthYear } from "~/utils/schema";
 import { CALENDAR_PAGE, navIconUrl } from "~/utils/urls";
@@ -47,6 +48,7 @@ export const meta: MetaFunction = (args) => {
 	return metaTags({
 		title: "Calendar",
 		ogTitle: "Splatoon competitive event calendar",
+		image: ogPageImage("calendar"),
 		location: args.location,
 		description:
 			"Browser Splatoon competitive tournaments and events both local and online. Events for players of all skill levels from newcomer to pro.",
@@ -105,7 +107,7 @@ export default function CalendarPage() {
 			</div>
 			<div
 				key={`${shown[0].year}-${shown[0].month}-${shown[0].day}`}
-				ref={scrollTodayToCenter}
+				ref={setUpColumnsContainer}
 				className={clsx(styles.columnsContainer, "scrollbar")}
 			>
 				{shown.map((date) => (
@@ -203,6 +205,13 @@ function useCalendarDayHref() {
 
 	return (dayMonthYear: DayMonthYear) =>
 		calendarSearchParams.href(CALENDAR_PAGE, { ...params, ...dayMonthYear });
+}
+
+function setUpColumnsContainer(container: HTMLDivElement | null) {
+	scrollTodayToCenter(container);
+	if (!container) return;
+
+	return dragToScroll(container);
 }
 
 /** Centers today's column, leaving weeks that don't contain today scrolled to their first day. */

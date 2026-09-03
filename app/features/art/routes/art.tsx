@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { MetaFunction } from "react-router";
 import { useLoaderData } from "react-router";
+import { EmptyState } from "~/components/EmptyState";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouSwitch } from "~/components/elements/Switch";
 import {
@@ -18,7 +19,11 @@ import { artPage } from "~/features/art/art-urls";
 import { useSearchParamsTyped } from "~/modules/search-params/hooks";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { navIconUrl } from "~/utils/urls";
-import { metaTags, type SerializeFrom } from "../../../utils/remix";
+import {
+	metaTags,
+	ogPageImage,
+	type SerializeFrom,
+} from "../../../utils/remix";
 import { ART_TABS, artSearchParams } from "../art-search-params";
 import { ArtGrid } from "../components/ArtGrid";
 import { TagSelect } from "../components/TagSelect";
@@ -47,6 +52,7 @@ export const meta: MetaFunction = (args) => {
 		ogTitle: "Splatoon art showcase",
 		description:
 			"Splatoon art filterable by various tags. Find artist to commission for your own custom art. Includes various styles such as traditional, digital, 3D and SFM.",
+		image: ogPageImage("art"),
 		location: args.location,
 	});
 };
@@ -131,9 +137,9 @@ export default function ArtPage() {
 				</SendouTabPanel>
 				<SendouTabPanel id={ART_TABS.SHOWCASE}>
 					{filteredTag && showcaseArts.length === 0 ? (
-						<div className="no-results mt-4">
+						<EmptyState navItem="art">
 							{t("art:noArtForTag", { tag: filteredTag })}
-						</div>
+						</EmptyState>
 					) : (
 						<ArtGrid arts={showcaseArts} />
 					)}

@@ -1,4 +1,4 @@
-import { HardDriveDownload, Share2 } from "lucide-react";
+import { Check, Copy, HardDriveDownload, Share2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useMatches } from "react-router";
@@ -10,6 +10,8 @@ import {
 import { SendouDialog } from "~/components/elements/Dialog";
 import { SendouSwitch } from "~/components/elements/Switch";
 import { useTheme } from "~/features/theme/core/provider";
+import { useCopyPngToClipboard } from "~/hooks/useCopyToClipboard";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { SENDOU_INK_BASE_URL } from "~/utils/urls";
 import { GraphicQrCodeContext } from "./Graphic";
 import styles from "./ImageExportDialog.module.css";
@@ -44,23 +46,20 @@ const THEME_SELECTIONS = [
 ] as const;
 
 interface ImageExportDialogProps {
-	/** Button that opens the dialog, e.g. a `SendouButton` (its own `onPress` also runs, useful for lazy loading the graphic's data) */
+	/** Opens the dialog; its own `onPress` also runs (useful for lazy loading the graphic's data) */
 	trigger: React.ReactNode;
 	heading: string;
 	/** Name of the downloaded file without the extension */
 	filename: string;
 	/** Path the QR code links to, defaults to the current page */
 	qrCodePath?: string;
-	/** Extra settings controls specific to the use case */
 	settings?: React.ReactNode;
-	/** The graphic to preview and export */
 	children: React.ReactNode;
 }
 
 /**
- * Dialog for exporting a graphic component as a .png image. Renders the given graphic
- * as a preview with generic settings (color scheme, custom theme, QR code) and downloads
- * a screenshot of it via snapdom. Graphics render their QR code via {@link GraphicQrCodeContext}.
+ * Previews a graphic with generic settings (color scheme, custom theme, QR code) and downloads a
+ * snapdom screenshot of it as .png. Graphics render their QR code via {@link GraphicQrCodeContext}.
  */
 export function ImageExportDialog({
 	trigger,
@@ -98,7 +97,10 @@ function ImageExportDialogContent({
 		},
 	);
 	const [withQrCode, setWithQrCode] = React.useState(true);
-	const [isDownloading, setIsDownloading] = React.useState(false);
+	const [exportAction, setExportAction] = React.useState<
+		"download" | "copy" | null
+	>(null);
+	const { copyPngToClipboard, copySuccess } = useCopyPngToClipboard();
 	const frameRef = React.useRef<HTMLDivElement>(null);
 
 	const theme = themeSelection.startsWith("light") ? "light" : "dark";
@@ -106,13 +108,11 @@ function ImageExportDialogContent({
 
 	const qrCodeUrl = `${SENDOU_INK_BASE_URL}${qrCodePath ?? `${location.pathname}${location.search}`}`;
 
-	// snapdom re-downloads every image at export time rather than reusing what the preview
-	// already painted, and silently drops any that fails. Warming them while the preview sits
-	// idle keeps those fetches from racing the capture's own work for the main thread.
-	// Runs after every render because settings can mount images that were not there before
-	// (e.g. the build export's ability chunks); re-running once everything is cached is ~7ms.
+	// snapdom re-downloads every image at export and silently drops failures, so they are warmed
+	// while the preview idles. Runs after every render since settings can mount new images
+	// (e.g. ability chunks); re-running once cached is ~7ms.
 	React.useEffect(() => {
-		if (isDownloading) return;
+		if (exportAction) return;
 
 		let cancelled = false;
 
@@ -127,34 +127,27 @@ function ImageExportDialogContent({
 		};
 	});
 
-	const handleExport = async () => {
+	const handleDownload = async () => {
 		if (!frameRef.current) return;
 
-		setIsDownloading(true);
+		setExportAction("download");
 		try {
-			const { snapdom } = await import("@zumer/snapdom");
-
-			// defensive/speculative fix
-			await document.fonts.ready;
-
-			const blob = await snapdom.toBlob(frameRef.current, {
-				type: "png",
-				quality: 1,
-				scale: EXPORT_SCALE,
-				// snapdom's own download helper forces this, without it the export size would vary by device
-				dpr: 1,
-				embedFonts: true,
-				// without this snapdom re-encodes images down to their rendered size, making e.g. the tier image look rough
-				compress: false,
-				// names ending in a glyph outside the graphic's font (emoji, Greek, ...) get measured with
-				// one fallback font in the page and another when rasterized, so a box frozen to its exact
-				// text width ends up an ellipsis short. This re-measures the clone and pins diverging boxes
-				reconcile: true,
-			});
+			const blob = await capturePng(frameRef.current);
 
 			await saveImage(blob, `${filename}.png`, { canShare: isMobile });
 		} finally {
-			setIsDownloading(false);
+			setExportAction(null);
+		}
+	};
+
+	const handleCopy = async () => {
+		if (!frameRef.current) return;
+
+		setExportAction("copy");
+		try {
+			await copyPngToClipboard(capturePng(frameRef.current));
+		} finally {
+			setExportAction(null);
 		}
 	};
 
@@ -181,18 +174,29 @@ function ImageExportDialogContent({
 				</SendouSwitch>
 				{settings}
 			</div>
-			<SendouButton
-				icon={isMobile ? <Share2 /> : <HardDriveDownload />}
-				onPress={handleExport}
-				isDisabled={isDownloading}
-				className="mx-auto"
-			>
-				{isDownloading
-					? t("common:actions.loading")
-					: isMobile
-						? t("common:actions.share")
-						: t("common:imageExport.download")}
-			</SendouButton>
+			<div className={styles.actions}>
+				<SendouButton
+					icon={isMobile ? <Share2 /> : <HardDriveDownload />}
+					onPress={handleDownload}
+					isDisabled={exportAction !== null}
+				>
+					{exportAction === "download"
+						? t("common:actions.loading")
+						: isMobile
+							? t("common:actions.share")
+							: t("common:imageExport.download")}
+				</SendouButton>
+				{!isMobile && canCopyPngToClipboard() ? (
+					<SendouButton
+						variant={copySuccess ? "outlined-success" : "outlined"}
+						icon={copySuccess ? <Check /> : <Copy />}
+						onPress={handleCopy}
+						isDisabled={exportAction !== null}
+					>
+						{t("common:actions.copyToClipboard")}
+					</SendouButton>
+				) : null}
+			</div>
 			<div className={styles.scroller}>
 				<div
 					ref={frameRef}
@@ -212,10 +216,33 @@ function ImageExportDialogContent({
 	);
 }
 
-/**
- * Opens the share sheet when sharing is allowed (mobile) and the platform supports it,
- * otherwise downloads the image
- */
+async function capturePng(frame: HTMLDivElement) {
+	const { snapdom } = await import("@zumer/snapdom");
+
+	// defensive/speculative fix
+	await document.fonts.ready;
+
+	return snapdom.toBlob(frame, {
+		type: "png",
+		quality: 1,
+		scale: EXPORT_SCALE,
+		// snapdom's own download helper forces this, without it the export size would vary by device
+		dpr: 1,
+		embedFonts: true,
+		// without this snapdom re-encodes images down to their rendered size, making e.g. the tier image look rough
+		compress: false,
+		// names ending in a glyph outside the graphic's font (emoji, Greek, ...) get measured with
+		// one fallback font in the page and another when rasterized, so a box frozen to its exact
+		// text width ends up an ellipsis short. This re-measures the clone and pins diverging boxes
+		reconcile: true,
+	});
+}
+
+function canCopyPngToClipboard() {
+	return typeof ClipboardItem !== "undefined";
+}
+
+/** Share sheet when allowed (mobile) and supported, otherwise a download. */
 async function saveImage(
 	blob: Blob,
 	filename: string,
@@ -243,18 +270,8 @@ async function saveImage(
 	URL.revokeObjectURL(url);
 }
 
-function subscribeToPointerQuery(callback: () => void) {
-	const mediaQueryList = window.matchMedia(COARSE_POINTER_QUERY);
-	mediaQueryList.addEventListener("change", callback);
-	return () => mediaQueryList.removeEventListener("change", callback);
-}
-
 function useIsMobile() {
-	return React.useSyncExternalStore(
-		subscribeToPointerQuery,
-		() => window.matchMedia(COARSE_POINTER_QUERY).matches,
-		() => false,
-	);
+	return useMediaQuery(COARSE_POINTER_QUERY);
 }
 
 function usePageHasCustomTheme() {

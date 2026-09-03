@@ -44,17 +44,14 @@ export function cachedStreams() {
 					return -1;
 				}
 
-				// sort by base tier
 				if (aTierIndex !== bTierIndex) {
 					return aTierIndex - bTierIndex;
 				}
 
-				// if base tier is the same, sort by plus
 				if (a.tier?.isPlus !== b.tier?.isPlus) {
 					return a.tier?.isPlus ? -1 : 1;
 				}
 
-				// if tier is the same, sort by viewer count
 				return b.stream.viewerCount - a.stream.viewerCount;
 			});
 		},
@@ -82,7 +79,7 @@ function streamedMatches({
 		}
 
 		const leaderboardEntry = leaderboard.find(
-			(entry) => entry.id === player.user?.id,
+			(entry) => entry.id === player.user.id,
 		);
 
 		return {
@@ -96,8 +93,8 @@ function streamedMatches({
 				createdAt: player.groupMatchCreatedAt,
 			},
 			user: {
-				...player.user!,
-				twitch: player.user!.twitch!,
+				...player.user,
+				twitch: player.user.twitch!,
 			},
 			weaponSplId: leaderboardEntry?.weaponSplId,
 			tier: leaderboardEntry?.tier,

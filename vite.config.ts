@@ -16,14 +16,28 @@ export default defineConfig((config) => {
 		},
 		plugins: [
 			{
-				// Wraps CSS modules in a @layer so utility classes always win and, more
-				// generally, so that the more specific of two modules styling the same
-				// element wins no matter what order Vite happens to emit the chunks in:
-				// `elements` (headless library wrappers) < `components` (shared
-				// components) < `features` (feature code and composed component groups).
-				// The layer order declaration is prepended to each module because in Vite
-				// dev mode, module <style> tags are injected before global stylesheets —
-				// without it the implicit first layer would get lowest priority.
+				// Vite dev serves everything with no-cache, so any <head> mutation (e.g. a prefetch
+				// link mounting) revalidates the woff2 and flashes fallback fonts while the 304
+				// round-trips. Fonts never change, so dev caches them hard like the production build.
+				name: "cache-fonts-in-dev",
+				apply: "serve",
+				configureServer(server) {
+					server.middlewares.use((req, res, next) => {
+						if (req.url?.includes("/fonts/") && req.url.includes(".woff2")) {
+							res.setHeader(
+								"Cache-Control",
+								"public, max-age=31536000, immutable",
+							);
+						}
+						next();
+					});
+				},
+			},
+			{
+				// Wraps CSS modules in a @layer so utilities always win and the higher of two modules
+				// styling the same element wins regardless of chunk order: `elements` < `components`
+				// < `features`. The layer order is prepended to each module because in Vite dev module
+				// <style> tags are injected before global stylesheets.
 				name: "css-modules-layer",
 				enforce: "pre",
 				transform(code, id) {
@@ -42,8 +56,7 @@ export default defineConfig((config) => {
 				},
 			},
 			reactRouter(),
-			// React Compiler is skipped in dev where its per-module transform cost
-			// outweighs its value.
+			// React Compiler is skipped in dev, its transform cost outweighs its value there
 			...(isBuild
 				? [
 						babel({
@@ -79,9 +92,7 @@ export default defineConfig((config) => {
 			tsconfigPaths: true,
 		},
 		optimizeDeps: {
-			// Dependencies which are only imported by specific route modules.
-			// Pre-bundling them at startup avoids mid-session re-optimization
-			// and full page reloads on first navigations.
+			// route-specific deps pre-bundled at startup to avoid mid-session re-optimization and full page reloads
 			include: [
 				"@date-fns/tz",
 				"@techstark/opencv-js",
@@ -119,7 +130,6 @@ export default defineConfig((config) => {
 				"mediabunny",
 				"nanoid",
 				"openskill",
-				"partysocket",
 				"picocad2-web",
 				"qrcode.react",
 				"react-chartjs-2",

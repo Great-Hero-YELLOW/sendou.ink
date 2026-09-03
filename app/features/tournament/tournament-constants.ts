@@ -7,14 +7,12 @@ export const TOURNAMENT = {
 	COUNTERPICK_ONE_MODE_TOURNAMENT_MAPS_PER_MODE: 6,
 	AVAILABLE_BEST_OF: [1, 3, 5, 7, 9] as const,
 	ENOUGH_TEAMS_TO_START: 2,
-	MIN_GROUP_SIZE: 3,
-	MAX_GROUP_SIZE: 6,
 	MAX_BRACKETS_PER_TOURNAMENT: 10,
 	BRACKET_NAME_MAX_LENGTH: 32,
 	PLACEMENT_MAX: 100,
-	// just a fallback, normally this should be set by user explicitly
+	// fallback, normally set by the user explicitly
 	RR_DEFAULT_TEAM_COUNT_PER_GROUP: 4,
-	RR_TEAMS_PER_GROUP_OPTIONS: [3, 4, 5, 6],
+	RR_TEAMS_PER_GROUP_OPTIONS: [3, 4, 5, 6, 7, 8],
 	RR_AB_DIVISIONS_TEAMS_PER_GROUP_OPTIONS: [4, 6, 8, 10, 12],
 	SWISS_DEFAULT_GROUP_COUNT: 1,
 	SWISS_DEFAULT_ROUND_COUNT: 5,
@@ -41,8 +39,7 @@ export const TOURNAMENT_STAGE_TYPES = [
 	"swiss",
 ] as const;
 
-// AUTO = style where teams pick their map pool ahead of time and the map lists are automatically made for each round
-// could also have the traditional style where TO picks the maps later
+/** AUTO = teams pick map pools ahead and each round's map list is made automatically, TO = the TO picks the maps. */
 export type TournamentMapPickingStyle =
 	| "TO"
 	| "AUTO_ALL"

@@ -64,6 +64,24 @@ Notes:
 3) Update the typings in `app/db/tables.ts`
 4) Run `pnpm run migrate up` to apply your migration (the unit test database `db-test.sqlite3` is created and migrated automatically when unit tests run)
 
+## Update the OG images
+
+OG images are the preview images shown when a page is shared on Discord, Bluesky etc. Every page listed in `OG_IMAGE_PAGES` (`app/utils/urls.ts`) has one of its own, the rest fall back to `default.png`.
+
+1) Preview and tweak them on the `/admin/og-images` page (dev only). They are regular React components rendered at the real 1200x630 size.
+2) With the dev server running, `pnpm run og:generate` screenshots each of them into the [assets repo](https://github.com/sendou-ink/assets) at `assets/img/og/`, expected to be a sibling folder of this one (pass a folder as an argument to write elsewhere).
+3) Commit and push the images in the assets repo. They are live once its deploy workflow has run.
+
+New pages need to be added to `OG_IMAGE_PAGES` and to `PAGE_COLORS` on the preview page. Routes opt in via `image: ogPageImage("<page>")` given to `metaTags`.
+
+## Generate the update changelog image
+
+The image posted on social media on update day is built from the entry files in `changelog/`.
+
+1) Every commit with a user facing change adds one `changelog/YYYY-MM-DD-<slug>.md` per change. Frontmatter is `navItem` (optional, one of `OG_IMAGE_PAGES` or a list of them such as `navItem: [calendar, scrims]`, omitted = sendou.ink logo) and `type` (`feature` or `bug`). The body is a one line headline, optionally followed by a markdown bullet list for a bigger release. Entries are never deleted, they are the update history.
+2) Preview and tweak the graphic on the `/admin/changelog-image` page (dev only). Without a `?since=<sha>` it renders every entry ever committed.
+3) With the dev server running, `pnpm run changelog:image <sha-of-previous-update-commit>` writes `scripts/output/update-<date>.png` from the entries added since that commit, copies the image to the clipboard.
+
 ## Add a new translation string
 
 1) Decide on where the translation should go. Either `common.json` which is available in every route by default or a feature specific one such as `builds.json`

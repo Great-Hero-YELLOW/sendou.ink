@@ -20,6 +20,7 @@ import {
 	type TLShapeId,
 	type TLUiStylePanelProps,
 	Tldraw,
+	type TldrawOptions,
 } from "@tldraw/tldraw";
 import clsx from "clsx";
 import {
@@ -51,6 +52,10 @@ import {
 	subWeaponIds,
 	weaponCategories,
 } from "~/modules/in-game-lists/weapon-ids";
+import {
+	useSearchParam,
+	useSearchParamsTyped,
+} from "~/modules/search-params/hooks";
 import { logger } from "~/utils/logger";
 import {
 	mainWeaponImageUrl,
@@ -63,6 +68,12 @@ import {
 } from "~/utils/urls";
 import { LinkButton, SendouButton } from "../../../components/elements/Button";
 import { Image } from "../../../components/Image";
+import {
+	PLANNER_BACKGROUND_STYLES,
+	PLANNER_PERSISTENCE_KEY,
+	STAGE_WATER_LEVELS,
+} from "../plans-constants";
+import { plansSearchParams } from "../plans-search-params";
 import type { StageWaterLevel } from "../plans-types";
 import styles from "./Planner.module.css";
 
@@ -72,6 +83,10 @@ const BACKGROUND_HEIGHT = 634;
 const GAME_UNITS_TO_PX: Record<"MINI" | "OVER", number> = {
 	MINI: 4.4,
 	OVER: 8.4,
+};
+// the menu panel that normally holds undo & redo is hidden, so they are moved to the toolbar
+const TLDRAW_OPTIONS: Partial<TldrawOptions> = {
+	actionShortcutsLocation: "toolbar",
 };
 const MAIN_WEAPON_URL_PATTERN = /main-weapons-outlined\/(\d+)/;
 const SPECIAL_WEAPON_URL_PATTERN = /special-weapons\/(\d+)/;
@@ -83,12 +98,21 @@ export default function Planner() {
 	const isWide = i18n.language.startsWith("fr");
 
 	const [editor, setEditor] = React.useState<Editor | null>(null);
-	const [imgOutlined, setImgOutlined] = React.useState(false);
-	const [topCollapsed, setTopCollapsed] = React.useState(false);
-	const [weaponsCollapsed, setWeaponsCollapsed] = React.useState(false);
-	const [rangesVisible, setRangesVisible] = React.useState(false);
-	const [backgroundStyle, setBackgroundStyle] = React.useState<"MINI" | "OVER">(
-		"MINI",
+	const [imgOutlined, setImgOutlined] = useSearchParam(
+		plansSearchParams,
+		"outlined",
+	);
+	const [topCollapsed, setTopCollapsed] = useSearchParam(
+		plansSearchParams,
+		"hideTop",
+	);
+	const [weaponsCollapsed, setWeaponsCollapsed] = useSearchParam(
+		plansSearchParams,
+		"hideWeapons",
+	);
+	const [rangesVisible, setRangesVisible] = useSearchParam(
+		plansSearchParams,
+		"ranges",
 	);
 	const rangeCleanupRef = React.useRef<(() => void) | null>(null);
 	const [activeDragItem, setActiveDragItem] = React.useState<{
@@ -106,6 +130,93 @@ export default function Planner() {
 		}),
 	);
 
+	const showRanges = React.useCallback((editorToUse: Editor) => {
+		const gameUnitsToPx = GAME_UNITS_TO_PX[canvasBackgroundStyle(editorToUse)];
+		removeRangeCircles(editorToUse);
+		for (const shape of editorToUse.getCurrentPageShapes()) {
+			createRangeCircleForShape(editorToUse, shape, gameUnitsToPx);
+		}
+
+		const unsubCreate = editorToUse.sideEffects.registerAfterCreateHandler(
+			"shape",
+			(shape) => {
+				if (shape.meta.isRangeCircle) return;
+				createRangeCircleForShape(editorToUse, shape, gameUnitsToPx);
+			},
+		);
+
+		const unsubChange = editorToUse.sideEffects.registerAfterChangeHandler(
+			"shape",
+			(_prev, next) => {
+				if (next.meta.isRangeCircle) return;
+
+				const rangeCircles = editorToUse
+					.getCurrentPageShapes()
+					.filter(
+						(s) =>
+							s.meta.isRangeCircle === true && s.meta.weaponShapeId === next.id,
+					);
+				if (rangeCircles.length === 0) return;
+
+				const centerX = next.x + (next.props as { w: number }).w / 2;
+				const centerY = next.y + (next.props as { h: number }).h / 2;
+
+				for (const rangeCircle of rangeCircles) {
+					const radiusPx = (rangeCircle.props as { w: number }).w / 2;
+					editorToUse.updateShape({
+						id: rangeCircle.id,
+						type: rangeCircle.type,
+						isLocked: false,
+					});
+					editorToUse.updateShape({
+						id: rangeCircle.id,
+						type: rangeCircle.type,
+						x: centerX - radiusPx,
+						y: centerY - radiusPx,
+						isLocked: true,
+					});
+				}
+			},
+		);
+
+		const unsubDelete = editorToUse.sideEffects.registerAfterDeleteHandler(
+			"shape",
+			(shape) => {
+				if (shape.meta.isRangeCircle) return;
+
+				const rangeCircles = editorToUse
+					.getCurrentPageShapes()
+					.filter(
+						(s) =>
+							s.meta.isRangeCircle === true &&
+							s.meta.weaponShapeId === shape.id,
+					);
+				if (rangeCircles.length === 0) return;
+
+				for (const rangeCircle of rangeCircles) {
+					editorToUse.updateShape({
+						id: rangeCircle.id,
+						type: rangeCircle.type,
+						isLocked: false,
+					});
+				}
+				editorToUse.deleteShapes(rangeCircles);
+			},
+		);
+
+		rangeCleanupRef.current = () => {
+			unsubCreate();
+			unsubChange();
+			unsubDelete();
+		};
+	}, []);
+
+	const hideRanges = React.useCallback((editorToUse: Editor) => {
+		rangeCleanupRef.current?.();
+		rangeCleanupRef.current = null;
+		removeRangeCircles(editorToUse);
+	}, []);
+
 	const handleMount = React.useCallback(
 		(mountedEditor: Editor) => {
 			setEditor(mountedEditor);
@@ -113,8 +224,20 @@ export default function Planner() {
 				locale: ourLanguageToTldrawLanguage(i18n.language),
 				colorScheme: htmlThemeClass === "dark" ? "dark" : "light",
 			});
+
+			// a restored plan can hold range circles that no side effect handler is watching anymore
+			mountedEditor.run(
+				() => {
+					if (rangesVisible) {
+						showRanges(mountedEditor);
+					} else {
+						removeRangeCircles(mountedEditor);
+					}
+				},
+				{ history: "ignore" },
+			);
 		},
-		[i18n, htmlThemeClass],
+		[i18n, htmlThemeClass, rangesVisible, showRanges],
 	);
 
 	const handleAddImage = React.useCallback(
@@ -123,24 +246,24 @@ export default function Planner() {
 			size,
 			isLocked,
 			point,
+			meta,
 			cb,
 		}: {
 			src: string;
 			size: number[];
 			isLocked: boolean;
 			point: number[];
+			meta?: { backgroundStyle?: "MINI" | "OVER" };
 			cb?: () => void;
 		}) => {
 			if (!editor) return;
 
-			// tldraw creator:
-			// "So image shapes in tldraw work like this: we add an asset to the app.assets table, then we reference that asset in the shape object itself.
-			// This lets us have multiple copies of an image on the canvas without having all of those take up memory individually"
+			// image shapes reference an asset by id, so copies of the same image only take up memory once
 			const assetId: TLAssetId = AssetRecordType.createId();
 
 			const srcWithOutline = imgOutlined ? `${src}?outline=red` : src;
 
-			// idk if this is the best solution, but it was the example given and it seems to cope well with lots of shapes at once
+			// follows tldraw's own example, copes well with lots of shapes at once
 			const imageAsset: TLImageAsset = {
 				id: assetId,
 				type: "image",
@@ -166,6 +289,7 @@ export default function Planner() {
 				y: point[1],
 				isLocked: isLocked,
 				id: shapeId,
+				meta: meta ?? {},
 				props: {
 					assetId: assetId,
 					w: size[0],
@@ -225,92 +349,11 @@ export default function Planner() {
 		if (!editor) return;
 
 		if (rangesVisible) {
-			rangeCleanupRef.current?.();
-			rangeCleanupRef.current = null;
-			removeRangeCircles(editor);
-			setRangesVisible(false);
+			hideRanges(editor);
 		} else {
-			const gameUnitsToPx = GAME_UNITS_TO_PX[backgroundStyle];
-			removeRangeCircles(editor);
-			for (const shape of editor.getCurrentPageShapes()) {
-				createRangeCircleForShape(editor, shape, gameUnitsToPx);
-			}
-
-			const unsubCreate = editor.sideEffects.registerAfterCreateHandler(
-				"shape",
-				(shape) => {
-					if (shape.meta.isRangeCircle) return;
-					createRangeCircleForShape(editor, shape, gameUnitsToPx);
-				},
-			);
-
-			const unsubChange = editor.sideEffects.registerAfterChangeHandler(
-				"shape",
-				(_prev, next) => {
-					if (next.meta.isRangeCircle) return;
-
-					const rangeCircles = editor
-						.getCurrentPageShapes()
-						.filter(
-							(s) =>
-								s.meta.isRangeCircle === true &&
-								s.meta.weaponShapeId === next.id,
-						);
-					if (rangeCircles.length === 0) return;
-
-					const centerX = next.x + (next.props as { w: number }).w / 2;
-					const centerY = next.y + (next.props as { h: number }).h / 2;
-
-					for (const rangeCircle of rangeCircles) {
-						const radiusPx = (rangeCircle.props as { w: number }).w / 2;
-						editor.updateShape({
-							id: rangeCircle.id,
-							type: rangeCircle.type,
-							isLocked: false,
-						});
-						editor.updateShape({
-							id: rangeCircle.id,
-							type: rangeCircle.type,
-							x: centerX - radiusPx,
-							y: centerY - radiusPx,
-							isLocked: true,
-						});
-					}
-				},
-			);
-
-			const unsubDelete = editor.sideEffects.registerAfterDeleteHandler(
-				"shape",
-				(shape) => {
-					if (shape.meta.isRangeCircle) return;
-
-					const rangeCircles = editor
-						.getCurrentPageShapes()
-						.filter(
-							(s) =>
-								s.meta.isRangeCircle === true &&
-								s.meta.weaponShapeId === shape.id,
-						);
-					if (rangeCircles.length === 0) return;
-
-					for (const rangeCircle of rangeCircles) {
-						editor.updateShape({
-							id: rangeCircle.id,
-							type: rangeCircle.type,
-							isLocked: false,
-						});
-					}
-					editor.deleteShapes(rangeCircles);
-				},
-			);
-
-			rangeCleanupRef.current = () => {
-				unsubCreate();
-				unsubChange();
-				unsubDelete();
-			};
-			setRangesVisible(true);
+			showRanges(editor);
 		}
+		setRangesVisible(!rangesVisible);
 	};
 
 	const handleAddBackgroundImage = React.useCallback(
@@ -324,8 +367,11 @@ export default function Planner() {
 
 			editor.mark("pre-background-change");
 
+			hideRanges(editor);
+			setRangesVisible(false);
+
 			const shapes = editor.getCurrentPageShapes();
-			// i dont think locked shapes can be deleted
+			// locked shapes can't be deleted
 			for (const value of shapes) {
 				editor.updateShape({ id: value.id, type: value.type, isLocked: false });
 			}
@@ -336,15 +382,12 @@ export default function Planner() {
 				size: [BACKGROUND_WIDTH, BACKGROUND_HEIGHT],
 				isLocked: true,
 				point: [0, 0],
+				meta: { backgroundStyle: urlArgs.style },
 			});
 
 			editor.zoomToFit();
-			rangeCleanupRef.current?.();
-			rangeCleanupRef.current = null;
-			setRangesVisible(false);
-			setBackgroundStyle(urlArgs.style);
 		},
-		[editor, handleAddImage],
+		[editor, handleAddImage, hideRanges, setRangesVisible],
 	);
 
 	// removes all tldraw ui that isnt needed
@@ -361,7 +404,6 @@ export default function Planner() {
 		Minimap: null,
 		NavigationPanel: null,
 		PageMenu: null,
-		QuickActions: null,
 		SharePanel: null,
 		StylePanel: CustomStylePanel,
 		TopPanel: null,
@@ -432,7 +474,12 @@ export default function Planner() {
 				</button>
 			</div>
 			<div style={{ position: "fixed", inset: 0 }}>
-				<Tldraw onMount={handleMount} components={tldrawComponents} />
+				<Tldraw
+					persistenceKey={PLANNER_PERSISTENCE_KEY}
+					onMount={handleMount}
+					components={tldrawComponents}
+					options={TLDRAW_OPTIONS}
+				/>
 			</div>
 			<DragOverlay dropAnimation={null} modifiers={[snapCenterToCursor]}>
 				{activeDragItem ? (
@@ -450,7 +497,7 @@ export default function Planner() {
 	);
 }
 
-// Formats the style panel so it can have classnames, this is needed so it can be moved below the header bar which blocks clicks (idk why this is different to the old version)
+// styled to sit below the header bar, which otherwise blocks clicks on it
 function CustomStylePanel(props: TLUiStylePanelProps) {
 	return (
 		<div className={props.isMobile ? undefined : styles.stylePanel}>
@@ -570,7 +617,9 @@ function WeaponImageSelector() {
 								height={24}
 								alt={t(`common:weapon.category.${category.name}`)}
 							/>
-							{t(`common:weapon.category.${category.name}`)}
+							<span className={styles.weaponsSummaryText}>
+								{t(`common:weapon.category.${category.name}`)}
+							</span>
 						</summary>
 						<div className={styles.weaponsContainer}>
 							{category.weaponIds.map((weaponId) => {
@@ -594,7 +643,9 @@ function WeaponImageSelector() {
 			<details>
 				<summary className={styles.weaponsSummary}>
 					<Image path={subWeaponImageUrl(0)} width={24} height={24} alt="" />
-					{t("common:weapon.category.subs")}
+					<span className={styles.weaponsSummaryText}>
+						{t("common:weapon.category.subs")}
+					</span>
 				</summary>
 				<div className={styles.weaponsContainer}>
 					{subWeaponIds.map((subWeaponId) => {
@@ -621,7 +672,9 @@ function WeaponImageSelector() {
 						height={24}
 						alt=""
 					/>
-					{t("common:weapon.category.specials")}
+					<span className={styles.weaponsSummaryText}>
+						{t("common:weapon.category.specials")}
+					</span>
 				</summary>
 				<div className={styles.weaponsContainer}>
 					{specialWeaponIds.map((specialWeaponId) => {
@@ -643,7 +696,9 @@ function WeaponImageSelector() {
 			<details>
 				<summary className={styles.weaponsSummary}>
 					<Image path={modeImageUrl("RM")} width={24} height={24} alt="" />
-					{t("common:plans.adder.objective")}
+					<span className={styles.weaponsSummaryText}>
+						{t("common:plans.adder.objective")}
+					</span>
 				</summary>
 				<div className={styles.weaponsContainer}>
 					{(["TC", "RM", "CB"] as const).map((mode) => {
@@ -678,18 +733,16 @@ function StageBackgroundSelector({
 	}) => void;
 }) {
 	const { t } = useTranslation(["game-misc", "common"]);
-	const [stageId, setStageId] = React.useState<StageId>(stageIds[0]);
-	const [mode, setMode] = React.useState<ModeShort>("SZ");
-	const [backgroundStyle, setBackgroundStyle] = React.useState<"MINI" | "OVER">(
-		"MINI",
-	);
-	const [waterLevel, setWaterLevel] = React.useState<StageWaterLevel>("up");
+	const [
+		{ stage: stageId, mode, style: backgroundStyle, water: waterLevel },
+		setParams,
+	] = useSearchParamsTyped(plansSearchParams);
 
 	const handleStageIdChange = (stageId: StageId) => {
-		setStageId(stageId);
-		if (stageId !== stagesObj.MAHI_MAHI_RESORT) {
-			setWaterLevel("up");
-		}
+		setParams({
+			stage: stageId,
+			water: stageId === stagesObj.MAHI_MAHI_RESORT ? waterLevel : "up",
+		});
 	};
 
 	return (
@@ -713,7 +766,7 @@ function StageBackgroundSelector({
 			<select
 				className="w-max"
 				value={mode}
-				onChange={(e) => setMode(e.target.value as ModeShort)}
+				onChange={(e) => setParams({ mode: e.target.value as ModeShort })}
 			>
 				{modesShort.map((mode) => {
 					return (
@@ -726,9 +779,11 @@ function StageBackgroundSelector({
 			<select
 				className="w-max"
 				value={backgroundStyle}
-				onChange={(e) => setBackgroundStyle(e.target.value as "MINI" | "OVER")}
+				onChange={(e) =>
+					setParams({ style: e.target.value as "MINI" | "OVER" })
+				}
 			>
-				{(["MINI", "OVER"] as const).map((style) => {
+				{PLANNER_BACKGROUND_STYLES.map((style) => {
 					return (
 						<option key={style} value={style}>
 							{t(`common:plans.bgStyle.${style}`)}
@@ -740,9 +795,11 @@ function StageBackgroundSelector({
 				<select
 					className="w-max"
 					value={waterLevel}
-					onChange={(e) => setWaterLevel(e.target.value as StageWaterLevel)}
+					onChange={(e) =>
+						setParams({ water: e.target.value as StageWaterLevel })
+					}
 				>
-					{(["up", "down"] as const).map((level) => {
+					{STAGE_WATER_LEVELS.map((level) => {
 						return (
 							<option key={level} value={level}>
 								{t(`common:plans.waterLevel.${level}`)}
@@ -764,8 +821,7 @@ function StageBackgroundSelector({
 	);
 }
 
-// when adding new language check from Tldraw codebase what is the matching
-// language in TRANSLATIONS constant, or default to english if none found
+// for a new language check tldraw's TRANSLATIONS constant for the matching one, default to english
 const ourLanguageToTldrawLanguageMap: Record<LanguageCode, string> = {
 	"es-US": "es",
 	"es-ES": "es",
@@ -912,6 +968,15 @@ function createCircle(
 		},
 		meta: { isRangeCircle: true, weaponShapeId },
 	});
+}
+
+function canvasBackgroundStyle(editor: Editor): "MINI" | "OVER" {
+	for (const shape of editor.getCurrentPageShapes()) {
+		const style = shape.meta.backgroundStyle;
+		if (style === "MINI" || style === "OVER") return style;
+	}
+
+	return "MINI";
 }
 
 function removeRangeCircles(editor: Editor) {

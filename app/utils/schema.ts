@@ -36,10 +36,7 @@ export interface ValidationCtx {
 	addIssue: (issue: { message: string; path?: PropertyKey[] }) => void;
 }
 
-/**
- * Validation action running `fn` on the parsed value with an `addIssue`
- * taking plain key paths.
- */
+/** Validation action running `fn` on the parsed value with an `addIssue` taking plain key paths. */
 export function superRefine<TValue>(
 	fn: (value: TValue, ctx: ValidationCtx) => void,
 ) {
@@ -401,7 +398,7 @@ export const hasZalgo = (txt: string) => zalgoRe.test(encodeURIComponent(txt));
 /** Non-empty string that has the given length (max and optionally min). Prevents z͎͗ͣḁ̵̑l̉̃ͦg̐̓̒o͓̔ͥ text as well as filters out characters that have no width. */
 export const safeStringSchema = ({ min, max }: { min?: number; max: number }) =>
 	preprocess(
-		actuallyNonEmptyStringOrNull, // if this returns null, none of the checks below will run because it's not a string
+		actuallyNonEmptyStringOrNull, // null skips the string checks below
 		v.pipe(
 			v.string(),
 			v.minLength(min ?? 0),
@@ -430,9 +427,7 @@ export const safeNullableStringSchema = ({
 		),
 	);
 
-/**
- * Processes the input value and returns a non-empty string with invisible characters cleaned out or null.
- */
+/** Non-empty string with invisible characters cleaned out, or null. */
 export function actuallyNonEmptyStringOrNull(value: unknown) {
 	if (typeof value !== "string") return value;
 
@@ -512,7 +507,7 @@ export function checkboxValueToBoolean(value: unknown) {
 export const _action = <T extends string>(value: T) =>
 	preprocess(deduplicate, v.literal(value));
 
-// Fix bug at least in Safari 15 where SubmitButton value might get sent twice
+/** Works around a bug at least in Safari 15 where a SubmitButton value might get sent twice */
 export function deduplicate(value: unknown) {
 	if (Array.isArray(value)) {
 		const [one, two, ...rest] = value;

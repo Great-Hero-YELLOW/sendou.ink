@@ -4,8 +4,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 vi.mock("~/features/chat/ChatSystemMessage.server", () => ({
 	send: vi.fn(),
 	notifyNotificationsChanged: vi.fn(),
-	removeRoom: vi.fn(),
-	setMetadata: vi.fn(),
 }));
 
 import { backdate } from "~/db/seed/core/backdate";
@@ -20,6 +18,7 @@ import * as ReadyCheck from "../core/ready-check.server";
 import { refreshSendouQInstance, SendouQ } from "../core/SendouQ.server";
 import type { readySchema } from "../q-action-schemas";
 import { FULL_GROUP_SIZE, SENDOUQ } from "../q-constants";
+import { pinClockInsideSeason } from "../tests/season-clock";
 import { action as rawReadyAction, loader as rawReadyLoader } from "./q.ready";
 
 const readyLoader = wrappedLoader<Awaited<ReturnType<typeof rawReadyLoader>>>({
@@ -55,6 +54,8 @@ const setupReadyCheck = async () => {
 };
 
 describe("SendouQ ready check page", () => {
+	pinClockInsideSeason();
+
 	afterEach(() => {
 		Seasons.DANGEROUS_setSeasonEndedOverride(false);
 	});

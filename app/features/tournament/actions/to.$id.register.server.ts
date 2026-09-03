@@ -1,4 +1,5 @@
 import type { ActionFunction } from "react-router";
+import * as R from "remeda";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
@@ -6,6 +7,7 @@ import { notify } from "~/features/notifications/core/notify.server";
 import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import * as TeamRepository from "~/features/team/TeamRepository.server";
+import { getMemberRoleType } from "~/features/team/team-utils";
 import * as SavedCalendarEventRepository from "~/features/tournament/SavedCalendarEventRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
@@ -14,11 +16,10 @@ import {
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
-import { syncPickupChatMetadata } from "~/features/tournament-lfg/tournament-lfg-utils.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { parseFormDataWithImages } from "~/form/parse.server";
 import { logger } from "~/utils/logger";
-import { errorToastIfFalsy } from "~/utils/remix.server";
+import { errorToastIfFalsy, successToast } from "~/utils/remix.server";
 import { toDBBoolean } from "~/utils/sql";
 import { assertUnreachable } from "~/utils/types";
 import { registerSchema } from "../tournament-schemas.server";
@@ -27,6 +28,8 @@ import {
 	validateCounterPickMapPool,
 } from "../tournament-utils";
 import {
+	fulfillsSendouQParticipation,
+	isBannedByOrganization,
 	requireNotBannedByOrganization,
 	requireSendouQParticipationIfNeeded,
 } from "../tournament-utils.server";
@@ -114,10 +117,12 @@ export const action: ActionFunction = async ({ request, params }) => {
 					"Registration is closed",
 				);
 
-				await TournamentLFGRepository.leaveLfg({
-					userId: user.id,
-					tournamentId,
-				});
+				ChatSystemMessage.notifyRoomsChanged(
+					await TournamentLFGRepository.leaveLfg({
+						userId: user.id,
+						tournamentId,
+					}),
+				);
 				await TournamentTeamRepository.insert({
 					team: {
 						name,
@@ -145,13 +150,16 @@ export const action: ActionFunction = async ({ request, params }) => {
 		case "DELETE_TEAM_MEMBER": {
 			errorToastIfFalsy(ownTeam, "You are not registered to this tournament");
 			errorToastIfFalsy(
+				!tournament.isInvitational,
+				"The organizer manages the roster of an invitational team",
+			);
+			errorToastIfFalsy(
 				ownTeam.memberUserIds.includes(data.userId),
 				"User is not in your team",
 			);
 			errorToastIfFalsy(data.userId !== user.id, "Can't kick yourself");
 
-			// making sure they aren't unfilling one checking in condition i.e. having full roster
-			// and then having members kicked without it affecting the checking in status
+			// a full roster is a check-in condition, so kicking below it after checking in is not allowed
 			errorToastIfFalsy(
 				!ownTeamCheckedIn ||
 					ownTeam.memberUserIds.length > tournament.minMembersPerTeam,
@@ -169,11 +177,6 @@ export const action: ActionFunction = async ({ request, params }) => {
 				userId: data.userId,
 			});
 			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
-
-			await syncPickupChatMetadata({
-				teamId: ownTeam.id,
-				tournament: pickupChatTournament(tournament),
-			});
 			break;
 		}
 		case "LEAVE_TEAM": {
@@ -208,11 +211,6 @@ export const action: ActionFunction = async ({ request, params }) => {
 				userId: user.id,
 			});
 			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
-
-			await syncPickupChatMetadata({
-				teamId: teamMemberOf.id,
-				tournament: pickupChatTournament(tournament),
-			});
 
 			break;
 		}
@@ -280,14 +278,23 @@ export const action: ActionFunction = async ({ request, params }) => {
 			);
 			errorToastIfFalsy(ownTeam, "You are not registered to this tournament");
 			errorToastIfFalsy(
+				ownTeam.memberUserIds.length < tournament.maxMembersPerTeam,
+				"Team is already at max capacity",
+			);
+			errorToastIfFalsy(
 				(await SQGroupRepository.findFriendsAndTeammates(user.id)).friends.some(
 					(friendPlayer) => friendPlayer.id === data.userId,
 				),
 				"Not a friend",
 			);
+			const userToAdd = await UserRepository.findLeanById(data.userId);
 			errorToastIfFalsy(
-				(await UserRepository.findLeanById(data.userId))?.friendCode,
+				userToAdd?.friendCode,
 				"User you are trying to add has no friend code set",
+			);
+			errorToastIfFalsy(
+				!tournament.ctx.settings.requireInGameNames || userToAdd.inGameName,
+				"User you are trying to add has no in-game name set",
 			);
 			errorToastIfFalsy(tournament.registrationOpen, "Registration is closed");
 
@@ -301,53 +308,93 @@ export const action: ActionFunction = async ({ request, params }) => {
 				userId: data.userId,
 			});
 
-			await TournamentLFGRepository.leaveLfg({
-				userId: data.userId,
+			await addPlayerToOwnTeam({
+				tournament,
 				tournamentId,
-			});
-			await TournamentTeamRepository.join({
+				ownTeam,
+				adder: user,
 				userId: data.userId,
-				newTeamId: ownTeam.id,
 			});
 
-			await SavedCalendarEventRepository.unsaveByUserId({
-				userId: data.userId,
-				tournamentId,
-			});
-
-			ShowcaseTournaments.addToCached({
-				tournamentId,
-				type: "participant",
-				userId: data.userId,
-			});
 			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
-			await syncPickupChatMetadata({
-				teamId: ownTeam.id,
-				tournament: pickupChatTournament(tournament),
-			});
+			break;
+		}
+		case "ADD_TEAM_PLAYERS": {
+			errorToastIfFalsy(ownTeam, "You are not registered to this tournament");
+			errorToastIfFalsy(tournament.registrationOpen, "Registration is closed");
 
-			if (!tournament.isTest && !tournament.isDraft) {
-				notify({
-					userIds: [data.userId],
-					notification: {
-						type: "TO_ADDED_TO_TEAM",
-						meta: {
-							adderUsername: user.username,
-							tournamentId,
-							teamName: ownTeam.name,
-							tournamentName: tournament.ctx.name,
-							tournamentTeamId: ownTeam.id,
-						},
-						pictureUrl: tournament.ctx.logoUrl,
-					},
+			const friendPlayers = await SQGroupRepository.findFriendsAndTeammates(
+				user.id,
+			);
+			errorToastIfFalsy(
+				friendPlayers.teams.some((team) => team.id === data.teamId),
+				"Team id does not match any of the teams you are in",
+			);
+
+			const candidates = friendPlayers.friends.filter(
+				(friendPlayer) =>
+					friendPlayer.teamId === data.teamId &&
+					getMemberRoleType(friendPlayer) !== "OTHER" &&
+					tournament.ctx.teams.every(
+						(team) => !team.memberUserIds.includes(friendPlayer.id),
+					) &&
+					(!tournament.ctx.settings.requireInGameNames ||
+						friendPlayer.inGameName),
+			);
+			errorToastIfFalsy(candidates.length > 0, "No players to add");
+
+			const spotsLeft =
+				tournament.maxMembersPerTeam - ownTeam.memberUserIds.length;
+			errorToastIfFalsy(spotsLeft > 0, "Team is already at max capacity");
+
+			let addedCount = 0;
+			const skippedReasons: Array<IneligibleReason> = [];
+			for (const candidate of candidates) {
+				if (addedCount >= spotsLeft) break;
+
+				const reason = await ineligibleReason({
+					tournament,
+					userId: candidate.id,
 				});
+				if (reason) {
+					skippedReasons.push(reason);
+					continue;
+				}
+
+				await addPlayerToOwnTeam({
+					tournament,
+					tournamentId,
+					ownTeam,
+					adder: user,
+					userId: candidate.id,
+				});
+				addedCount++;
+			}
+
+			errorToastIfFalsy(
+				addedCount > 0,
+				`No players could be added. ${skippedSummary(skippedReasons)}`.trim(),
+			);
+
+			await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
+
+			if (skippedReasons.length > 0) {
+				clearTournamentDataCache(tournamentId);
+
+				return successToast(
+					`Added ${addedCount} player(s). ${skippedSummary(skippedReasons)}`,
+				);
 			}
 
 			break;
 		}
 		case "UNREGISTER": {
 			errorToastIfFalsy(ownTeam, "You are not registered to this tournament");
+			errorToastIfFalsy(
+				!tournament.isInvitational,
+				"The organizer manages the roster of an invitational team",
+			);
 			errorToastIfFalsy(
 				!ownTeamCheckedIn,
 				"You cannot unregister after checking in",
@@ -357,14 +404,9 @@ export const action: ActionFunction = async ({ request, params }) => {
 				"Unregistering from leagues is not possible after registration has closed",
 			);
 
-			const pickupChatTeam =
-				await TournamentLFGRepository.findPickupChatTeamById(ownTeam.id);
-
-			await TournamentTeamRepository.deleteById(ownTeam.id);
-
-			if (pickupChatTeam) {
-				ChatSystemMessage.removeRoom(pickupChatTeam.chatCode);
-			}
+			ChatSystemMessage.notifyRoomsChanged(
+				await TournamentTeamRepository.deleteById(ownTeam.id),
+			);
 
 			for (const userId of ownTeam.memberUserIds) {
 				ShowcaseTournaments.removeFromCached({
@@ -387,11 +429,92 @@ export const action: ActionFunction = async ({ request, params }) => {
 	return null;
 };
 
-function pickupChatTournament(tournament: Tournament) {
-	return {
-		id: tournament.ctx.id,
-		name: tournament.ctx.name,
-		logoUrl: tournament.ctx.logoUrl,
-		startTime: tournament.ctx.startsAt,
-	};
+type IneligibleReason =
+	| "no friend code"
+	| "banned by the organization"
+	| "not enough SendouQ participation";
+
+/** Why the "add all" bulk add has to pass a candidate over, or `null` if they can be added. */
+async function ineligibleReason({
+	tournament,
+	userId,
+}: {
+	tournament: Tournament;
+	userId: number;
+}): Promise<IneligibleReason | null> {
+	if (!(await UserRepository.findLeanById(userId))?.friendCode) {
+		return "no friend code";
+	}
+	if (await isBannedByOrganization({ tournament, userId })) {
+		return "banned by the organization";
+	}
+	if (!(await fulfillsSendouQParticipation({ tournament, userId }))) {
+		return "not enough SendouQ participation";
+	}
+
+	return null;
+}
+
+// names are left out on purpose: the message travels in a redirect's query string
+function skippedSummary(reasons: Array<IneligibleReason>) {
+	if (reasons.length === 0) return "";
+
+	const counts = R.countBy(reasons, (reason) => reason);
+
+	return `Skipped ${reasons.length} player(s): ${Object.entries(counts)
+		.map(([reason, count]) => `${reason} (${count})`)
+		.join(", ")}`;
+}
+
+async function addPlayerToOwnTeam({
+	tournament,
+	tournamentId,
+	ownTeam,
+	adder,
+	userId,
+}: {
+	tournament: Tournament;
+	tournamentId: number;
+	ownTeam: { id: number; name: string };
+	adder: { username: string };
+	userId: number;
+}) {
+	ChatSystemMessage.notifyRoomsChanged([
+		...(await TournamentLFGRepository.leaveLfg({
+			userId,
+			tournamentId,
+		})),
+		...(await TournamentTeamRepository.join({
+			userId,
+			newTeamId: ownTeam.id,
+		})),
+	]);
+
+	await SavedCalendarEventRepository.unsaveByUserId({
+		userId,
+		tournamentId,
+	});
+
+	ShowcaseTournaments.addToCached({
+		tournamentId,
+		type: "participant",
+		userId,
+	});
+
+	if (!tournament.isTest && !tournament.isDraft) {
+		notify({
+			userIds: [userId],
+			notification: {
+				type: "TO_ADDED_TO_TEAM",
+				meta: {
+					adderUsername: adder.username,
+					tournamentId,
+					teamName: ownTeam.name,
+					tournamentName: tournament.ctx.name,
+					tournamentTeamId: ownTeam.id,
+				},
+				pictureUrl: tournament.ctx.logoUrl,
+			},
+		});
+	}
 }

@@ -17,13 +17,13 @@ import { Image } from "~/components/Image";
 import { Main } from "~/components/Main";
 import { Placeholder } from "~/components/Placeholder";
 import { useUser } from "~/features/auth/core/user";
-import { useWebsocketRevalidation } from "~/features/chat/chat-hooks";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
 import type { UserCardData } from "~/features/user-card/user-card-types";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
 import { useHydrated } from "~/hooks/useHydrated";
 import { useMainContentWidth } from "~/hooks/useMainContentWidth";
 import { useSearchParam } from "~/modules/search-params/hooks";
-import { metaTags } from "~/utils/remix";
+import { metaTags, ogPageImage } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import {
 	MATCH_PROFILE_PAGE,
@@ -42,8 +42,8 @@ import { lookingSchema } from "../q-action-schemas";
 import {
 	FULL_GROUP_SIZE,
 	IS_Q_LOOKING_MOBILE_BREAKPOINT,
-	SENDOUQ_LOOKING_ROOM,
-	sqGroupWebsocketRoom,
+	SENDOUQ_LOOKING_CHANNEL,
+	sqGroupChannel,
 } from "../q-constants";
 import { qLookingSearchParams } from "../q-search-params";
 
@@ -63,6 +63,7 @@ export const handle: SendouRouteHandle = {
 export const meta: MetaFunction = (args) => {
 	return metaTags({
 		title: "SendouQ - Matchmaking",
+		image: ogPageImage("sendouq"),
 		location: args.location,
 	});
 };
@@ -86,13 +87,11 @@ function QLookingPage() {
 	const data = useLoaderData<typeof loader>();
 	const [joining] = useSearchParam(qLookingSearchParams, "joining");
 
-	// Pool-shape changes (a group joining/leaving, a morph, a match starting) are
-	// broadcast to this shared room so every looking client revalidates.
-	useWebsocketRevalidation(SENDOUQ_LOOKING_ROOM);
-	// Group-specific updates (e.g. a received like) are pushed to the group's own
-	// dedicated topic.
-	useWebsocketRevalidation(
-		data.ownGroup ? sqGroupWebsocketRoom(data.ownGroup.id) : "",
+	// pool-shape changes (a group joining/leaving, a morph, a match starting)
+	useTopicRevalidation(SENDOUQ_LOOKING_CHANNEL);
+	// group-specific updates (e.g. a received like)
+	useTopicRevalidation(
+		data.ownGroup ? sqGroupChannel(data.ownGroup.id) : "",
 		Boolean(data.ownGroup),
 	);
 
@@ -486,11 +485,9 @@ function Groups() {
 }
 
 /**
- * Floats groups a teammate suggested to the very top, then groups the viewer has
- * a positive private note on up and groups with a negative note down, while
- * preserving the server's tier/activity ordering within each bucket and keeping
- * full (censored) groups last. The note sentiment is read from the already-loaded
- * `userCards` data so the server does not need to attach notes to group members.
+ * Floats teammate-suggested groups to the top, then positive private note groups up and negative
+ * ones down, keeping the server's order within each bucket and full (censored) groups last. Note
+ * sentiment comes from the already-loaded `userCards`.
  */
 function sortGroups<T extends { id: number; members?: { id: number }[] }>(
 	groups: T[],
