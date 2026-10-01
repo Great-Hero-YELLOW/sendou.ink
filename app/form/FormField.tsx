@@ -1,5 +1,10 @@
 import * as React from "react";
-import type { MainWeaponId, StageId } from "~/modules/in-game-lists/types";
+import type {
+	MainWeaponId,
+	SpecialWeaponId,
+	StageId,
+	SubWeaponId,
+} from "~/modules/in-game-lists/types";
 import type { AnySyncSchema } from "~/utils/schema";
 import { formRegistry } from "./fields";
 import { ArrayFormField } from "./fields/ArrayFormField";
@@ -16,6 +21,7 @@ import {
 } from "./fields/InputGroupFormField";
 import { SelectFormField } from "./fields/SelectFormField";
 import { StageSelectFormField } from "./fields/StageSelectFormField";
+import { SubSpecialSelectFormField } from "./fields/SubSpecialSelectFormField";
 import { SwitchFormField } from "./fields/SwitchFormField";
 import { TeamSearchFormField } from "./fields/TeamSearchFormField";
 import { TextareaFormField } from "./fields/TextareaFormField";
@@ -596,6 +602,24 @@ export function FormField({
 		);
 	}
 
+	if (
+		formField.type === "sub-weapon-select" ||
+		formField.type === "special-weapon-select"
+	) {
+		return (
+			<SubSpecialSelectFormField
+				{...commonProps}
+				{...formField}
+				weaponType={formField.type === "sub-weapon-select" ? "SUB" : "SPECIAL"}
+				disabled={isDisabled}
+				value={value as SubWeaponId | SpecialWeaponId | null}
+				onChange={
+					handleChange as (v: SubWeaponId | SpecialWeaponId | null) => void
+				}
+			/>
+		);
+	}
+
 	return (
 		<div>Unsupported form field type: {(formField as FormFieldType).type}</div>
 	);
@@ -615,6 +639,8 @@ interface ArrayItemCustomRenderProps {
  * Memoized so an edit re-renders only the item whose slice changed. Anything the render reads outside its
  * own item must go through `useFormValue`; callbacks read the array via the store so a skipped render never acts on stale values.
  */
+// biome-ignore lint/nursery/useReactFunctionComponentDefinition: memo() takes a function expression
+// biome-ignore lint/suspicious/noShadow: the function expression is named for devtools, it is the same component
 const ArrayItemCustomRender = React.memo(function ArrayItemCustomRender({
 	arrayName,
 	index,

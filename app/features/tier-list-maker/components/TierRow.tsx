@@ -1,13 +1,14 @@
 import { useDroppable } from "@dnd-kit/core";
 import {
-	horizontalListSortingStrategy,
+	rectSortingStrategy,
 	SortableContext,
+	useSortable,
 } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
-import { ChevronDown, ChevronUp, Trash } from "lucide-react";
+import { GripVertical, Plus, Trash } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { useLayoutEffect, useRef } from "react";
-import { Button } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
@@ -17,7 +18,13 @@ import {
 	TIER_NAME_MAX_LENGTH,
 } from "../tier-list-maker-constants";
 import type { TierListMakerTier } from "../tier-list-maker-schemas";
-import { tierListItemId, tierNameFontSize } from "../tier-list-maker-utils";
+import {
+	isLightColor,
+	tierListItemId,
+	tierNameFontSize,
+	tierSortableId,
+	tierTextColor,
+} from "../tier-list-maker-utils";
 import { DraggableItem } from "./DraggableItem";
 import styles from "./TierRow.module.css";
 
@@ -27,14 +34,11 @@ interface TierRowProps {
 
 export function TierRow({ tier }: TierRowProps) {
 	const {
-		state,
 		activeItem,
 		getItemsInTier,
 		handleRemoveTier,
 		handleRenameTier,
 		handleChangeTierColor,
-		handleMoveTierUp,
-		handleMoveTierDown,
 		showTierHeaders,
 		placementMode,
 		selectedTierId,
@@ -43,21 +47,32 @@ export function TierRow({ tier }: TierRowProps) {
 
 	const items = getItemsInTier(tier.id);
 	const { t } = useTranslation(["tier-list-maker", "common"]);
-	const { setNodeRef, isOver } = useDroppable({
+	const { setNodeRef, over } = useDroppable({
 		id: tier.id,
 	});
+	const itemIds = items.map(tierListItemId);
+	const isOver =
+		over !== null && (over.id === tier.id || itemIds.includes(String(over.id)));
 
 	const combinedRef = useLockedHeightWhileDragging({
 		setNodeRef,
 		isDragging: activeItem !== null,
 	});
 
-	const tierIndex = state.tiers.findIndex((t) => t.id === tier.id);
-	const isFirstTier = tierIndex === 0;
-	const isLastTier = tierIndex === state.tiers.length - 1;
+	const {
+		attributes,
+		listeners,
+		setNodeRef: setSortableNodeRef,
+		setActivatorNodeRef,
+		transform,
+		transition,
+		isDragging: isReordering,
+	} = useSortable({ id: tierSortableId(tier.id) });
 
 	const isClickMode = placementMode === "click";
 	const isSelected = isClickMode && selectedTierId === tier.id;
+
+	const hasCustomColor = !PRESET_COLORS.includes(tier.color);
 
 	const selectTierProps = isClickMode
 		? {
@@ -74,11 +89,19 @@ export function TierRow({ tier }: TierRowProps) {
 		: {};
 
 	return (
-		<div className={styles.container}>
+		<div
+			ref={setSortableNodeRef}
+			data-tier-id={tier.id}
+			className={clsx(styles.container, {
+				[styles.containerReordering]: isReordering,
+			})}
+			style={{ transform: CSS.Translate.toString(transform), transition }}
+		>
 			{showTierHeaders ? (
 				<SendouPopover
 					trigger={
-						<Button
+						<button
+							type="button"
 							className={styles.tierLabel}
 							style={{
 								backgroundColor: tier.color,
@@ -86,60 +109,72 @@ export function TierRow({ tier }: TierRowProps) {
 						>
 							<span
 								className={styles.tierName}
-								style={{ fontSize: tierNameFontSize(tier.name) }}
+								style={{
+									fontSize: tierNameFontSize(tier.name),
+									color: tierTextColor(tier.color),
+								}}
 							>
 								{tier.name}
 							</span>
-						</Button>
+						</button>
 					}
 				>
 					<div className={styles.popupContent}>
-						<div className="stack horizontal justify-between">
+						<div className="stack horizontal justify-between items-center">
 							<span className="font-bold text-md">
 								{t("tier-list-maker:editingTier")}
 							</span>
-						</div>
-						<div className="stack md">
-							<input
-								type="text"
-								value={tier.name}
-								onChange={(e) => handleRenameTier(tier.id, e.target.value)}
-								className={styles.nameInput}
-								maxLength={TIER_NAME_MAX_LENGTH}
-							/>
-							<div className={styles.colorPickerContainer}>
-								<div className={styles.presetColorsGrid}>
-									{PRESET_COLORS.map((color) => (
-										<button
-											key={color}
-											type="button"
-											className={clsx(styles.colorButton, {
-												[styles.colorButtonSelected]: tier.color === color,
-											})}
-											style={{ backgroundColor: color }}
-											onClick={() => handleChangeTierColor(tier.id, color)}
-											aria-label={`Select color ${color}`}
-										/>
-									))}
-								</div>
-								<label className={styles.customColorLabel}>
-									<span className="text-xs">{t("tier-list-maker:custom")}</span>
-									<input
-										type="color"
-										value={tier.color}
-										onChange={(e) =>
-											handleChangeTierColor(tier.id, e.target.value)
-										}
-									/>
-								</label>
-							</div>
-						</div>
-						<div className="stack horizontal justify-end">
 							<SendouButton
-								onPress={() => handleRemoveTier(tier.id)}
+								onClick={() => handleRemoveTier(tier.id)}
 								variant="minimal-destructive"
+								className={styles.deleteButton}
 								icon={<Trash />}
+								aria-label={t("common:actions.delete")}
 							/>
+						</div>
+						<input
+							type="text"
+							value={tier.name}
+							onChange={(e) => handleRenameTier(tier.id, e.target.value)}
+							className={styles.nameInput}
+							maxLength={TIER_NAME_MAX_LENGTH}
+						/>
+						<div className={styles.colorGrid}>
+							{PRESET_COLORS.map((color) => (
+								<button
+									key={color}
+									type="button"
+									className={clsx(styles.colorButton, {
+										[styles.colorButtonSelected]: tier.color === color,
+									})}
+									style={{ backgroundColor: color }}
+									onClick={() => handleChangeTierColor(tier.id, color)}
+									aria-label={color}
+								/>
+							))}
+							<label
+								className={clsx(styles.colorButton, styles.customColorButton, {
+									[styles.colorButtonSelected]: hasCustomColor,
+									[styles.customColorButtonOnLight]:
+										hasCustomColor && isLightColor(tier.color),
+									[styles.customColorButtonOnDark]:
+										hasCustomColor && !isLightColor(tier.color),
+								})}
+								style={
+									hasCustomColor ? { backgroundColor: tier.color } : undefined
+								}
+							>
+								<Plus className={styles.customColorIcon} />
+								<input
+									type="color"
+									className={styles.customColorInput}
+									value={tier.color}
+									aria-label={t("tier-list-maker:custom")}
+									onChange={(e) =>
+										handleChangeTierColor(tier.id, e.target.value)
+									}
+								/>
+							</label>
 						</div>
 					</div>
 				</SendouPopover>
@@ -161,10 +196,7 @@ export function TierRow({ tier }: TierRowProps) {
 							: t("tier-list-maker:dropItems")}
 					</div>
 				) : items.length > 0 ? (
-					<SortableContext
-						items={items.map(tierListItemId)}
-						strategy={horizontalListSortingStrategy}
-					>
+					<SortableContext items={itemIds} strategy={rectSortingStrategy}>
 						{items.map((item) => (
 							<DraggableItem key={tierListItemId(item)} item={item} />
 						))}
@@ -172,26 +204,16 @@ export function TierRow({ tier }: TierRowProps) {
 				) : null}
 			</div>
 
-			<div className={styles.arrowControls}>
-				<button
-					className={clsx(styles.arrowButton, styles.arrowButtonUpper)}
-					onClick={() => handleMoveTierUp(tier.id)}
-					disabled={isFirstTier}
-					type="button"
-					aria-label="Move tier up"
-				>
-					<ChevronUp className={styles.arrowIcon} />
-				</button>
-				<button
-					className={clsx(styles.arrowButton, styles.arrowButtonLower)}
-					onClick={() => handleMoveTierDown(tier.id)}
-					disabled={isLastTier}
-					type="button"
-					aria-label="Move tier down"
-				>
-					<ChevronDown className={styles.arrowIcon} />
-				</button>
-			</div>
+			<button
+				ref={setActivatorNodeRef}
+				className={styles.dragHandle}
+				type="button"
+				aria-label="Reorder tier"
+				{...attributes}
+				{...listeners}
+			>
+				<GripVertical className={styles.dragHandleIcon} />
+			</button>
 		</div>
 	);
 }

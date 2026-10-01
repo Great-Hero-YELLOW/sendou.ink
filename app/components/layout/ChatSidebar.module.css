@@ -28,10 +28,6 @@
 	.chatHeader {
 		padding-block-start: env(safe-area-inset-top);
 	}
-
-	.sidebar {
-		padding-block-end: env(safe-area-inset-bottom);
-	}
 }
 
 .closeButton {
@@ -62,6 +58,7 @@
 	gap: var(--s-0-5);
 	padding: var(--s-1-5);
 	overflow-y: auto;
+	overscroll-behavior: contain;
 	flex: 1;
 	min-height: 0;
 }
@@ -104,8 +101,8 @@
 .unreadBadge {
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-bold);
-	color: var(--color-text-inverse);
-	background-color: var(--color-text-accent);
+	color: var(--color-fg-on-accent);
+	background-color: var(--color-fill-accent);
 	min-width: 18px;
 	height: 18px;
 	padding: 0 var(--s-1);
@@ -149,8 +146,8 @@
 	right: -2px;
 	font-size: var(--font-3xs);
 	font-weight: var(--weight-bold);
-	color: var(--color-text-inverse);
-	background-color: var(--color-text-accent);
+	color: var(--color-fg-on-accent);
+	background-color: var(--color-fill-accent);
 	min-width: 14px;
 	height: 14px;
 	padding: 0 3px;
@@ -268,17 +265,15 @@
 		min-height: 0;
 	}
 
-	/* messages */
-	& [role="listbox"] {
+	/* messages: no top padding, fill available space */
+	& [role="log"] {
 		padding-top: 0;
+		padding-inline: var(--s-2);
 		flex: 1;
 		height: auto;
 	}
 
-	& [role="option"] {
-		padding-inline: var(--s-2);
-	}
-
+	/* form: stick to bottom */
 	& form {
 		padding: var(--s-1-5);
 		margin-top: 0;

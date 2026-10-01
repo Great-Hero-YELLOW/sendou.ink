@@ -1,6 +1,6 @@
 import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import { nullFilledArray } from "~/utils/arrays";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import type {
 	BracketData,
 	MatchData,
@@ -32,6 +32,7 @@ export function createSwiss(input: ResolvedCreateBracketInput): BracketData {
 			nullFilledArray(roundCount).map((_, i) => ({
 				id: roundId++,
 				groupId: g.id,
+				section: null,
 				number: i + 1,
 				stageId: 0,
 			})),
@@ -86,7 +87,7 @@ function firstRoundMatches({
 				id: matchId++,
 				groupId: groupIdx,
 				stageId: 0,
-				roundId: roundId,
+				roundId,
 				number: i + 1,
 				opponent1: {
 					id: upper,
@@ -103,7 +104,7 @@ function firstRoundMatches({
 				id: matchId++,
 				groupId: groupIdx,
 				stageId: 0,
-				roundId: roundId,
+				roundId,
 				number: upperHalf.length + 1,
 				opponent1: {
 					id: bye,
@@ -120,13 +121,13 @@ function firstRoundMatches({
 		if (!seeding) return [];
 		if (groupCount === 1) return [seeding.map((id) => id!)];
 
-		const groups: number[][] = nullFilledArray(groupCount).map(() => []);
+		const seedingGroups: number[][] = nullFilledArray(groupCount).map(() => []);
 
 		for (let i = 0; i < seeding.length; i++) {
 			const groupIndex = i % groupCount;
-			groups[groupIndex].push(seeding[i]!);
+			seedingGroups[groupIndex].push(seeding[i]!);
 		}
 
-		return groups;
+		return seedingGroups;
 	}
 }

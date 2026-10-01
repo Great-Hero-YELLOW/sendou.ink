@@ -1,4 +1,4 @@
-/** Map list generation for "TO pick": the map list is defined beforehand by the TO. */
+/** Map list generation for "TO pick": the map list is defined beforehand by the TO. For "team pick" only the mode order is generated, the maps come from the teams' picks. */
 
 import type { Tables } from "~/db/tables";
 import type { TournamentRoundMaps } from "~/db/tables-json";
@@ -10,14 +10,32 @@ import { logger } from "~/utils/logger";
 import { assertUnreachable } from "~/utils/types";
 
 export type BracketMapCounts = Map<
-	// round.groupId ->
-	number,
+	// roundSetKey(round) ->
+	string,
 	// round.number ->
-	Map<number, { count: number; type: "BEST_OF" }>
->;
+	Map<number, { count: number; type: "BEST_OF" }>>;
+
+/** Identifies the rounds numbered together: a round robin/swiss group's rounds, or one section of an elimination group. */
+export function roundSetKey(round: Pick<RoundData, "groupId" | "section">) {
+	return round.section
+		? `${round.groupId}:${round.section}`
+		: `${round.groupId}`;
+}
+
+const ELIMINATION_SECTION_PLAY_ORDER: Record<
+	NonNullable<RoundData["section"]>,
+	number
+> = {
+	winners: 0,
+	finals: 1,
+	losers: 2,
+};
 
 export interface GenerateTournamentRoundMaplistArgs {
+	/** The tournament's effective map pool, see `Tournament.mapPool`. */
 	pool: Array<{ mode: ModeShort; stageId: StageId }>;
+	/** Teams pick the maps: rounds get a mode order from the pattern instead of a map list. */
+	teamsPickMaps: boolean;
 	rounds: RoundData[];
 	mapCounts: BracketMapCounts;
 	type: Tables["TournamentStage"]["type"];
@@ -70,20 +88,30 @@ export function generateTournamentRoundMaplist(
 
 		const pattern = args.patterns.get(count);
 
+		const generated = () =>
+			generator.next({
+				amount: amountOfMapsToGenerate(),
+				pattern,
+			}).value;
+
+		if (args.teamsPickMaps) {
+			result.set(round.id, {
+				count,
+				pickBan: args.roundsWithPickBan.has(round.id)
+					? args.pickBanStyle
+					: undefined,
+				list: null,
+				modes: generated().map((map) => map.mode),
+			});
+			continue;
+		}
+
 		result.set(round.id, {
 			count,
 			pickBan: args.roundsWithPickBan.has(round.id)
 				? args.pickBanStyle
 				: undefined,
-			list:
-				// teams pick
-				args.pool.length === 0
-					? null
-					: // TO pick
-						generator.next({
-							amount: amountOfMapsToGenerate(),
-							pattern,
-						}).value,
+			list: args.pool.length === 0 ? null : generated(),
 		});
 	}
 
@@ -124,27 +152,14 @@ function sortRounds(
 	rounds: RoundData[],
 	type: Tables["TournamentStage"]["type"],
 ) {
-	const groupIds = rounds.map((x) => x.groupId);
-	const minGroupId = Math.min(...groupIds);
-	const maxGroupId = Math.max(...groupIds);
-
-	// winners bracket first, then grands, then losers bracket
-	const doubleEliminationGroupRank = (groupId: number) => {
-		if (groupId === minGroupId) return 0;
-		if (groupId === maxGroupId) return 1;
-		return 2;
-	};
+	// winners bracket first, then grands (or the 3rd place match), then losers bracket
+	const sectionRank = (round: RoundData) =>
+		round.section ? ELIMINATION_SECTION_PLAY_ORDER[round.section] : 0;
 
 	return rounds.toSorted((a, b) => {
-		if (type === "double_elimination") {
-			const rankDiff =
-				doubleEliminationGroupRank(a.groupId) -
-				doubleEliminationGroupRank(b.groupId);
+		if (type === "double_elimination" || type === "single_elimination") {
+			const rankDiff = sectionRank(a) - sectionRank(b);
 			if (rankDiff !== 0) return rankDiff;
-		}
-		if (type === "single_elimination") {
-			// finals and 3rd place match last
-			if (a.groupId !== b.groupId) return a.groupId - b.groupId;
 		}
 
 		return a.number - b.number;
@@ -157,15 +172,15 @@ function resolveRoundMapCount(
 	type: Tables["TournamentStage"]["type"],
 ) {
 	// rr/swiss groups share the map list, the one with the most rounds covers every round number
-	const groupId =
+	const key =
 		type === "round_robin" || type === "swiss"
-			? fullestGroupIdByCounts(counts)
-			: round.groupId;
+			? fullestRoundSetKeyByCounts(counts)
+			: roundSetKey(round);
 
-	const count = counts.get(groupId)?.get(round.number)?.count;
+	const count = counts.get(key)?.get(round.number)?.count;
 	if (typeof count === "undefined") {
 		logger.warn(
-			`No map count found for round ${round.number} (group ${round.groupId})`,
+			`No map count found for round ${round.number} (group ${round.groupId}, section ${round.section})`,
 		);
 		return 5;
 	}
@@ -173,12 +188,11 @@ function resolveRoundMapCount(
 	return count;
 }
 
-function fullestGroupIdByCounts(counts: BracketMapCounts) {
-	let fullestGroupId = counts.keys().next().value as number;
-	for (const [groupId, roundCounts] of counts) {
-		if (roundCounts.size > counts.get(fullestGroupId)!.size)
-			fullestGroupId = groupId;
+function fullestRoundSetKeyByCounts(counts: BracketMapCounts) {
+	let fullestKey = counts.keys().next().value as string;
+	for (const [key, roundCounts] of counts) {
+		if (roundCounts.size > counts.get(fullestKey)!.size) fullestKey = key;
 	}
 
-	return fullestGroupId;
+	return fullestKey;
 }

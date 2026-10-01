@@ -2,17 +2,15 @@ import * as R from "remeda";
 import { actorIdOrNullSafe } from "~/features/auth/core/user.server";
 import * as EventBus from "~/features/events/core/EventBus.server";
 import { chatRoomChannel, userChannel } from "~/features/events/events-types";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import * as ChatRepository from "./ChatRepository.server";
 import * as ChatRoomResolver from "./ChatRoomResolver.server";
 import type {
 	PersistedSystemMessageType,
 	RevalidateScope,
-	SoundOnlySystemMessageType,
-	SystemMessageType,
+	UnthrottledSystemMessageType,
 } from "./chat-types";
-import { soundOnlyType } from "./chat-utils";
 import { createRevalidateBroadcastThrottle } from "./revalidate-broadcast-throttle";
 
 type RevalidateBroadcast = {
@@ -21,7 +19,7 @@ type RevalidateBroadcast = {
 	/** Actor whose own broadcast clients skip (their submission already reran the loaders). */
 	authorUserId?: number;
 	revalidateScope?: RevalidateScope;
-	type?: SoundOnlySystemMessageType;
+	type?: UnthrottledSystemMessageType;
 };
 
 const REVALIDATE_BROADCAST_THROTTLE_WINDOW_MS = 2_000;
@@ -87,13 +85,11 @@ function publishRevalidate(msg: {
 	channel: string;
 	revalidateScope?: RevalidateScope;
 	authorUserId?: number;
-	type?: SystemMessageType;
 }) {
 	EventBus.publish([msg.channel], {
 		kind: "revalidate",
 		scope: msg.revalidateScope,
 		authorUserId: msg.authorUserId ?? actorIdOrNullSafe() ?? undefined,
-		type: soundOnlyType(msg.type),
 	});
 }
 
@@ -103,6 +99,15 @@ export function notifyNotificationsChanged(userIds: number[]) {
 
 	EventBus.publish(userIds.map(userChannel), {
 		kind: "notificationsChanged",
+	});
+}
+
+/** Publishes a contentless "your header status changed" event to the users' streams, prompting their clients to refetch the global status. Fire and forget; a missed event only delays the refetch until the next catch-up. */
+export function notifyStatusChanged(userIds: number[]) {
+	if (userIds.length === 0) return;
+
+	EventBus.publish(R.unique(userIds).map(userChannel), {
+		kind: "statusChanged",
 	});
 }
 

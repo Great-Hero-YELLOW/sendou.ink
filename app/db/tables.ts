@@ -50,6 +50,7 @@ import type {
 	TOURNAMENT_STAGE_TYPES,
 	TournamentAuditLogType,
 	TournamentMapPickingStyle,
+	TournamentRoundSection,
 	TournamentStaffRole,
 } from "~/features/tournament/tournament-constants";
 import type {
@@ -208,6 +209,7 @@ export interface PendingTrophy {
 	acceptedAt: number | null;
 	targetTrophyId: number | null;
 	managerId: number | null;
+	creatorId: number | null;
 }
 
 export interface PendingTrophyApproval {
@@ -486,7 +488,6 @@ export interface MapPoolMap {
 	calendarEventId: number | null;
 	mode: ModeShort;
 	stageId: StageId;
-	tieBreakerCalendarEventId: number | null;
 	tournamentTeamId: number | null;
 }
 
@@ -680,8 +681,9 @@ export interface TournamentBadgeOwner {
 }
 
 /**
- * Groups rounds together. In round-robin and swiss a group is a pool; in elimination it is a bracket
- * (single: the bracket + optional consolation final, double: upper, lower + optional grand final).
+ * A set of participants of a stage that play among themselves: a pool of a round robin or swiss stage,
+ * or an elimination bracket whose rounds {@link TournamentRound.section} splits into winners, losers
+ * and finals. Every elimination stage has one group for now.
  */
 export interface TournamentGroup {
 	id: GeneratedAlways<number>;
@@ -702,6 +704,21 @@ export interface TournamentMatch {
 	startedAt: number | null;
 	/** The side that won the set. `null` while the match has no winner. */
 	winnerSide: Side | null;
+	/** Leagues: the time the teams (or the organizer) agreed the set is played at. */
+	scheduledAt: number | null;
+	/** Leagues: the organizer set {@link TournamentMatch.scheduledAt}, closing the candidate board for the teams. */
+	scheduleSetByOrganizer: Generated<DBBoolean>;
+}
+
+/** Leagues: a candidate time one team put on the set's scheduling board. Only exists while open, accepting or rejecting deletes the match's proposals. */
+export interface TournamentMatchScheduleProposal {
+	id: GeneratedAlways<number>;
+	matchId: number;
+	tournamentTeamId: number;
+	authorId: number;
+	/** The candidate time. */
+	proposedAt: number;
+	createdAt: Generated<number>;
 }
 
 /** Represents one decision, pick or ban, during tournaments pick/ban (counterpick, ban 2) phase. */
@@ -752,11 +769,14 @@ export interface TournamentResult {
 export interface TournamentRound {
 	groupId: number;
 	id: GeneratedAlways<number>;
+	/** Restarts from 1 per group, and in an elimination group per {@link TournamentRound.section}. */
 	number: number;
 	stageId: number;
+	/** Part of the elimination group the round belongs to. `null` in round robin and swiss. */
+	section: TournamentRoundSection | null;
 	maps: JSONColumnType<TournamentRoundMaps>;
-	/** Datetime the round is played by default (leagues). Null = no default play time, the round is played whenever. */
-	defaultPlayTime: number | null;
+	/** Leagues: the round's sets are playable from this time on. Null = playable whenever. */
+	isPlayableAt: number | null;
 }
 
 /** A stage is an intermediate phase in a tournament. In essence a bracket. */
@@ -913,6 +933,10 @@ export interface Friendship {
 	userOneId: number;
 	userTwoId: number;
 	createdAt: Generated<number>;
+	/** userOne keeps this friend at the top of their friends list */
+	isPinnedByUserOne: Generated<DBBoolean>;
+	/** userTwo keeps this friend at the top of their friends list */
+	isPinnedByUserTwo: Generated<DBBoolean>;
 }
 
 /** Pending friend request from one user to another. */
@@ -947,8 +971,6 @@ export interface User {
 	/** 1 = permabanned, timestamp = ban active till then */
 	banned: Generated<number | null>;
 	bannedReason: string | null;
-	/** Shown on old user profile and Plus Voting */
-	bio: string | null;
 	/** Shown on user card */
 	shortBio: string | null;
 	commissionsOpen: Generated<DBBoolean>;
@@ -967,8 +989,6 @@ export interface User {
 	/** Name the user is shown under in tournaments, set by organizers of established organizations. `null` = their `username` is used. */
 	tournamentName: string | null;
 	discordUniqueName: string | null;
-	/** User's favorite badges they want to show on the front page of the badge display. Index = 0 big badge. */
-	favoriteBadgeIds: JSONColumnTypeNullable<number[]>;
 	favoriteTrophyIds: JSONColumnTypeNullable<number[]>;
 	hiddenTrophyIds: JSONColumnTypeNullable<number[]>;
 	id: GeneratedAlways<number>;
@@ -978,18 +998,15 @@ export interface User {
 	isTournamentOrganizer: Generated<DBBoolean>;
 	isApiAccesser: Generated<DBBoolean>;
 	languages: JSONColumnTypeNullable<UnifiedLanguageCode[]>;
-	motionSens: number | null;
 	pronouns: JSONColumnTypeNullable<Pronouns>;
 	patronStartedAt: number | null;
 	patronTier: number | null;
 	patronExpiresAt: number | null;
-	showDiscordUniqueName: Generated<DBBoolean>;
-	stickSens: number | null;
 	twitch: string | null;
 	bsky: string | null;
-	battlefy: string | null;
 	vc: Generated<"YES" | "NO" | "LISTEN_ONLY">;
 	youtubeId: string | null;
+	youtubeName: string | null;
 	mapModePreferences: JSONColumnTypeNullable<UserMapModePreferences>;
 	weaponPool: JSONColumnTypeNullable<WeaponPoolEntry[]>;
 	plusSkippedForSeasonNth: number | null;
@@ -1007,6 +1024,8 @@ export interface User {
 	hiddenCardStats: JSONColumnTypeNullable<Array<HideableUserCardStat>>;
 	/** Div in the latest finished LUTI (e.g. "2" or "X"). Must have been in a team that did not drop and the user played at least one match (got result as well) */
 	div: string | null;
+	/** LUTI season `div` was earned in. */
+	divSeason: number | null;
 	/** Peak XP as indicated by the user. Should have either `takoroka` or `tentatek` key defined but not both. */
 	unverifiedPeakXP: JSONColumnTypeNullable<PeakXP>;
 	/** Division the user card's XP is taken from. `null` when the user has not picked one, showing their highest XP across both. */
@@ -1036,14 +1055,6 @@ export interface UserSearch {
 	inGameName: GeneratedAlways<string | null>;
 	discordUniqueName: GeneratedAlways<string | null>;
 	customUrl: GeneratedAlways<string | null>;
-}
-
-export interface UserWeapon {
-	createdAt: Generated<number>;
-	isFavorite: Generated<DBBoolean>;
-	order: number;
-	userId: number;
-	weaponSplId: MainWeaponId;
 }
 
 export interface UserWeaponPool {
@@ -1283,7 +1294,8 @@ export interface Association {
 export interface AssociationMember {
 	userId: number;
 	associationId: number;
-	role: "MEMBER" | "ADMIN";
+	/** MANAGER can also share the invite link, ADMIN (one per association) can also manage the members */
+	role: "MEMBER" | "MANAGER" | "ADMIN";
 }
 
 export interface Notification {
@@ -1443,6 +1455,7 @@ export interface DB {
 	TournamentGroup: TournamentGroup;
 	TournamentLFGLike: TournamentLFGLike;
 	TournamentMatch: TournamentMatch;
+	TournamentMatchScheduleProposal: TournamentMatchScheduleProposal;
 	TournamentMatchPickBanEvent: TournamentMatchPickBanEvent;
 	TournamentMatchGameResult: TournamentMatchGameResult;
 	TournamentMatchGameResultParticipant: TournamentMatchGameResultParticipant;
@@ -1479,7 +1492,6 @@ export interface DB {
 	UserResultHighlight: UserResultHighlight;
 	/** VIEW over `UnvalidatedUserSubmittedImage`, excludes images awaiting validation. Insert/update via `UnvalidatedUserSubmittedImage`. */
 	UserSubmittedImage: UserSubmittedImage;
-	UserWeapon: UserWeapon;
 	UserWeaponPool: UserWeaponPool;
 	TenStarWeapon: TenStarWeapon;
 	UserFriendCode: UserFriendCode;

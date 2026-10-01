@@ -1,9 +1,10 @@
+import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useFetcher } from "react-router";
+import { Link, useFetcher } from "react-router";
 import { SendouButton } from "~/components/elements/Button";
 import { frontPageSchema } from "~/features/sendouq/q-action-schemas";
 import { useActionSubmit } from "~/hooks/useActionSubmit";
-import { SENDOUQ_PAGE } from "~/utils/urls";
+import { SENDOUQ_LOOKING_PAGE, SENDOUQ_PAGE } from "~/utils/urls";
 import * as RejoinVote from "../core/RejoinVote";
 import type { SendouQMatchLoaderData } from "../loaders/q.match.$id.server";
 import { matchSchema } from "../q-match-schemas";
@@ -56,18 +57,43 @@ export function MatchmadeRejoinSection({
 
 export function TrustedRejoinSection({
 	viewerGroup,
+	hasJoinedNewGroup,
+	someGroupMemberHasJoinedNewGroup,
 }: {
 	viewerGroup: NonNullable<SendouQMatchLoaderData["match"]["groupAlpha"]>;
+	hasJoinedNewGroup: boolean;
+	someGroupMemberHasJoinedNewGroup: boolean;
 }) {
 	const { t } = useTranslation(["q"]);
 	const lookAgain = useActionSubmit(matchSchema);
+
+	if (hasJoinedNewGroup) {
+		return (
+			<div className="stack md items-center">
+				<Link to={SENDOUQ_LOOKING_PAGE}>
+					<SendouButton variant="primary" icon={<RotateCcw />}>
+						{t("q:match.rematch.backToQueue")}
+					</SendouButton>
+				</Link>
+			</div>
+		);
+	}
+
+	// the whole group has to be free for it, so offering it here could only fail
+	if (someGroupMemberHasJoinedNewGroup) {
+		return (
+			<RejoinQueueSection
+				explanation={t("q:match.rematch.memberJoinedNewGroup")}
+			/>
+		);
+	}
 
 	return (
 		<div className="stack md items-center">
 			<SendouButton
 				variant="primary"
 				isPending={lookAgain.state !== "idle"}
-				onPress={() => {
+				onClick={() => {
 					lookAgain.submit("LOOK_AGAIN", {
 						previousGroupId: viewerGroup.id,
 					});
@@ -81,19 +107,23 @@ export function TrustedRejoinSection({
 
 function DeclinedSection() {
 	const { t } = useTranslation(["q"]);
+
+	return <RejoinQueueSection explanation={t("q:match.rematch.declined")} />;
+}
+
+function RejoinQueueSection({ explanation }: { explanation: string }) {
+	const { t } = useTranslation(["q"]);
 	const rejoinQueue = useActionSubmit(frontPageSchema, {
 		action: SENDOUQ_PAGE,
 	});
 	return (
 		<div className="stack md items-center">
-			<p className="text-lighter text-sm text-center">
-				{t("q:match.rematch.declined")}
-			</p>
+			<p className="text-lighter text-sm text-center">{explanation}</p>
 			<SendouButton
 				variant="minimal"
 				className="text-sm font-bold"
 				isPending={rejoinQueue.state !== "idle"}
-				onPress={() => {
+				onClick={() => {
 					rejoinQueue.submit("JOIN_QUEUE", { direct: "true" });
 				}}
 			>

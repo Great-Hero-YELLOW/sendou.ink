@@ -16,11 +16,12 @@
 	"friendsList.joinSendouQ": "Join SendouQ",
 	"friendsList.deleteFriend": "Delete friend",
 	"friendsList.deleteConfirm": "Delete {{name}} as a friend?",
-	"view.label": "View filter",
 	"view.friends": "Friends",
 	"view.teamMembers": "Team members",
 	"view.all": "All",
 	"teamMembers.empty": "No team members yet",
 	"unseenRequests_one": "{{count}} unseen friend request",
-	"unseenRequests_other": "{{count}} unseen friend requests"
+	"unseenRequests_other": "{{count}} unseen friend requests",
+	"friendsList.pin": "Pin {{name}} to the top",
+	"friendsList.unpin": "Unpin {{name}}"
 }

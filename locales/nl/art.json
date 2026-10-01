@@ -5,7 +5,6 @@
 	"radios.all": "",
 	"radios.madeBy": "",
 	"radios.madeFor": "",
-	"filterByTag": "",
 	"filteringByTag": "",
 	"commissionsOpen": "",
 	"commissionsClosed": "",
@@ -23,5 +22,7 @@
 	"forms.tags.maxReached": "",
 	"delete.title": "",
 	"unlink.title": "",
-	"noArtForTag": ""
+	"noArtForTag": "",
+	"imageFailed": "",
+	"openImage": ""
 }

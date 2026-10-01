@@ -51,13 +51,19 @@
 
 .effectsSelector {
 	display: grid;
-	gap: var(--s-2);
-	grid-template-columns: 1fr 2.5fr;
-	place-items: center;
+	gap: var(--s-2) var(--s-4);
+	grid-template-columns: 3rem 1fr;
+	align-items: center;
+	width: 100%;
+	max-width: 17rem;
+
+	& > :nth-child(odd) {
+		justify-self: center;
+	}
 }
 
 .ldeIntensitySelect {
-	font-size: var(--font-2xs);
+	width: 100%;
 }
 
 .apSummary {
@@ -75,7 +81,7 @@
 	width: 100%;
 	align-items: center;
 	border-radius: var(--radius-box);
-	background-color: var(--color-accent-low);
+	background-color: var(--color-bg-accent);
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-semi);
 	gap: var(--s-2);
@@ -179,7 +185,7 @@
 	padding: 0;
 	border: none;
 	background-color: transparent;
-	color: var(--color-accent);
+	color: var(--color-fg-accent);
 	font-size: var(--font-md);
 	font-weight: var(--weight-bold);
 	outline: initial;
@@ -245,8 +251,8 @@
 
 .patch {
 	border-radius: var(--radius-selector);
-	background-color: var(--color-accent-low);
-	color: var(--color-accent-high);
+	background-color: var(--color-bg-accent);
+	color: var(--color-fg-accent);
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-bold);
 	padding-inline: var(--s-2);
@@ -263,36 +269,35 @@
 .statPopover {
 	min-width: 360px;
 
-	--chart-bg: transparent;
-	--chart-height: 250px;
-	--chart-width: 340px;
-
-	/* flex column threaded down so the chart shrinks to the popover height instead of clipping */
-	display: flex;
 	flex-direction: column;
+	align-items: center;
 
 	/* visible so the hover tooltip can overlay the chart instead of being clipped */
 	overflow: visible;
+
+	/* a display on the class itself would show the closed popovers too */
+	&:popover-open {
+		/* let the chart shrink to whatever height the popover is allotted (so it
+		   never gets clipped) by threading a flex column down to it */
+		display: flex;
+	}
 }
 
-.statPopover [role="dialog"] {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	flex: 1;
-	min-height: 0;
-}
+.statChart {
+	--line-chart-surface: var(--color-bg);
 
-.statChartContainer {
 	flex: 1 1 auto;
+	width: 100%;
+	height: 250px;
 	min-height: 0;
-	max-width: 100%;
 }
 
 @media screen and (min-width: 700px) {
 	.statPopover {
 		min-width: calc(360px * 1.75);
-		--chart-height: calc(250px * 1.75);
-		--chart-width: calc(340px * 1.75);
+	}
+
+	.statChart {
+		height: calc(250px * 1.75);
 	}
 }

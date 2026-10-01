@@ -1,13 +1,14 @@
 import { describe, expect, test } from "vitest";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
-import { clampThemeToGamut } from "~/utils/oklch-gamut";
+import * as ThemePalette from "~/features/theme/core/ThemePalette";
 import * as UserRepository from "./UserRepository.server";
 
-const CUSTOM_THEME = clampThemeToGamut({
+const CUSTOM_THEME = ThemePalette.build({
 	baseHue: 268,
 	baseChroma: 0.05,
 	accentHue: 253,
 	accentChroma: 0.24,
+	bgLightness: 0.17,
 	chatHue: null,
 	radiusBox: 3,
 	radiusField: 2,
@@ -25,9 +26,7 @@ describe("supporter custom theme on the profile layout", () => {
 			customTheme: CUSTOM_THEME,
 		});
 
-		const layoutData = await UserRepository.findLayoutDataByIdentifier(
-			String(user.id),
-		);
+		const layoutData = await UserRepository.findLayoutDataById(user.id);
 
 		// `root.tsx` spreads the object into CSS variables, so a raw string renders as garbage
 		expect(layoutData?.customTheme?.["--_acc-h"]).toBe(
@@ -40,9 +39,7 @@ describe("supporter custom theme on the profile layout", () => {
 			customTheme: CUSTOM_THEME,
 		});
 
-		const layoutData = await UserRepository.findLayoutDataByIdentifier(
-			String(user.id),
-		);
+		const layoutData = await UserRepository.findLayoutDataById(user.id);
 
 		expect(layoutData?.customTheme).toBeNull();
 	});

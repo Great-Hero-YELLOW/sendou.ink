@@ -26,7 +26,7 @@ export function matchStatuses(data: BracketData): Map<number, MatchStatus> {
 
 /** Prefer {@link matchStatuses} when many matches of the same bracket are needed. */
 export function matchStatus(data: BracketData, matchId: number): MatchStatus {
-	const match = data.match.find((match) => match.id === matchId);
+	const match = data.match.find((candidate) => candidate.id === matchId);
 	if (!match) throw new Error(`Match not found: ${matchId}`);
 
 	return resolveStatus(match, bracketContext(data));
@@ -141,7 +141,7 @@ function isWaitingForPreviousRound(
 	if (!round || round.number === 1) return false;
 
 	const previousRound = context.roundByGroupAndNumber.get(
-		roundKey(round.groupId, round.number - 1),
+		roundKey(round, round.number - 1),
 	);
 	if (!previousRound) return false;
 
@@ -155,8 +155,9 @@ function isWaitingForPreviousRound(
 
 function hasFinishedRound(opponentId: number, roundMatches: MatchData[]) {
 	const match = roundMatches.find(
-		(match) =>
-			match.opponent1?.id === opponentId || match.opponent2?.id === opponentId,
+		(candidate) =>
+			candidate.opponent1?.id === opponentId ||
+			candidate.opponent2?.id === opponentId,
 	);
 
 	// no match in the round = they sat the round out
@@ -170,7 +171,7 @@ function bracketContext(data: BracketData): BracketContext {
 	const roundByGroupAndNumber = new Map<string, RoundData>();
 	for (const round of data.round) {
 		roundsById.set(round.id, round);
-		roundByGroupAndNumber.set(roundKey(round.groupId, round.number), round);
+		roundByGroupAndNumber.set(roundKey(round, round.number), round);
 	}
 
 	const matchesByRoundId = new Map<number, MatchData[]>();
@@ -198,6 +199,9 @@ function bracketContext(data: BracketData): BracketContext {
 	};
 }
 
-function roundKey(groupId: number, roundNumber: number) {
-	return `${groupId}-${roundNumber}`;
+function roundKey(
+	round: Pick<RoundData, "groupId" | "section">,
+	roundNumber: number,
+) {
+	return `${round.groupId}-${round.section}-${roundNumber}`;
 }

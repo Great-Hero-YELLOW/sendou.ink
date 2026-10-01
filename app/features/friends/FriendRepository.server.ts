@@ -1,10 +1,11 @@
 import { sub } from "date-fns";
 import { type SelectQueryBuilder, sql } from "kysely";
 import { db } from "~/db/sql";
-import type { DB } from "~/db/tables";
+import type { DB, DBBoolean } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { commonUserSelect } from "~/utils/kysely.server";
+import { toDBBoolean } from "~/utils/sql";
 import { FRIEND } from "./friends-constants";
 
 export async function findByUserIdWithActivity(userId: number) {
@@ -33,9 +34,16 @@ export async function findByUserIdWithActivity(userId: number) {
 					]),
 				),
 		)
-			.select([
+			.select((eb) => [
 				"Friendship.id as friendshipId",
 				"Friendship.createdAt as friendshipCreatedAt",
+				eb
+					.case()
+					.when("Friendship.userOneId", "=", userId)
+					.then(eb.ref("Friendship.isPinnedByUserOne"))
+					.else(eb.ref("Friendship.isPinnedByUserTwo"))
+					.end()
+					.as("isPinned"),
 			])
 			.orderBy("Friendship.createdAt", "desc")
 			.execute(),
@@ -58,6 +66,7 @@ export async function findByUserIdWithActivity(userId: number) {
 			...row,
 			friendshipId: null as number | null,
 			friendshipCreatedAt: null as number | null,
+			isPinned: 0 as DBBoolean,
 		})),
 	];
 }
@@ -70,31 +79,45 @@ function withLfgJoins<QB extends SelectQueryBuilder<any, any, any>>(qb: QB) {
 		.leftJoin("TournamentTeamMember", (join) =>
 			join
 				.onRef("TournamentTeamMember.userId", "=", "User.id")
-				.on("TournamentTeamMember.isLooking", "=", 1),
+				.on("TournamentTeamMember.isLooking", "=", 1)
+				.on((eb) =>
+					eb.exists(
+						eb
+							.selectFrom("TournamentTeam as LookingTeam")
+							.innerJoin(
+								"Tournament as LookingTournament",
+								"LookingTournament.id",
+								"LookingTeam.tournamentId",
+							)
+							.select("LookingTeam.id")
+							.whereRef(
+								"LookingTeam.id",
+								"=",
+								"TournamentTeamMember.tournamentTeamId",
+							)
+							.where((innerEb) =>
+								innerEb.or([
+									innerEb(
+										sql`json_extract("LookingTournament"."settings", '$.regClosesAt')`,
+										"is",
+										null,
+									),
+									innerEb(
+										sql<number>`json_extract("LookingTournament"."settings", '$.regClosesAt')`,
+										">",
+										nowTimestamp,
+									),
+								]),
+							),
+					),
+				),
 		)
 		.leftJoin(
 			"TournamentTeam",
 			"TournamentTeam.id",
 			"TournamentTeamMember.tournamentTeamId",
 		)
-		.leftJoin("Tournament", (join) =>
-			join
-				.onRef("Tournament.id", "=", "TournamentTeam.tournamentId")
-				.on((eb) =>
-					eb.or([
-						eb(
-							sql`json_extract("Tournament"."settings", '$.regClosesAt')`,
-							"is",
-							null,
-						),
-						eb(
-							sql<number>`json_extract("Tournament"."settings", '$.regClosesAt')`,
-							">",
-							nowTimestamp,
-						),
-					]),
-				),
-		)
+		.leftJoin("Tournament", "Tournament.id", "TournamentTeam.tournamentId")
 		.leftJoin("CalendarEvent", "CalendarEvent.tournamentId", "Tournament.id")
 		.leftJoin(
 			"CalendarEventDate",
@@ -205,6 +228,43 @@ export async function deleteOwnFriendshipById(id: number) {
 	return db
 		.deleteFrom("Friendship")
 		.where("Friendship.id", "=", id)
+		.where((eb) =>
+			eb.or([
+				eb("Friendship.userOneId", "=", userId),
+				eb("Friendship.userTwoId", "=", userId),
+			]),
+		)
+		.execute();
+}
+
+/** Pins or unpins the friendship for the acting user only, the other side keeps their own choice. */
+export async function updateOwnFriendshipPinned({
+	friendshipId,
+	isPinned,
+}: {
+	friendshipId: number;
+	isPinned: boolean;
+}) {
+	const userId = actorId();
+	const value = toDBBoolean(isPinned);
+
+	return db
+		.updateTable("Friendship")
+		.set((eb) => ({
+			isPinnedByUserOne: eb
+				.case()
+				.when("Friendship.userOneId", "=", userId)
+				.then(value)
+				.else(eb.ref("Friendship.isPinnedByUserOne"))
+				.end(),
+			isPinnedByUserTwo: eb
+				.case()
+				.when("Friendship.userTwoId", "=", userId)
+				.then(value)
+				.else(eb.ref("Friendship.isPinnedByUserTwo"))
+				.end(),
+		}))
+		.where("Friendship.id", "=", friendshipId)
 		.where((eb) =>
 			eb.or([
 				eb("Friendship.userOneId", "=", userId),

@@ -1,10 +1,6 @@
 import clsx from "clsx";
 import type { JSX } from "react";
 import * as React from "react";
-import {
-	Button as ReactAriaButton,
-	type ButtonProps as ReactAriaButtonProps,
-} from "react-aria-components";
 import { Link, type LinkProps } from "react-router";
 import { assertUnreachable } from "~/utils/types";
 import styles from "./Button.module.css";
@@ -18,17 +14,19 @@ type ButtonVariant =
 	| "outlined-destructive"
 	| "minimal"
 	| "minimal-success"
-	| "minimal-destructive";
+	| "minimal-destructive"
+	| "ghost";
 
 export interface SendouButtonProps
-	extends Omit<ReactAriaButtonProps, "onClick" | "className"> {
-	className?: string;
+	extends Omit<React.ComponentPropsWithRef<"button">, "disabled" | "children"> {
 	variant?: ButtonVariant;
 	size?: "miniscule" | "small" | "medium" | "big";
 	shape?: "circle" | "square";
 	icon?: JSX.Element;
 	children?: React.ReactNode;
 	testId?: string;
+	isDisabled?: boolean;
+	isPending?: boolean;
 }
 
 export function SendouButton({
@@ -39,20 +37,36 @@ export function SendouButton({
 	className,
 	icon,
 	testId,
+	onClick,
+	isDisabled,
+	isPending,
+	type = "button",
 	...rest
 }: SendouButtonProps) {
 	return (
-		<ReactAriaButton
+		<button
 			data-testid={testId}
+			type={type}
 			{...rest}
+			disabled={isDisabled}
+			aria-disabled={isPending || undefined}
+			data-pending={isPending || undefined}
+			onClick={(event) => {
+				if (isPending) {
+					event.preventDefault();
+					return;
+				}
+				onClick?.(event);
+			}}
 			className={buttonClassName({ className, variant, size, shape })}
 		>
-			{icon &&
-				React.cloneElement(icon, {
-					className: iconClassName(icon.props.className, children, size),
-				})}
+			{icon
+				? React.cloneElement(icon, {
+						className: iconClassName(icon.props.className, children, size),
+					})
+				: null}
 			{children}
-		</ReactAriaButton>
+		</button>
 	);
 }
 
@@ -100,10 +114,11 @@ export function LinkButton({
 				data-testid={testId}
 				aria-label={ariaLabel}
 			>
-				{icon &&
-					React.cloneElement(icon, {
-						className: iconClassName(icon.props.className, children, size),
-					})}
+				{icon
+					? React.cloneElement(icon, {
+							className: iconClassName(icon.props.className, children, size),
+						})
+					: null}
 				{children}
 			</a>
 		);
@@ -120,10 +135,11 @@ export function LinkButton({
 			onClick={onClick}
 			aria-label={ariaLabel}
 		>
-			{icon &&
-				React.cloneElement(icon, {
-					className: iconClassName(icon.props.className, children, size),
-				})}
+			{icon
+				? React.cloneElement(icon, {
+						className: iconClassName(icon.props.className, children, size),
+					})
+				: null}
 			{children}
 		</Link>
 	);
@@ -135,8 +151,8 @@ function buttonClassName({
 	size,
 	shape,
 }: Pick<SendouButtonProps, "className" | "variant" | "size" | "shape">) {
-	const variantToClassname = (variant: ButtonVariant) => {
-		switch (variant) {
+	const variantToClassname = (buttonVariant: ButtonVariant) => {
+		switch (buttonVariant) {
 			case "primary":
 				// the base look, no extra class needed
 				return null;
@@ -156,8 +172,10 @@ function buttonClassName({
 				return styles.minimalSuccess;
 			case "minimal-destructive":
 				return styles.minimalDestructive;
+			case "ghost":
+				return styles.ghost;
 			default:
-				return assertUnreachable(variant);
+				return assertUnreachable(buttonVariant);
 		}
 	};
 

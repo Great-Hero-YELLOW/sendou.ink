@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { ShieldMinus, Users } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { lazy } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { SendouButton } from "~/components/elements/Button";
@@ -185,10 +185,10 @@ function TournamentFirstPlacers({
 		return (
 			<div className={styles.firstPlacers}>
 				<div className="stack md items-start">
-					{firstPlacers.map((placer) => (
+					{firstPlacers.map((firstPlacer) => (
 						<TournamentFirstPlacerTeamNameOnly
-							key={placer.div ?? placer.teamName}
-							placer={placer}
+							key={firstPlacer.div ?? firstPlacer.teamName}
+							placer={firstPlacer}
 							censored={censored}
 						/>
 					))}
@@ -285,7 +285,7 @@ function SpoilerRevealPill({ onReveal }: { onReveal: () => void }) {
 		<SendouButton
 			variant="outlined"
 			size="miniscule"
-			onPress={onReveal}
+			onClick={onReveal}
 			icon={<ShieldMinus />}
 		>
 			{t("common:actions.reveal")}
@@ -352,9 +352,7 @@ function PrizesPill({
 			}
 		>
 			{trophy ? (
-				<Suspense fallback={<div className={styles.trophyPreviewFallback} />}>
-					<Trophy model={trophy} className={styles.trophyPreview} />
-				</Suspense>
+				<Trophy model={trophy} />
 			) : badges ? (
 				<BadgeDisplay badges={badges} showText={false} compact />
 			) : null}

@@ -16,7 +16,6 @@
 	"friendsList.joinSendouQ": "",
 	"friendsList.deleteFriend": "",
 	"friendsList.deleteConfirm": "",
-	"view.label": "",
 	"view.friends": "",
 	"view.teamMembers": "",
 	"view.all": "",
@@ -24,5 +23,7 @@
 	"unseenRequests_one": "",
 	"unseenRequests_few": "",
 	"unseenRequests_many": "",
-	"unseenRequests_other": ""
+	"unseenRequests_other": "",
+	"friendsList.pin": "",
+	"friendsList.unpin": ""
 }

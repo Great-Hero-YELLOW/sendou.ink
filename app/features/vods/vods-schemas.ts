@@ -38,7 +38,7 @@ const videoMatchSchema = v.object({
 			"Invalid time format. Use HH:MM:SS or MM:SS",
 		),
 	),
-	stageId: stageId,
+	stageId,
 	mode: modeShort,
 	weapons: v.array(weaponSplId),
 });
@@ -52,9 +52,9 @@ export const videoSchema = preprocess(
 			youtubeUrl: v.pipe(
 				v.string(),
 				v.check((val) => {
-					const id = extractYoutubeIdFromVideoUrl(val);
+					const videoId = extractYoutubeIdFromVideoUrl(val);
 
-					return id !== null;
+					return videoId !== null;
 				}, "Invalid YouTube URL"),
 			),
 			title: v.pipe(nonEmptyString, v.maxLength(100)),
@@ -123,6 +123,7 @@ const matchFieldsetSchema = v.object({
 			label: `modes.${mode}` as const,
 			value: mode,
 		})),
+		initialValue: "SZ",
 	}),
 	stageId: stageSelect({ label: "labels.vodStage" }),
 	weapon: weaponSelectOptional({ label: "labels.vodWeapon" }),

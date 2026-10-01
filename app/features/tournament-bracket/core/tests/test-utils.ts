@@ -1,4 +1,5 @@
 import * as R from "remeda";
+import * as Engine from "~/features/tournament-bracket/core/engine";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
 import type * as Progression from "../Progression";
 import { Tournament } from "../Tournament";
@@ -29,7 +30,7 @@ export const tournamentCtxTeam = (
 };
 
 const nTeams = (n: number, startingId: number) => {
-	const teams = [];
+	const teams: TournamentData["ctx"]["teams"] = [];
 	for (let i = 0; i < n; i++) {
 		teams.push(tournamentCtxTeam(i + 1, tournamentCtxTeam(i + startingId)));
 	}
@@ -71,11 +72,11 @@ export const testTournament = ({
 		castTwitchAccounts: [],
 		bracketProgressionOverrides: [],
 		staff: [],
-		tieBreakerMapPool: [],
 		toSetMapPool: [],
 		latestTeamIdByDuplicatedUserId: {},
-		mapPickingStyle: "AUTO_SZ",
+		mapPickingStyle: "AUTO",
 		settings: {
+			teamPick: { modes: [{ mode: "SZ", count: 6 }], pool: "SENDOUQ" },
 			bracketProgression: [
 				{
 					name: "Main Bracket",
@@ -119,6 +120,50 @@ export const testTournament = ({
 		},
 		ctx: tournamentCtx,
 		participatedUsers: [],
+	});
+};
+
+/** A started swiss tournament of two teams with their first match ongoing, optionally locked for a cast. */
+export const runningTournamentWithMatch = ({
+	tournamentId,
+	teamOneUserIds,
+	teamTwoUserIds,
+	isLeague,
+	lockFirstMatchForCast,
+}: {
+	tournamentId: number;
+	teamOneUserIds: number[];
+	teamTwoUserIds: number[];
+	isLeague?: boolean;
+	lockFirstMatchForCast?: boolean;
+}) => {
+	const data = Engine.create({
+		type: "swiss",
+		seeding: [1, 2],
+		settings: {},
+	});
+
+	return testTournament({
+		data,
+		ctx: {
+			id: tournamentId,
+			settings: {
+				bracketProgression: progressions.swissOneGroup,
+				isLeague,
+			},
+			castedMatchesInfo: lockFirstMatchForCast
+				? {
+						lockedMatches: [
+							{ matchId: data.match[0].id, twitchAccount: "test" },
+						],
+						castedMatches: [],
+					}
+				: null,
+			teams: [
+				tournamentCtxTeam(1, { memberUserIds: teamOneUserIds }),
+				tournamentCtxTeam(2, { memberUserIds: teamTwoUserIds }),
+			],
+		},
 	});
 };
 

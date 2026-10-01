@@ -1,18 +1,18 @@
 import type { LoaderFunctionArgs } from "react-router";
-import * as v from "valibot";
 import { requireUser } from "~/features/auth/core/user.server";
 import * as SeasonSummary from "~/features/img-export/core/SeasonSummary";
+import { findUserTeamEntry } from "~/features/leaderboards/core/leaderboards.server";
 import * as LeaderboardRepository from "~/features/leaderboards/LeaderboardRepository.server";
 import { ordinalToSp } from "~/features/mmr/mmr-utils";
 import * as SkillRepository from "~/features/mmr/SkillRepository.server";
-import { userSkills } from "~/features/mmr/tiered.server";
+import { rankedUserSkill } from "~/features/mmr/tiered.server";
 import * as PlayerStatRepository from "~/features/sendouq-match/PlayerStatRepository.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
+import { userPageUserId } from "~/features/user-page/user-page-context.server";
 import type { SerializeFrom } from "~/utils/remix";
-import { forbidden, notFoundIfNullish } from "~/utils/remix.server";
+import { forbidden } from "~/utils/remix.server";
 import { resolveAvatarUrl } from "~/utils/urls";
-import { userParamsSchema } from "../user-page-schemas";
 import { userSeasonSummaryGraphicSearchParams } from "../user-page-search-params";
 
 const BEST_SETS_COUNT = 3;
@@ -21,27 +21,23 @@ const TOP_MATES_COUNT = 6;
 
 export type UserSeasonSummaryGraphicLoaderData = SerializeFrom<typeof loader>;
 
-export const loader = async ({ params, url }: LoaderFunctionArgs) => {
+export const loader = async ({ url }: LoaderFunctionArgs) => {
 	const loggedInUser = requireUser();
-	const { identifier } = v.parse(userParamsSchema, params);
 	const { season } = userSeasonSummaryGraphicSearchParams.parse(url);
 	if (typeof season !== "number") {
 		throw new Response(null, { status: 400 });
 	}
 
-	const user = notFoundIfNullish(
-		await UserRepository.findIdByIdentifier(identifier),
-	);
+	const userId = userPageUserId();
 	const seasonsParticipatedIn =
-		await LeaderboardRepository.findSeasonsParticipatedInByUserId(user.id);
-	const skill = (await userSkills(season)).userSkills[user.id];
+		await LeaderboardRepository.findSeasonsParticipatedInByUserId(userId);
+	const skill = await rankedUserSkill({ season, userId });
 
 	if (
 		!skill ||
-		skill.approximate ||
 		!SeasonSummary.canExportSeasonSummary({
 			loggedInUser,
-			profileUserId: user.id,
+			profileUserId: userId,
 			season,
 			seasonsParticipatedIn,
 			hasCalculatedSkill: true,
@@ -50,32 +46,31 @@ export const loader = async ({ params, url }: LoaderFunctionArgs) => {
 		throw forbidden();
 	}
 
+	const peakOrdinal = await SkillRepository.findSeasonPeakOrdinalByUserId({
+		userId,
+		season,
+	});
 	const setScores = await PlayerStatRepository.findSeasonSetScoresByUserId({
-		userId: user.id,
+		userId,
 		season,
 	});
 	const setWinrate = await PlayerStatRepository.findSeasonSetWinrateByUserId({
-		userId: user.id,
+		userId,
 		season,
 	});
 	const mapWinrate = await PlayerStatRepository.findSeasonMapWinrateByUserId({
-		userId: user.id,
+		userId,
 		season,
 	});
 
-	const soloRank = (
-		await LeaderboardRepository.findUserSPLeaderboard(season)
-	).find((entry) => entry.id === user.id)?.placementRank;
-	const teamEntry = await findTeamEntry({ season, userId: user.id });
+	const teamEntry = await findUserTeamEntry({ season, userId });
 
 	const mates = await PlayerStatRepository.findSeasonMatesEnemiesByUserId({
-		userId: user.id,
+		userId,
 		season,
 		type: "MATE",
 	});
-	const topMates = mates
-		.toSorted((a, b) => b.setWins + b.setLosses - (a.setWins + a.setLosses))
-		.slice(0, TOP_MATES_COUNT);
+	const topMates = mates.slice(0, TOP_MATES_COUNT);
 
 	const countries = await UserRepository.findCountriesByUserIds([
 		...(teamEntry?.entry.members.map((member) => member.id) ?? []),
@@ -83,14 +78,14 @@ export const loader = async ({ params, url }: LoaderFunctionArgs) => {
 	]);
 
 	const bestSets = await PlayerStatRepository.findSeasonBestSetsByUserId({
-		userId: user.id,
+		userId,
 		season,
 		limit: BEST_SETS_COUNT,
 	});
 	const bestRun = SeasonSummary.bestTournamentRun(
 		(
 			await PlayerStatRepository.findSeasonTournamentRunsByUserId({
-				userId: user.id,
+				userId,
 				season,
 			})
 		).map((run) => ({
@@ -112,13 +107,13 @@ export const loader = async ({ params, url }: LoaderFunctionArgs) => {
 		mapsLost: mapWinrate.losses,
 		longestWinStreak: SeasonSummary.longestWinStreak(setScores),
 		clutch: SeasonSummary.clutchRecord(setScores),
-		soloRank,
+		soloRank: skill.leaderboardPlacement,
 		teamRank: teamEntry
 			? {
 					rank: teamEntry.rank,
 					sp: teamEntry.entry.power,
 					mates: teamEntry.entry.members
-						.filter((member) => member.id !== user.id)
+						.filter((member) => member.id !== userId)
 						.map((member) => ({
 							name: member.username,
 							countryCode: countries.get(member.id),
@@ -147,18 +142,19 @@ export const loader = async ({ params, url }: LoaderFunctionArgs) => {
 		})),
 		bestStage: SeasonSummary.bestStage(
 			await PlayerStatRepository.findSeasonStagesByUserId({
-				userId: user.id,
+				userId,
 				season,
 			}),
 		),
+		peakSp: ordinalToSp(peakOrdinal ?? skill.ordinal),
 		spProgression: (
 			await SkillRepository.findSeasonProgressionByUserId({
-				userId: user.id,
+				userId,
 				season,
 			})
 		).map((point) => ({ date: point.date, sp: ordinalToSp(point.ordinal) })),
 		activeDays: await SkillRepository.findSeasonActiveDaysByUserId({
-			userId: user.id,
+			userId,
 			season,
 		}),
 		bestSets: bestSets.map((set) => ({
@@ -182,43 +178,9 @@ export const loader = async ({ params, url }: LoaderFunctionArgs) => {
 			: undefined,
 		topWeapons: SeasonSummary.topWeaponUsages(
 			await ReportedWeaponRepository.findSeasonReportedWeaponsByUserId({
-				userId: user.id,
+				userId,
 				season,
 			}),
 		),
 	};
 };
-
-async function findTeamEntry({
-	season,
-	userId,
-}: {
-	season: number;
-	userId: number;
-}) {
-	const hasUser = (entry: { members: Array<{ id: number }> }) =>
-		entry.members.some((member) => member.id === userId);
-
-	const rankedEntry = (
-		await LeaderboardRepository.findTeamLeaderboardBySeason({
-			season,
-			onlyOneEntryPerUser: true,
-		})
-	).find(hasUser);
-
-	// a skipped team is on the leaderboard without taking a placement
-	if (rankedEntry)
-		return { entry: rankedEntry, rank: rankedEntry.placementRank ?? undefined };
-
-	// "all entries" only rosters have no placement comparable to the main team leaderboard's
-	const unrankedEntry = (
-		await LeaderboardRepository.findTeamLeaderboardBySeason({
-			season,
-			onlyOneEntryPerUser: false,
-		})
-	).find(hasUser);
-
-	if (!unrankedEntry) return undefined;
-
-	return { entry: unrankedEntry, rank: undefined };
-}

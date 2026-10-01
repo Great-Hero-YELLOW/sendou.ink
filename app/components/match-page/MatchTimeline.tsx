@@ -2,6 +2,7 @@ import clsx from "clsx";
 import {
 	ArrowRight,
 	ChevronDown,
+	Gauge,
 	MousePointerClick,
 	RefreshCcw,
 	TrendingUp,
@@ -541,7 +542,11 @@ function ScoreboardTable({
 	);
 }
 
-function ScoreboardBuildPopover({ abilities }: { abilities: string[][] }) {
+function ScoreboardBuildPopover({
+	abilities: buildAbilities,
+}: {
+	abilities: string[][];
+}) {
 	const { t } = useTranslation(["common"]);
 
 	return (
@@ -557,7 +562,7 @@ function ScoreboardBuildPopover({ abilities }: { abilities: string[][] }) {
 			}
 		>
 			<div className={styles.scoreboardAbilities}>
-				{abilities.map((row, i) => (
+				{buildAbilities.map((row, i) => (
 					<div key={i} className={styles.scoreboardAbilityRow}>
 						{row.map((ability, j) => (
 							<Ability
@@ -820,7 +825,7 @@ function SpMemberDetail({ member }: { member: TimelineSpMember }) {
 			<div className={styles.spDetail}>
 				<Avatar user={member.user} size="xxs" />
 				<div className={styles.spDetailContent}>
-					<span className={styles.spCalculatingIcon}>◆</span>
+					<Gauge size={18} />
 					<span>
 						{member.skillDifference.newSp ? (
 							<>{member.skillDifference.newSp}SP</>
@@ -835,7 +840,7 @@ function SpMemberDetail({ member }: { member: TimelineSpMember }) {
 		<div className={styles.spDetail}>
 			<Avatar user={member.user} size="xxs" />
 			<div className={styles.spDetailContent}>
-				<span className={styles.spCalculatingIcon}>◆</span>
+				<Gauge size={18} />
 				<span>
 					{member.skillDifference.matchesCount}/
 					{member.skillDifference.matchesCountNeeded}
@@ -870,7 +875,7 @@ function SpTeamDetail({
 					<Users size={16} />
 				</div>
 				<div className={styles.spDetailContent}>
-					<span className={styles.spCalculatingIcon}>◆</span>
+					<Gauge size={18} />
 					<span>{skillDifference.newSp}SP</span>
 				</div>
 			</div>
@@ -883,7 +888,7 @@ function SpTeamDetail({
 				<Users size={16} />
 			</div>
 			<div className={styles.spDetailContent}>
-				<span className={styles.spCalculatingIcon}>◆</span>
+				<Gauge size={18} />
 				<span>
 					{skillDifference.matchesCount}/{skillDifference.matchesCountNeeded}
 				</span>

@@ -3,7 +3,6 @@
 	"radios.all": "すべて",
 	"radios.madeBy": "作成した人: ",
 	"radios.madeFor": "依頼者: ",
-	"filterByTag": "タグで絞り込み",
 	"filteringByTag": "#{{tag}} で絞り込まれた結果を表示中",
 	"commissionsOpen": "依頼を受付中",
 	"commissionsClosed": "依頼の受付終了中",
@@ -21,5 +20,7 @@
 	"forms.tags.maxReached": "タグの最大数に到達しました",
 	"delete.title": "本当にこの作品を削除しますか？",
 	"unlink.title": "本当にこの作品をプロフィールから削除しますか？{{username}}しか再び追加することはできません。",
-	"noArtForTag": "#{{tag}}の作品が見つかりませんでした。"
+	"noArtForTag": "#{{tag}}の作品が見つかりませんでした。",
+	"imageFailed": "",
+	"openImage": ""
 }

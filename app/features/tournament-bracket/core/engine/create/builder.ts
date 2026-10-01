@@ -6,6 +6,7 @@ import type {
 	ParticipantSlot,
 	ResolvedCreateBracketInput,
 	RoundData,
+	RoundSection,
 	Seeding,
 	SeedOrdering,
 	StageData,
@@ -63,7 +64,7 @@ export class StageCreator {
 		slots: ParticipantSlot[],
 	): void {
 		const groupId = this.insertGroup({
-			stageId: stageId,
+			stageId,
 			number,
 		});
 
@@ -76,7 +77,14 @@ export class StageCreator {
 		const rounds = helpers.makeRoundRobinMatches(presentSlots);
 
 		for (let i = 0; i < rounds.length; i++)
-			this.createRound(stageId, groupId, i + 1, rounds[0].length, rounds[i]);
+			this.createRound(
+				stageId,
+				groupId,
+				null,
+				i + 1,
+				rounds[0].length,
+				rounds[i],
+			);
 	}
 
 	/** Bipartite round-robin: every A team plays every B team exactly once. */
@@ -87,27 +95,30 @@ export class StageCreator {
 		slotsB: ParticipantSlot[],
 	): void {
 		const groupId = this.insertGroup({
-			stageId: stageId,
+			stageId,
 			number,
 		});
 
 		const rounds = helpers.makeAbDivisionRoundRobinMatches(slotsA, slotsB);
 
 		for (let i = 0; i < rounds.length; i++)
-			this.createRound(stageId, groupId, i + 1, rounds[0].length, rounds[i]);
+			this.createRound(
+				stageId,
+				groupId,
+				null,
+				i + 1,
+				rounds[0].length,
+				rounds[i],
+			);
 	}
 
-	/** The only bracket in single elimination, the upper one in double elimination. */
+	/** The winners section of an elimination group: the only bracket in single elimination, the upper one in double elimination. */
 	createStandardBracket(
 		stageId: number,
-		number: number,
+		groupId: number,
 		slots: ParticipantSlot[],
 	): StandardBracketResults {
 		const roundCount = helpers.getUpperBracketRoundCount(slots.length);
-		const groupId = this.insertGroup({
-			stageId: stageId,
-			number,
-		});
 
 		let duels = helpers.makePairs(slots);
 		let roundNumber = 1;
@@ -118,7 +129,14 @@ export class StageCreator {
 			const matchCount = 2 ** i;
 			duels = this.getCurrentDuels(duels, matchCount);
 			losers.push(duels.map(helpers.byeLoser));
-			this.createRound(stageId, groupId, roundNumber++, matchCount, duels);
+			this.createRound(
+				stageId,
+				groupId,
+				"winners",
+				roundNumber++,
+				matchCount,
+				duels,
+			);
 		}
 
 		return { losers, winner: helpers.byeWinner(duels[0]) };
@@ -127,7 +145,7 @@ export class StageCreator {
 	/** Alternates major (regular) rounds and minor rounds where the major round's winners meet upper bracket losers. */
 	createLowerBracket(
 		stageId: number,
-		number: number,
+		groupId: number,
 		losers: ParticipantSlot[][],
 	): ParticipantSlot {
 		const participantCount = this.seeding.length;
@@ -138,11 +156,6 @@ export class StageCreator {
 		const method = this.getMajorOrdering(participantCount);
 		const ordered = ordering[method](losers[losersId++]);
 
-		const groupId = this.insertGroup({
-			stageId: stageId,
-			number,
-		});
-
 		let duels = helpers.makePairs(ordered);
 		let roundNumber = 1;
 
@@ -151,7 +164,14 @@ export class StageCreator {
 
 			// Major round.
 			duels = this.getCurrentDuels(duels, matchCount, true);
-			this.createRound(stageId, groupId, roundNumber++, matchCount, duels);
+			this.createRound(
+				stageId,
+				groupId,
+				"losers",
+				roundNumber++,
+				matchCount,
+				duels,
+			);
 
 			// Minor round.
 			const minorOrdering = this.getMinorOrdering(
@@ -166,38 +186,38 @@ export class StageCreator {
 				losers[losersId++],
 				minorOrdering,
 			);
-			this.createRound(stageId, groupId, roundNumber++, matchCount, duels);
+			this.createRound(
+				stageId,
+				groupId,
+				"losers",
+				roundNumber++,
+				matchCount,
+				duels,
+			);
 		}
 
 		return helpers.byeWinnerToGrandFinal(duels[0]);
 	}
 
-	/** Rounds of 1 match each, used for finals. */
-	createUniqueMatchBracket(
-		stageId: number,
-		number: number,
-		duels: Duel[],
-	): void {
-		const groupId = this.insertGroup({
-			stageId: stageId,
-			number,
-		});
-
+	/** The finals section: rounds of 1 match each (grand finals + bracket reset, or a consolation final). */
+	createFinals(stageId: number, groupId: number, duels: Duel[]): void {
 		for (let i = 0; i < duels.length; i++)
-			this.createRound(stageId, groupId, i + 1, 1, [duels[i]]);
+			this.createRound(stageId, groupId, "finals", i + 1, 1, [duels[i]]);
 	}
 
 	createRound(
 		stageId: number,
 		groupId: number,
+		section: RoundSection | null,
 		roundNumber: number,
 		matchCount: number,
 		duels: Duel[],
 	): void {
 		const roundId = this.insertRound({
 			number: roundNumber,
-			stageId: stageId,
-			groupId: groupId,
+			stageId,
+			groupId,
+			section,
 		});
 
 		for (let i = 0; i < matchCount; i++) {
@@ -225,9 +245,9 @@ export class StageCreator {
 
 		this.insertMatch({
 			number: matchNumber,
-			stageId: stageId,
-			groupId: groupId,
-			roundId: roundId,
+			stageId,
+			groupId,
+			roundId,
 			opponent1,
 			opponent2,
 			winnerSide: null,
@@ -235,11 +255,10 @@ export class StageCreator {
 	}
 
 	/** No ordering for major rounds (the first round must be ordered beforehand), LB minor rounds use the given method. */
-	getCurrentDuels(previousDuels: Duel[], currentDuelCount: number): Duel[];
 	getCurrentDuels(
 		previousDuels: Duel[],
 		currentDuelCount: number,
-		major: true,
+		major?: true,
 	): Duel[];
 	getCurrentDuels(
 		previousDuels: Duel[],

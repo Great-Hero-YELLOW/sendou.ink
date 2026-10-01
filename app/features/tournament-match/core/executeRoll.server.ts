@@ -2,7 +2,7 @@ import type { TournamentRoundMaps } from "~/db/tables-json";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import type { ModeWithStage } from "~/modules/in-game-lists/types";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { seededRandom } from "~/utils/random";
 import { errorIsSqliteUniqueConstraintFailure } from "~/utils/sql";
 import type { findResultsByMatchId } from "../TournamentMatchRepository.server";
@@ -12,9 +12,8 @@ export async function executeRoll({
 	maps,
 	pickBanEvents,
 	results,
-	tournamentId,
 	teams,
-	tieBreakerMapPool,
+	toSetMapPool,
 }: {
 	matchId: number;
 	maps: TournamentRoundMaps;
@@ -22,9 +21,9 @@ export async function executeRoll({
 		ReturnType<typeof TournamentRepository.findPickBanEventsByMatchId>
 	>;
 	results: Awaited<ReturnType<typeof findResultsByMatchId>>;
-	tournamentId: number;
 	teams: [PickBan.MapPoolTeam, PickBan.MapPoolTeam];
-	tieBreakerMapPool: ModeWithStage[];
+	/** See `Tournament.organizerPickedMapPool`. */
+	toSetMapPool: ModeWithStage[];
 }): Promise<boolean> {
 	const customFlow = maps.customFlow;
 	if (!customFlow) return false;
@@ -38,14 +37,11 @@ export async function executeRoll({
 
 	if (step?.action !== "ROLL") return false;
 
-	const toSetMapPool =
-		await TournamentRepository.findTOSetMapPoolById(tournamentId);
 	const legalMaps = PickBan.mapsListWithLegality({
 		toSetMapPool,
 		maps,
 		mapList: null,
 		teams,
-		tieBreakerMapPool,
 		pickerTeamId: teams[0].id,
 		results,
 		pickBanEvents,

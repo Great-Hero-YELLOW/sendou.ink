@@ -3,6 +3,7 @@ import type { TournamentData } from "../Tournament.server";
 /** Zones Weekly 38 with every round of swiss finished, last round's matches not generated */
 export const ZONES_WEEKLY_38 = (): TournamentData => ({
 	streams: [],
+	divisionTiers: [],
 	data: {
 		stage: [
 			{
@@ -35,6 +36,7 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: null,
 			},
 			{
 				id: 13716,
@@ -46,6 +48,7 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: null,
 			},
 			{
 				id: 13717,
@@ -57,6 +60,7 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: null,
 			},
 			{
 				id: 13718,
@@ -68,6 +72,7 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: null,
 			},
 		],
 		match: [
@@ -533,7 +538,6 @@ export const ZONES_WEEKLY_38 = (): TournamentData => ({
 				avgSeedingSkillOrdinal: -6.382139240461566,
 			},
 		],
-		tieBreakerMapPool: [],
 		toSetMapPool: [
 			{
 				mode: "SZ",

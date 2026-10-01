@@ -49,7 +49,7 @@ export function GearSelect<Clearable extends boolean | undefined = undefined>({
 			}}
 			selectedKey={value}
 			defaultSelectedKey={initialValue}
-			onSelectionChange={(value) => onChange?.(value as any)}
+			onSelectionChange={(selected) => onChange?.(selected as any)}
 			clearable={clearable}
 			data-testid={`${type}-gear-select`}
 		>
@@ -57,7 +57,7 @@ export function GearSelect<Clearable extends boolean | undefined = undefined>({
 				<SendouSelectItemSection
 					className={idx === 0 ? "pt-0-5" : undefined}
 					heading={t(`game-misc:BRAND_${brandId}` as any)}
-					headingImgPath={brandImageUrl(brandId)}
+					headingImg={<Image path={brandImageUrl(brandId)} size={28} alt="" />}
 					key={key}
 				>
 					{gear.map(({ id, name }) => (
@@ -98,13 +98,13 @@ function useGearItems(type: GearType) {
 				: shoesGearBrandGrouped;
 
 	const items = brandIds.map((brandId, idx) => {
-		const items = groupedGear[brandId] || [];
+		const brandGear = groupedGear[brandId] || [];
 
 		return {
 			brandId,
 			key: brandId,
 			idx,
-			items: items.map((gearId) => ({
+			items: brandGear.map((gearId) => ({
 				id: gearId,
 				name: t(`${translationPrefix}_${gearId}` as any),
 			})),

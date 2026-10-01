@@ -3,10 +3,12 @@ import type {
 	MainWeaponId,
 } from "~/modules/in-game-lists/types";
 import { type UserLinkArgs, userBuildsPage, userPage } from "~/utils/urls";
+import type { SeasonStatsTab } from "./user-page-constants";
 import {
 	userBuildsNewSearchParams,
 	userSeasonSummaryGraphicSearchParams,
 	userSeasonsSearchParams,
+	userSeasonsStatsSearchParams,
 } from "./user-page-search-params";
 
 export const userSeasonsPage = ({
@@ -35,14 +37,14 @@ export const userSeasonSummaryGraphicPage = ({
 export const userSeasonsStatsPage = ({
 	user,
 	season,
-	info,
+	tab,
 }: {
 	user: UserLinkArgs;
 	season?: number;
-	info?: "weapons" | "stages" | "mates" | "enemies";
+	tab?: SeasonStatsTab;
 }) =>
-	userSeasonsSearchParams.href(`${userPage(user)}/seasons/stats`, {
-		...(info ? { info } : {}),
+	userSeasonsStatsSearchParams.href(`${userPage(user)}/seasons/stats`, {
+		...(tab ? { tab } : {}),
 		season: season ?? null,
 	});
 
@@ -56,3 +58,18 @@ export const userNewBuildPage = (
 				build: params.build,
 			})
 		: `${userBuildsPage(user)}/new`;
+
+/**
+ * Path the given user page URL should redirect to, or `null` if it already uses the user's
+ * preferred identifier (custom URL, falling back to their Discord id).
+ */
+export function userPageRedirectPath(url: URL, user: UserLinkArgs) {
+	const segments = url.pathname.split("/");
+	const preferredIdentifier = user.customUrl ?? user.discordId;
+
+	if (segments[2] === preferredIdentifier) return null;
+
+	segments[2] = preferredIdentifier;
+
+	return `${segments.join("/")}${url.search}`;
+}

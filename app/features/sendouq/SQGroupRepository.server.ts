@@ -325,6 +325,31 @@ export async function deleteLikesAndSuggestionsByGroupId(
 	await deleteSuggestionsByGroupId(groupId, trx);
 }
 
+/** Clears what the departing member is responsible for: every challenge the group received (the roster the other group challenged is gone) plus the challenges and suggestions that member made themselves. */
+async function deleteLikesAndSuggestionsOnLeave(
+	{ groupId, userId }: { groupId: number; userId: number },
+	trx: Transaction<DB>,
+) {
+	await trx
+		.deleteFrom("GroupLike")
+		.where((eb) =>
+			eb.or([
+				eb("GroupLike.targetGroupId", "=", groupId),
+				eb.and([
+					eb("GroupLike.likerGroupId", "=", groupId),
+					eb("GroupLike.createdByUserId", "=", userId),
+				]),
+			]),
+		)
+		.execute();
+
+	await trx
+		.deleteFrom("GroupSuggestion")
+		.where("GroupSuggestion.suggesterGroupId", "=", groupId)
+		.where("GroupSuggestion.createdByUserId", "=", userId)
+		.execute();
+}
+
 export function morphGroups({
 	survivingGroupId,
 	otherGroupId,
@@ -333,11 +358,11 @@ export function morphGroups({
 	otherGroupId: number;
 }) {
 	return db.transaction().execute(async (trx) => {
-		const oldChatRooms = await trx
+		const survivingGroup = await trx
 			.selectFrom("Group")
 			.select(["Group.chatRoomId"])
-			.where("Group.id", "in", [survivingGroupId, otherGroupId])
-			.execute();
+			.where("Group.id", "=", survivingGroupId)
+			.executeTakeFirst();
 
 		// fresh chat room so neither group's previous messages are visible, and
 		// mark as matchmade
@@ -364,8 +389,9 @@ export function morphGroups({
 		await deleteLikesAndSuggestionsByGroupId(survivingGroupId, trx);
 		await refreshGroup(survivingGroupId, trx);
 
+		// replaced rather than deleted with its group, so the trigger doesn't remove it
 		await ChatRepository.deleteRoomsByIds(
-			oldChatRooms.map((room) => room.chatRoomId),
+			[survivingGroup?.chatRoomId ?? null],
 			trx,
 		);
 
@@ -441,6 +467,22 @@ export async function insertMember(
 	});
 
 	return { chatRoomIdToRevalidate };
+}
+
+/** Count of pending likes each non-inactive group has received, keyed by group id. */
+export async function findCurrentReceivedLikeCounts() {
+	const rows = await db
+		.selectFrom("GroupLike")
+		.innerJoin("Group", "Group.id", "GroupLike.targetGroupId")
+		.select((eb) => [
+			"GroupLike.targetGroupId",
+			eb.fn.countAll<number>().as("count"),
+		])
+		.where("Group.status", "!=", "INACTIVE")
+		.groupBy("GroupLike.targetGroupId")
+		.execute();
+
+	return new Map(rows.map((row) => [row.targetGroupId, row.count]));
 }
 
 export async function findAllLikesByGroupId(groupId: number) {
@@ -539,21 +581,21 @@ export async function findFriendsAndTeammates(userId: number) {
 			eb
 				.selectFrom("Friendship")
 				.innerJoin("User", (join) =>
-					join.on((eb) =>
-						eb.or([
-							eb.and([
-								eb("Friendship.userOneId", "=", userId),
-								eb("User.id", "=", eb.ref("Friendship.userTwoId")),
+					join.on((joinEb) =>
+						joinEb.or([
+							joinEb.and([
+								joinEb("Friendship.userOneId", "=", userId),
+								joinEb("User.id", "=", joinEb.ref("Friendship.userTwoId")),
 							]),
-							eb.and([
-								eb("Friendship.userTwoId", "=", userId),
-								eb("User.id", "=", eb.ref("Friendship.userOneId")),
+							joinEb.and([
+								joinEb("Friendship.userTwoId", "=", userId),
+								joinEb("User.id", "=", joinEb.ref("Friendship.userOneId")),
 							]),
 						]),
 					),
 				)
-				.select((eb) => [
-					...commonUserSelect(eb),
+				.select((friendEb) => [
+					...commonUserSelect(friendEb),
 					"User.inGameName",
 					sql<any>`null`.as("teamId"),
 					sql<Tables["TeamMember"]["role"]>`null`.as("role"),
@@ -767,7 +809,7 @@ export function insertLike({
 				.execute();
 		} catch (error) {
 			if (errorIsSqliteForeignKeyConstraintFailure(error)) {
-				throw new SendouQError(error.message);
+				throw new SendouQError(error.message, { cause: error });
 			}
 			throw error;
 		}
@@ -804,7 +846,7 @@ export function insertSuggestion({
 				.execute();
 		} catch (error) {
 			if (errorIsSqliteForeignKeyConstraintFailure(error)) {
-				throw new SendouQError(error.message);
+				throw new SendouQError(error.message, { cause: error });
 			}
 			throw error;
 		}
@@ -836,7 +878,7 @@ export function deleteAllLikesByGroupId(groupId: number) {
 	return db.transaction().execute((trx) => deleteLikesByGroupId(groupId, trx));
 }
 
-/** Removes the user from their group (deleting it if they were last). A ready check the group was in is called off; returns the ids of the groups that were in it. */
+/** Removes the user from their group (deleting it if they were last). A ready check the group was in is called off; returns the ids of the groups that were in it. Challenges the group received and challenges/suggestions the leaver made are cleared. */
 export function leaveGroup(userId: number) {
 	return db.transaction().execute(async (trx) => {
 		const userGroup = await trx
@@ -888,7 +930,6 @@ export function leaveGroup(userId: number) {
 			.executeTakeFirst();
 
 		if (!remainingMember) {
-			await ChatRepository.deleteRoomsByIds([userGroup.chatRoomId], trx);
 			await trx.deleteFrom("Group").where("id", "=", userGroup.id).execute();
 			return { abortedReadyCheckGroupIds };
 		}
@@ -907,6 +948,11 @@ export function leaveGroup(userId: number) {
 		if (match) {
 			throw new SendouQError("Can't leave group when already in a match");
 		}
+
+		await deleteLikesAndSuggestionsOnLeave(
+			{ groupId: userGroup.id, userId },
+			trx,
+		);
 
 		await syncTeamId(userGroup.id, trx);
 
@@ -1123,8 +1169,8 @@ export function deleteReadyCheck(
 	{ id, markMissedMembers }: { id: number; markMissedMembers: boolean },
 	trx?: Transaction<DB>,
 ) {
-	const run = (trx: Transaction<DB>) =>
-		deleteReadyCheckInTrx({ id, markMissedMembers }, trx);
+	const run = (transaction: Transaction<DB>) =>
+		deleteReadyCheckInTrx({ id, markMissedMembers }, transaction);
 
 	return trx ? run(trx) : db.transaction().execute(run);
 }

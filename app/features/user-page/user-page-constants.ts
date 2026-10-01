@@ -6,19 +6,46 @@ export const USER = {
 	BIO_MD_MAX_LENGTH: 8000,
 	CUSTOM_URL_MAX_LENGTH: 32,
 	CUSTOM_NAME_MAX_LENGTH: 32,
-	BATTLEFY_MAX_LENGTH: 32,
-	WEAPON_POOL_MAX_SIZE: 5,
 	COMMISSION_TEXT_MAX_LENGTH: 1000,
 	MOD_NOTE_MAX_LENGTH: 2000,
-	MAX_MAIN_WIDGETS: 5,
-	MAX_SIDE_WIDGETS: 7,
+	MAX_MAIN_WIDGETS: 4,
+	MAX_SIDE_WIDGETS: 5,
+	MAX_MAIN_WIDGETS_SUPPORTER: 6,
+	MAX_SIDE_WIDGETS_SUPPORTER: 7,
 	GAME_BADGES_MAX: 8,
 	GAME_BADGES_SMALL_MAX: 4,
+	WEAPON_POOL_WIDGET_MAX: 7,
+	CUSTOM_KITS_MAX: 3,
+	COUNTDOWN_TITLE_MAX_LENGTH: 50,
+	MARKDOWN_WIDGET_MAX_LENGTH: 2000,
+	TIER_LIST_WIDGET_MAX_LENGTH: 4000,
+	PEAK_XP_MIN: 1000,
+	PEAK_XP_MAX: 6000,
 };
+
+/** In-game sensitivity values (-5.0 to +5.0 in 0.5 steps), stored multiplied by ten. */
+export const SENS_OPTIONS = [
+	-50, -45, -40, -35, -30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30, 35,
+	40, 45, 50,
+] as const;
 
 export const SPL2_JOIN_ORDER_CUTOFF = 13_589;
 
 export const MATCHES_PER_SEASONS_PAGE = 8;
+
+export const SEASON_RESULT_SOURCES = ["ALL", "SENDOUQ", "TOURNAMENT"] as const;
+
+export type SeasonResultSource = (typeof SEASON_RESULT_SOURCES)[number];
+
+export const SEASON_STATS_TABS = [
+	"overview",
+	"stages",
+	"weapons",
+	"mates",
+	"enemies",
+] as const;
+
+export type SeasonStatsTab = (typeof SEASON_STATS_TABS)[number];
 export const RESULTS_PER_PAGE = 25;
 export const HIGHLIGHTS_RESULTS_MAX = 500;
 

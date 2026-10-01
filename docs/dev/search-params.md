@@ -105,6 +105,17 @@ buildsSearchParams.href(buildsPage(slug), { f: filters });
 
 Used by `<Link to>` and by query-building helpers. Those helpers live in `app/features/<feature>/<feature>-urls.ts`, next to the definition they encode with — never in `app/utils/urls.ts`, which is imported by the root and so must stay free of feature schemas. `urls.ts` keeps the plain path constants and builders that carry no search params.
 
+A `<Link>` still navigates, so an href that only changes `loader: false` params would run loaders anyway. Those links opt out with react-router's `defaultShouldRevalidate`:
+
+```tsx
+<Link
+	to={globalSearchSearchParams.href("", { search: "open" })}
+	defaultShouldRevalidate={false}
+/>
+```
+
+Routes without a `shouldRevalidate` then skip their loader; routes with one get it as `args.defaultShouldRevalidate` and make the final call (`definition.shouldRevalidate` skips too, since only a param outside its definition changed).
+
 ## Revalidation
 
 `loader: false` params bypass the router entirely, which removes the need for most custom `shouldRevalidate` implementations. For routes where loader params should be compared by value:
@@ -114,7 +125,15 @@ export const shouldRevalidate = buildsSearchParams.shouldRevalidate;
 // revalidates only when a loader:true param's decoded canonical value changed
 ```
 
-Submissions, revalidator calls, pathname changes and unknown-param changes defer to the router default.
+Params outside the definition are ignored, so a route's loader must read search params only through the definition its `shouldRevalidate` comes from. Submissions, revalidator calls and pathname changes defer to the router default.
+
+A route whose loader reads no search params at all (a layout, say) uses `SearchParams.skipSearchOnlyRevalidation`, so its child routes' param changes never rerun it:
+
+```ts
+export const shouldRevalidate = SearchParams.skipSearchOnlyRevalidation;
+```
+
+Splitting a page into a layout route (data depending on few params, with its own definition) and an index route (a paginated list, say) this way keeps pagination from refetching the rest of the page.
 
 ## Enforcement
 

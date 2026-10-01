@@ -10,13 +10,7 @@ import {
 	Users,
 } from "lucide-react";
 import * as React from "react";
-import {
-	Dialog,
-	DialogTrigger,
-	Modal,
-	ModalOverlay,
-} from "react-aria-components";
-import { Flipped, Flipper } from "react-flip-toolkit";
+import { ViewTransition } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useFetcher, useLocation, useMatches } from "react-router";
 import { Config } from "~/config";
@@ -24,35 +18,41 @@ import { useUser } from "~/features/auth/core/user";
 import { ScheduleNudge } from "~/features/availability/components/ScheduleNudge";
 import { useChatContext } from "~/features/chat/ChatProvider";
 import { FriendMenu } from "~/features/friends/components/FriendMenu";
+import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
 import { useLayoutData } from "~/features/layout/LayoutDataProvider";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
+import { useClosePopoversOnNavigation } from "~/hooks/useClosePopoversOnNavigation";
 import { useHydrated } from "~/hooks/useHydrated";
 import { MOBILE_LAYOUT_QUERY, useLayoutSize } from "~/hooks/useLayoutSize";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
-import { usePrefersReducedMotion } from "~/hooks/usePrefersReducedMotion";
+import { useScrollLock } from "~/hooks/useScrollLock";
 import { useUnseenFriendRequests } from "~/hooks/useUnseenFriendRequests";
-import { useVisualViewportHeight } from "~/hooks/useVisualViewportHeight";
+import { useVisualViewport } from "~/hooks/useVisualViewport";
 import { useSearchParam } from "~/modules/search-params/hooks";
 import type { RootLoaderData } from "~/root";
+import { generateIdenticon } from "~/utils/identicon";
 import type { Breadcrumb, SendouRouteHandle } from "~/utils/remix.server";
 import {
 	EVENTS_PAGE,
 	FRIENDS_PAGE,
-	PLANNER_URL,
+	navIconUrl,
 	SETTINGS_PAGE,
+	teamPage,
 	userPage,
 } from "~/utils/urls";
-import { Avatar, generateIdenticon } from "../Avatar";
-import { SendouButton } from "../elements/Button";
+import { Avatar } from "../Avatar";
+import { SendouButton, type SendouButtonProps } from "../elements/Button";
+import { SendouModal } from "../elements/Dialog";
+import { isOwnToggle } from "../elements/Popover";
 import { FuseZone } from "../fuse/Fuse";
 import { Image } from "../Image";
 import { MobileNav } from "../MobileNav";
 import { NotificationDot } from "../NotificationDot";
 import { ListLink, SideNav, SideNavFooter, SideNavHeader } from "../SideNav";
 import { StreamListItems } from "../StreamListItems";
+import { ChatSidebar } from "./ChatSidebar";
 import { Footer } from "./Footer";
 import styles from "./index.module.css";
-import { LazyChatSidebar } from "./LazyChatSidebar";
 import { LogInButtonContainer } from "./LogInButtonContainer";
 import { authErrorSearchParams } from "./layout-search-params";
 import { NotificationPopover, useNotifications } from "./NotificationPopover";
@@ -60,6 +60,7 @@ import { TopNavMenus } from "./TopNavMenus";
 import { TopRightButtons } from "./TopRightButtons";
 
 const MAX_DESKTOP_FRIENDS = 4;
+const SIDENAV_ACTION = "/sidenav";
 
 // lazy loaded to stay out of the eager bundle
 const AuthErrorDialog = React.lazy(() =>
@@ -136,7 +137,7 @@ function useSideNavCollapsed(initialCollapsed: boolean) {
 		setCollapsed(value);
 		fetcher.submit(
 			{ collapsed: String(value) },
-			{ method: "POST", action: "/sidenav" },
+			{ method: "POST", action: SIDENAV_ACTION },
 		);
 	};
 
@@ -167,6 +168,13 @@ function useNavOffset(headerRef: React.RefObject<HTMLElement | null>) {
 	const SCROLL_THRESHOLD_PX = 200;
 
 	const scrollAccumulator = React.useRef(0);
+
+	// stable so the effect revealing the nav on a status change can depend on it
+	const revealNav = React.useCallback(() => {
+		setNavOffset(0);
+		scrollAccumulator.current = 0;
+		lastScrollY.current = window.scrollY;
+	}, []);
 
 	React.useEffect(() => {
 		if (!isMobileLayout) return;
@@ -217,7 +225,24 @@ function useNavOffset(headerRef: React.RefObject<HTMLElement | null>) {
 		};
 	}, [headerRef, isMobileLayout]);
 
-	return navOffset;
+	return { navOffset, revealNav };
+}
+
+/**
+ * Pops the scrolled-away mobile header back out when the global status
+ * changes, so the change is seen the moment it happens.
+ */
+function useRevealNavOnStatusChange(revealNav: () => void) {
+	const { status } = useGlobalStatus();
+	const statusKey = status ? `${status.state}:${status.count ?? ""}` : null;
+	const prevKeyRef = React.useRef(statusKey);
+
+	React.useEffect(() => {
+		if (prevKeyRef.current === statusKey) return;
+
+		prevKeyRef.current = statusKey;
+		revealNav();
+	}, [statusKey, revealNav]);
 }
 
 export function Layout({
@@ -233,11 +258,14 @@ export function Layout({
 	);
 	const layoutSize = useLayoutSize();
 	const isTabletLayout = layoutSize === "tablet";
-	const [sideNavModalOpen, setSideNavModalOpen] =
-		useTabletModal(isTabletLayout);
+	const sideNavId = React.useId();
+	const sideNavRef = React.useRef<HTMLElement>(null);
+	const [sideNavDrawerOpen, setSideNavDrawerOpen] = React.useState(false);
+	useClosePopoversOnNavigation(sideNavRef);
+	useScrollLock(sideNavDrawerOpen);
+	useVisualViewport();
 	const [chatSidebarModalOpen, setChatSidebarModalOpen] =
 		useTabletModal(isTabletLayout);
-	useVisualViewportHeight();
 	const chatSidebarOpen = chatContext?.chatOpen ?? false;
 	const setChatSidebarOpen = chatContext?.setChatOpen ?? (() => {});
 
@@ -252,7 +280,8 @@ export function Layout({
 	const location = useLocation();
 	const [authError] = useSearchParam(authErrorSearchParams, "authError");
 	const headerRef = React.useRef<HTMLElement>(null);
-	const navOffset = useNavOffset(headerRef);
+	const { navOffset, revealNav } = useNavOffset(headerRef);
+	useRevealNavOnStatusChange(revealNav);
 
 	const user = useUser();
 	const { showUnseenDot } = useNotifications();
@@ -377,7 +406,20 @@ export function Layout({
 	return (
 		<>
 			<SideNav
-				className={showLeaderboard ? styles.sidebarFuseSpace : undefined}
+				ref={sideNavRef}
+				id={sideNavId}
+				popover="auto"
+				tabIndex={-1}
+				onToggle={(event) => {
+					if (!isOwnToggle(event)) return;
+					const open = event.newState === "open";
+					setSideNavDrawerOpen(open);
+					if (open) event.currentTarget.focus();
+				}}
+				className={clsx(
+					styles.sideNavDrawer,
+					showLeaderboard && styles.sidebarFuseSpace,
+				)}
 				collapsed={sideNavCollapsed}
 				footer={sideNavFooterContent}
 				top={<SiteTitle />}
@@ -397,59 +439,55 @@ export function Layout({
 					<Link to="/" className={clsx(styles.siteLogo, styles.mobileLogo)}>
 						<SiteLogoContent />
 					</Link>
-					<DialogTrigger
-						isOpen={sideNavModalOpen}
-						onOpenChange={setSideNavModalOpen}
-					>
-						<SideNavCollapseButton
-							className={styles.sideNavModalTrigger}
-							showNotificationDot={!sideNavModalOpen && showUnseenDot}
-							badgeCount={!sideNavModalOpen ? unseenFriendRequests : 0}
-							testId="sidenav-modal-trigger"
-						/>
-						<ModalOverlay className={styles.sideNavModalOverlay} isDismissable>
-							<Modal className={styles.sideNavModal}>
-								<Dialog className={styles.sideNavModalDialog}>
-									<SideNav
-										className={styles.sideNavInModal}
-										footer={sideNavFooterContent}
-										top={<SiteTitle />}
-										topCentered={isFrontPage}
-									>
-										{sideNavChildren}
-									</SideNav>
-								</Dialog>
-							</Modal>
-						</ModalOverlay>
-					</DialogTrigger>
-					<ModalOverlay
-						className={styles.chatSidebarModalOverlay}
-						isDismissable
-						isOpen={chatSidebarModalOpen}
-						onOpenChange={setChatSidebarModalOpenAndSync}
-					>
-						<Modal className={styles.chatSidebarModal}>
-							<Dialog
-								className={styles.chatSidebarModalDialog}
-								aria-label={t("common:chat.sidebar.title")}
-							>
-								<LazyChatSidebar />
-							</Dialog>
-						</Modal>
-					</ModalOverlay>
 					<SideNavCollapseButton
-						onToggle={() => setSideNavCollapsed(!sideNavCollapsed)}
-						className={styles.sideNavCollapseButton}
-						showNotificationDot={sideNavCollapsed && showUnseenDot}
-						badgeCount={sideNavCollapsed ? unseenFriendRequests : 0}
-						testId="sidenav-collapse-button"
+						popoverTarget={sideNavId}
+						className={styles.sideNavModalTrigger}
+						showNotificationDot={!sideNavDrawerOpen && showUnseenDot}
+						badgeCount={!sideNavDrawerOpen ? unseenFriendRequests : 0}
+						testId="sidenav-modal-trigger"
 					/>
+					{chatSidebarModalOpen ? (
+						<SendouModal
+							className={styles.chatSidebarModal}
+							isDismissable
+							aria-label={t("common:chat.sidebar.title")}
+							onClose={() => setChatSidebarModalOpenAndSync(false)}
+						>
+							<ChatSidebar />
+						</SendouModal>
+					) : null}
+					<form
+						method="post"
+						action={SIDENAV_ACTION}
+						className={styles.sideNavCollapseForm}
+						onSubmit={(event) => {
+							event.preventDefault();
+							setSideNavCollapsed(!sideNavCollapsed);
+						}}
+					>
+						<input
+							type="hidden"
+							name="collapsed"
+							value={String(!sideNavCollapsed)}
+						/>
+						<input
+							type="hidden"
+							name="returnTo"
+							value={`${location.pathname}${location.search}`}
+						/>
+						<SideNavCollapseButton
+							type="submit"
+							className={styles.sideNavCollapseButton}
+							showNotificationDot={sideNavCollapsed && showUnseenDot}
+							badgeCount={sideNavCollapsed ? unseenFriendRequests : 0}
+							testId="sidenav-collapse-button"
+						/>
+					</form>
 					<TopNavMenus />
 					<TopRightButtons
 						showSupport={Boolean(
 							data && !data?.user?.roles.includes("MINOR_SUPPORT"),
 						)}
-						showSearch={Boolean(data?.user)}
 						isLoggedIn={Boolean(data?.user)}
 						onChatToggle={
 							data?.user && !chatSidebarOpen
@@ -482,7 +520,7 @@ export function Layout({
 						showLeaderboard && styles.sidebarFuseSpace,
 					)}
 				>
-					<LazyChatSidebar onClose={() => setChatSidebarOpen(false)} />
+					<ChatSidebar onClose={() => setChatSidebarOpen(false)} />
 				</div>
 			) : null}
 			{typeof authError === "string" ? (
@@ -496,58 +534,52 @@ export function Layout({
 
 function SiteTitle() {
 	const location = useLocation();
-	const prefersReducedMotion = usePrefersReducedMotion();
 	const { breadcrumbs, currentPageText } = useBreadcrumbData();
 
 	const isFrontPage = location.pathname === "/";
 	const hasBreadcrumbs = breadcrumbs.length > 0;
 
 	return (
-		<Flipper
-			flipKey={isFrontPage ? "front" : "other"}
-			className={styles.siteTitleFlipper}
-			decisionData={{ pathname: location.pathname }}
-		>
-			<div className={styles.siteTitle}>
-				<Flipped
-					flipId="site-logo"
-					shouldFlip={(prev, current) =>
-						!prefersReducedMotion &&
-						prev?.pathname !== PLANNER_URL &&
-						current?.pathname !== PLANNER_URL
-					}
-				>
-					<Link to="/" className={styles.siteLogo}>
-						<SiteLogoContent />
-					</Link>
-				</Flipped>
+		<div className={styles.siteTitle}>
+			{/* the key remounts the logo when it changes place so it animates as a
+			    shared element; an update animation would instead run on every
+			    navigation since React can't tell the logo didn't move */}
+			<ViewTransition
+				key={isFrontPage ? "front" : "other"}
+				name="site-logo"
+				share="auto"
+				default="none"
+			>
+				<Link to="/" className={styles.siteLogo}>
+					<SiteLogoContent />
+				</Link>
+			</ViewTransition>
 
-				{hasBreadcrumbs ? (
-					<>
-						{breadcrumbs.map((crumb) => {
-							const isCurrentPage = location.pathname === crumb.href;
+			{hasBreadcrumbs ? (
+				<>
+					{breadcrumbs.map((crumb) => {
+						const isCurrentPage = location.pathname === crumb.href;
 
-							return (
-								<React.Fragment key={crumb.href}>
-									<span className={styles.separator}>/</span>
-									{isCurrentPage ? (
+						return (
+							<React.Fragment key={crumb.href}>
+								<span className={styles.separator}>/</span>
+								{isCurrentPage ? (
+									<PageIcon crumb={crumb} />
+								) : (
+									<Link to={crumb.href} className={styles.breadcrumbLink}>
 										<PageIcon crumb={crumb} />
-									) : (
-										<Link to={crumb.href} className={styles.breadcrumbLink}>
-											<PageIcon crumb={crumb} />
-										</Link>
-									)}
-								</React.Fragment>
-							);
-						})}
+									</Link>
+								)}
+							</React.Fragment>
+						);
+					})}
 
-						{currentPageText ? (
-							<span className={styles.pageName}>{currentPageText}</span>
-						) : null}
-					</>
-				) : null}
-			</div>
-		</Flipper>
+					{currentPageText ? (
+						<span className={styles.pageName}>{currentPageText}</span>
+					) : null}
+				</>
+			) : null}
+		</div>
 	);
 }
 
@@ -561,18 +593,17 @@ function SiteLogoContent() {
 }
 
 function SideNavCollapseButton({
-	onToggle,
 	className,
 	showNotificationDot,
 	badgeCount,
 	testId,
+	...buttonProps
 }: {
-	onToggle?: () => void;
 	className?: string;
 	showNotificationDot?: boolean;
 	badgeCount?: number;
 	testId?: string;
-}) {
+} & Pick<SendouButtonProps, "type" | "popoverTarget">) {
 	const { t } = useTranslation(["friends"]);
 
 	return (
@@ -583,7 +614,7 @@ function SideNavCollapseButton({
 				size="small"
 				shape="square"
 				icon={<PanelLeft />}
-				onPress={onToggle}
+				{...buttonProps}
 			/>
 			{showNotificationDot ? <NotificationDot /> : null}
 			{badgeCount ? (
@@ -603,7 +634,6 @@ function SideNavCollapseButton({
 
 function PageIcon({ crumb }: { crumb: Breadcrumb }) {
 	const [isErrored, setIsErrored] = React.useState(false);
-	const isClient = useHydrated();
 
 	if (crumb.type !== "IMAGE") {
 		return null;
@@ -620,8 +650,8 @@ function PageIcon({ crumb }: { crumb: Breadcrumb }) {
 	};
 
 	const identiconSrc =
-		isErrored && isClient && crumb.identiconInput
-			? generateIdenticon(crumb.identiconInput, 28, 7)
+		isErrored && crumb.identiconInput
+			? generateIdenticon(crumb.identiconInput)
 			: null;
 
 	return (
@@ -663,24 +693,42 @@ function SideNavUserPanel() {
 					<span className={styles.sideNavFooterUsername}>{user.username}</span>
 				</Link>
 				<div className={styles.sideNavFooterActions}>
-					{notifications ? (
-						<div
-							className={styles.sideNavFooterNotification}
-							key={location.pathname}
+					{user.team ? (
+						<Link
+							to={teamPage(user.team.customUrl)}
+							className={styles.sideNavFooterButton}
+							aria-label={t("header.myTeam")}
+							title={t("header.myTeam")}
 						>
-							{showUnseenDot ? (
-								<NotificationDot
-									className={styles.sideNavFooterUnseenDot}
-									testId="notifications-bell-dot"
+							{user.team.avatarUrl ? (
+								<img
+									src={user.team.avatarUrl}
+									alt=""
+									className={styles.sideNavFooterTeamAvatar}
+									width={22}
+									height={22}
 								/>
-							) : null}
-							<NotificationPopover
-								notifications={notifications}
-								unseenIds={unseenIds}
-								triggerClassName={styles.sideNavFooterButton}
-							/>
-						</div>
+							) : (
+								<Image path={navIconUrl("t")} alt="" width={22} height={22} />
+							)}
+						</Link>
 					) : null}
+					<div
+						className={styles.sideNavFooterNotification}
+						key={location.pathname}
+					>
+						{showUnseenDot ? (
+							<NotificationDot
+								className={styles.sideNavFooterUnseenDot}
+								testId="notifications-bell-dot"
+							/>
+						) : null}
+						<NotificationPopover
+							notifications={notifications}
+							unseenIds={unseenIds}
+							triggerClassName={styles.sideNavFooterButton}
+						/>
+					</div>
 					<Link to={SETTINGS_PAGE} className={styles.sideNavFooterButton}>
 						<Settings />
 					</Link>

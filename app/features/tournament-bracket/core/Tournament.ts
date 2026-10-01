@@ -1,6 +1,12 @@
 import { sub } from "date-fns";
 import type { Tables } from "~/db/tables";
-import type { TournamentStageSettings } from "~/db/tables-json";
+import type {
+	TeamPickSettings,
+	TournamentStageSettings,
+} from "~/db/tables-json";
+import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import * as TeamPick from "~/features/tournament/core/TeamPick";
+import type { TournamentTierNumber } from "~/features/tournament/core/tiering";
 import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import {
 	modesIncluded,
@@ -10,17 +16,19 @@ import {
 } from "~/features/tournament/tournament-utils";
 import type { MatchData } from "~/features/tournament-bracket/core/engine/types";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
+import { rankedModesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort } from "~/modules/in-game-lists/types";
 import { hasPermission } from "~/modules/permissions/utils";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import { assertUnreachable } from "~/utils/types";
 import { groupNumberToLetters } from "../tournament-bracket-utils";
 import { type Bracket, createBracket } from "./Bracket";
+import * as CheckIn from "./CheckIn";
 import { calculateTeamStatus } from "./engine/swiss/team-status";
 import { getRounds } from "./rounds";
 import * as Seeding from "./Seeding";
@@ -102,6 +110,8 @@ type TournamentArgs = {
 	participatedUsers?: number[];
 	/** Live streams of the tournament. Absent in the views whose loader does not ship them. */
 	streams?: TournamentStream[];
+	/** Tier of each league division (starting bracket) that has one. Absent in the views whose loader does not ship them. */
+	divisionTiers?: Array<{ bracketIdx: number; tier: TournamentTierNumber }>;
 };
 
 /** The progress status of a team member in a running tournament, as resolved by {@link Tournament.teamMemberOfProgressStatus}. */
@@ -114,13 +124,13 @@ export class Tournament {
 	ctx;
 	/** See {@link TournamentArgs.participatedUsers}, null when this view did not get them. */
 	readonly participatedUserIds: number[] | null;
-	private args;
-	private data;
-	private _brackets: Array<Bracket | undefined> = [];
+	private readonly args;
+	private readonly data;
+	private readonly _brackets: Array<Bracket | undefined> = [];
 	private _allBrackets: Bracket[] | undefined;
 	private _derivedMeta: BracketDerivedMeta[] | undefined;
 	private _bracketsMeta: BracketMeta[] | undefined;
-	private bracketIdxsBeingBuilt = new Set<number>();
+	private readonly bracketIdxsBeingBuilt = new Set<number>();
 
 	constructor(args: TournamentArgs) {
 		const { data, ctx, bracketsMeta, brackets } = args;
@@ -238,8 +248,8 @@ export class Tournament {
 
 	/** Division the given bracket belongs to, or null if the tournament has no divisions. */
 	leagueDivisionOfBracket(bracketIdx: number): number | null {
-		const division = this.leagueDivisions.find((division) =>
-			this.bracketIdxsOfDivision(division.idx).includes(bracketIdx),
+		const division = this.leagueDivisions.find((candidate) =>
+			this.bracketIdxsOfDivision(candidate.idx).includes(bracketIdx),
 		);
 
 		return division?.idx ?? null;
@@ -275,23 +285,28 @@ export class Tournament {
 	}
 
 	/** Teams that can play in the bracket: its participants plus the ones still pending check-in. */
-	eligibleTeamsCountOfBracket(bracketIdx: number) {
+	eligibleTeamIdsOfBracket(bracketIdx: number) {
 		const bracket = this.bracketsMeta[bracketIdx];
 
 		if (bracket.sources) {
-			return (
-				(bracket.teamsPendingCheckIn ?? []).length +
-				bracket.participantTournamentTeamIds.length
-			);
+			return [
+				...bracket.participantTournamentTeamIds,
+				...(bracket.teamsPendingCheckIn ?? []),
+			];
 		}
 
-		if (!this.isMultiStartingBracket) {
-			return this.ctx.teams.length;
-		}
+		const teams = this.isMultiStartingBracket
+			? this.ctx.teams.filter(
+					(team) => (team.startingBracketIdx ?? 0) === bracketIdx,
+				)
+			: this.ctx.teams;
 
-		return this.ctx.teams.filter(
-			(team) => (team.startingBracketIdx ?? 0) === bracketIdx,
-		).length;
+		return teams.map((team) => team.id);
+	}
+
+	/** Count of {@link eligibleTeamIdsOfBracket}. */
+	eligibleTeamsCountOfBracket(bracketIdx: number) {
+		return this.eligibleTeamIdsOfBracket(bracketIdx).length;
 	}
 
 	/** Teams of the bracket: its participants, or every eligible team while it is a preview. */
@@ -603,7 +618,15 @@ export class Tournament {
 		usesRegularCheckIn: boolean;
 		requiresCheckIn: boolean;
 	}) {
-		return teams.reduce(
+		const sharedCheckInBracketIdxs = CheckIn.sharedBracketIdxs(
+			bracketIdx,
+			this.ctx.settings.bracketProgression,
+		);
+
+		return teams.reduce<{
+			checkedInTeams: number[];
+			notCheckedInTeams: number[];
+		}>(
 			(acc, cur) => {
 				const team = this.teamById(cur);
 				invariant(team, "Team not found");
@@ -615,9 +638,9 @@ export class Tournament {
 						acc.notCheckedInTeams.push(cur);
 					}
 				} else if (requiresCheckIn) {
-					const isCheckedIn = team.checkIns.some(
-						(checkIn) =>
-							checkIn.bracketIdx === bracketIdx && !checkIn.isCheckOut,
+					const isCheckedIn = CheckIn.isCheckedInToBrackets(
+						team.checkIns,
+						sharedCheckInBracketIdxs,
 					);
 
 					if (isCheckedIn) {
@@ -640,10 +663,7 @@ export class Tournament {
 
 				return acc;
 			},
-			{ checkedInTeams: [], notCheckedInTeams: [] } as {
-				checkedInTeams: number[];
-				notCheckedInTeams: number[];
-			},
+			{ checkedInTeams: [], notCheckedInTeams: [] },
 		);
 	}
 
@@ -691,17 +711,50 @@ export class Tournament {
 		return this.ctx.mapPickingStyle !== "TO";
 	}
 
-	/** What Splatoon modes are played in this tournament */
-	get modesIncluded(): ModeShort[] {
-		return modesIncluded(this.ctx.mapPickingStyle, this.ctx.toSetMapPool);
+	/** Team pick configuration, null when the organizer picks the maps. */
+	get teamPickSettings(): TeamPickSettings | null {
+		if (!this.teamsPrePickMaps) return null;
+
+		return (
+			this.ctx.settings.teamPick ?? TeamPick.defaultSettings(rankedModesShort)
+		);
 	}
 
-	/** Rules page (and its nav item) is shown if there are rules or any map pool. */
+	/** What Splatoon modes are played in this tournament */
+	get modesIncluded(): ModeShort[] {
+		return modesIncluded(
+			this.teamPickSettings ?? undefined,
+			this.ctx.toSetMapPool,
+		);
+	}
+
+	/** Pool the maps of the tournament come from: the organizer's pool, or for team picked tournaments the pool the teams pick from. */
+	get mapPool(): MapPool {
+		const teamPick = this.teamPickSettings;
+		if (!teamPick) return new MapPool(this.ctx.toSetMapPool);
+
+		return TeamPick.effectivePool(teamPick, this.ctx.toSetMapPool);
+	}
+
+	/** Organizer picked maps, empty when the teams pick their own (their custom pool is not legal as such). */
+	get organizerPickedMapPool() {
+		return this.teamsPrePickMaps ? [] : this.ctx.toSetMapPool;
+	}
+
+	/** In how many modes a stage may appear in a team's picks, see {@link TeamPick.stageRepeatCap}. */
+	get stageRepeatCap() {
+		const teamPick = this.teamPickSettings;
+		if (!teamPick) return null;
+
+		return TeamPick.stageRepeatCap({ teamPick, pool: this.mapPool });
+	}
+
+	/** Rules page (and its nav item) is shown if there are rules or maps to describe. */
 	get hasRulesPage() {
 		return (
 			this.ctx.hasRules ||
 			this.ctx.toSetMapPool.length > 0 ||
-			this.ctx.tieBreakerMapPool.length > 0
+			this.teamsPrePickMaps
 		);
 	}
 
@@ -823,6 +876,14 @@ export class Tournament {
 		return idx;
 	}
 
+	/** Whether the teams schedule the set, see {@link Bracket.hasScheduling}. */
+	matchHasScheduling(matchId: number) {
+		const bracketIdx = this.matchIdToBracketIdx(matchId);
+		if (bracketIdx === null) return false;
+
+		return this.bracketByIdx(bracketIdx)?.hasScheduling ?? false;
+	}
+
 	canFinalize(user: OptionalIdObject) {
 		// underground bracket can be skipped
 		const relevantBrackets = this.bracketsMeta.filter(
@@ -921,7 +982,9 @@ export class Tournament {
 
 	get regularCheckInStartsAt() {
 		// elapsed time math so the window stays one hour long across a DST transition
-		return new Date(this.ctx.startsAt.getTime() - 60 * 60 * 1000);
+		return new Date(
+			this.ctx.startsAt.getTime() - TOURNAMENT.REGULAR_CHECK_IN_WINDOW_MS,
+		);
 	}
 
 	get regularCheckInEndsAt() {
@@ -957,6 +1020,17 @@ export class Tournament {
 	/** Played over many weeks, each starting bracket a division the organizer places teams in. */
 	get isLeague() {
 		return this.ctx.settings.isLeague === true;
+	}
+
+	/** Tier of the division the bracket belongs to, the tournament's own tier when the division has none. */
+	divisionTierOfBracket(bracketIdx: number): TournamentTierNumber | null {
+		const divisionIdx = this.leagueDivisionOfBracket(bracketIdx);
+
+		return (
+			this.args.divisionTiers?.find(
+				(division) => division.bracketIdx === divisionIdx,
+			)?.tier ?? this.ctx.tier
+		);
 	}
 
 	/** Many first brackets whose progressions advance independently (so not all teams can meet). */
@@ -1002,19 +1076,19 @@ export class Tournament {
 
 					if (bracket.type === "round_robin") {
 						const group = bracket.data.group.find(
-							(group) => group.id === match.groupId,
+							(candidate) => candidate.id === match.groupId,
 						);
 						const round = bracket.data.round.find(
-							(round) => round.id === match.roundId,
+							(candidate) => candidate.id === match.roundId,
 						);
 
 						roundName = `Groups ${group?.number ? groupNumberToLetters(group.number) : ""}${round?.number ?? ""}.${match.number}`;
 					} else if (bracket.type === "swiss") {
 						const group = bracket.data.group.find(
-							(group) => group.id === match.groupId,
+							(candidate) => candidate.id === match.groupId,
 						);
 						const round = bracket.data.round.find(
-							(round) => round.id === match.roundId,
+							(candidate) => candidate.id === match.roundId,
 						);
 
 						const oneGroupOnly = bracket.data.group.length === 1;
@@ -1035,7 +1109,9 @@ export class Tournament {
 										...getRounds({ type: "losers", bracketData: bracket.data }),
 									];
 
-						const round = rounds.find((round) => round.id === match.roundId);
+						const round = rounds.find(
+							(candidate) => candidate.id === match.roundId,
+						);
 
 						if (round) {
 							const specifier = () => {
@@ -1070,14 +1146,14 @@ export class Tournament {
 			}
 		}
 
-		const roundNameWithoutMatchIdentifier = (roundName?: string) => {
-			if (!roundName) return;
+		const roundNameWithoutMatchIdentifier = (name?: string) => {
+			if (!name) return;
 
-			if (roundName.includes("Semis")) {
-				return roundName.replace(/\d/g, "").trim();
+			if (name.includes("Semis")) {
+				return name.replace(/\d/g, "").trim();
 			}
 
-			return roundName.split(".")[0];
+			return name.split(".")[0];
 		};
 
 		return {
@@ -1159,10 +1235,10 @@ export class Tournament {
 					const otherTeamBusyWithPreviousMatch =
 						bracket.type === "round_robin" &&
 						bracket.data.match.find(
-							(match) =>
-								(match.opponent1?.id === otherTeam.id ||
-									match.opponent2?.id === otherTeam.id) &&
-								!match.winnerSide,
+							(candidate) =>
+								(candidate.opponent1?.id === otherTeam.id ||
+									candidate.opponent2?.id === otherTeam.id) &&
+								!candidate.winnerSide,
 						)?.id !== match.id;
 
 					if (otherTeamBusyWithPreviousMatch) {
@@ -1199,10 +1275,14 @@ export class Tournament {
 			} as const;
 		}
 
-		for (const [bracketIdx, bracket] of this.brackets.entries()) {
-			if (bracket.teamsPendingCheckIn?.includes(team.id)) {
-				return { type: "CHECKIN", bracketIdx } as const;
-			}
+		for (const bracketIdx of this.ctx.settings.bracketProgression.keys()) {
+			const bracket = this.bracketMetaByIdx(bracketIdx);
+			if (!bracket?.teamsPendingCheckIn?.includes(team.id)) continue;
+
+			// a follow-up bracket's check-in only opens an hour before it starts
+			return this.canCheckInToBracket(bracketIdx, user)
+				? ({ type: "CHECKIN", bracketIdx } as const)
+				: ({ type: "WAITING_FOR_BRACKET", bracketIdx } as const);
 		}
 
 		for (const bracket of startedBrackets) {
@@ -1277,11 +1357,11 @@ export class Tournament {
 	matchCanBeReopened(matchId: number) {
 		if (this.ctx.isFinalized) return false;
 
-		const allMatches = this.brackets.flatMap((bracket) =>
+		const allMatches = this.brackets.flatMap((eachBracket) =>
 			// preview matches have no real ids and don't block anything
-			bracket.preview ? [] : bracket.data.match,
+			eachBracket.preview ? [] : eachBracket.data.match,
 		);
-		const match = allMatches.find((match) => match.id === matchId);
+		const match = allMatches.find((candidate) => candidate.id === matchId);
 		if (!match) {
 			logger.error("matchCanBeReopened: Match not found");
 			return false;
@@ -1316,11 +1396,12 @@ export class Tournament {
 		}
 
 		const anotherMatchBlocking = this.followingMatches(matchId).some(
-			(match) =>
+			(followingMatch) =>
 				// swiss rounds are generated one by one so a following match blocks even if not started
 				bracket.type === "swiss" ||
-				(match.opponent1?.score && match.opponent1.score > 0) ||
-				(match.opponent2?.score && match.opponent2.score > 0),
+				(followingMatch.opponent1?.score &&
+					followingMatch.opponent1.score > 0) ||
+				(followingMatch.opponent2?.score && followingMatch.opponent2.score > 0),
 		);
 
 		return !anotherMatchBlocking;
@@ -1358,14 +1439,14 @@ export class Tournament {
 	/** Later matches of the same bracket & stage sharing a participant with the given match. */
 	followingMatches(matchId: number) {
 		const match = this.brackets
-			.flatMap((bracket) => bracket.data.match)
-			.find((match) => match.id === matchId);
+			.flatMap((eachBracket) => eachBracket.data.match)
+			.find((candidate) => candidate.id === matchId);
 		if (!match) {
 			logger.error("followingMatches: Match not found");
 			return [];
 		}
-		const bracket = this.brackets.find((bracket) =>
-			bracket.data.match.some((match) => match.id === matchId),
+		const bracket = this.brackets.find((candidate) =>
+			candidate.data.match.some((bracketMatch) => bracketMatch.id === matchId),
 		);
 		if (!bracket) {
 			logger.error("followingMatches: Bracket not found");

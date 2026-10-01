@@ -10,20 +10,8 @@
  * the same frame, paired downstream by the shared timer value.
  */
 import { getCV, type Mat, minMaxLoc } from "../../cv";
-import {
-	type GlyphSet,
-	type RecognizedChar,
-	recognizeText,
-	scaleGlyphSet,
-} from "../../glyphs";
-import {
-	copyRoi,
-	maxBrightness,
-	maxChannel,
-	meanBrightness,
-	minChannel,
-	type Roi,
-} from "../../image";
+import { type GlyphSet, recognizeText, scaleGlyphSet } from "../../glyphs";
+import { copyRoi, maxChannel, minChannel, type Roi } from "../../image";
 import { type InkRgb, meanInkColor } from "../../ink-color";
 import {
 	type BannerScoreRead,
@@ -41,13 +29,12 @@ import {
 	CONTROL_PLATE_MIN_SATURATION,
 	GATE_PLATE_MAX_STD,
 	GATE_SCORE_MIN_MAX_BRIGHTNESS,
-	GATE_TIMER_MAX_MEAN,
-	GATE_TIMER_MIN_MAX_BRIGHTNESS,
 	PENALTY_BIN_THRESHOLD,
 	PENALTY_PROBE_MAX_MEAN,
 	PENALTY_PROBE_MAX_STD,
 	PENALTY_PROBE_ROIS,
 	PENALTY_ROIS,
+	PENALTY_SINGLE_PROBE_MIN_CONF,
 	PENALTY_TEXT_HEIGHT,
 	PLATE_PROBE_ROIS,
 	SCORE_BIN_THRESHOLDS,
@@ -56,14 +43,9 @@ import {
 	SCORE_TEXT_HEIGHTS,
 	STATUS_LAYOUT_STICKY_MAX_GAP_S,
 	STRIP_WEAPON_SAMPLE_INTERVAL,
-	TIMER_BIN_THRESHOLD,
-	TIMER_DARK_PROBES,
-	TIMER_DIGIT_MIN_CONF,
-	TIMER_DIGIT_MIN_HEIGHT_RATIO,
-	TIMER_DIGIT_ROI,
-	TIMER_TEXT_HEIGHTS,
 } from "./rois";
 import { parseStripWeapons, type StripWeaponsData } from "./strip-weapons";
+import { readMatchTimer, timerBoxChecks, timerGlyphSets } from "./timer";
 
 export type ObjectiveData = SplatZonesObjectiveData;
 
@@ -139,14 +121,7 @@ export function createObjectiveDetector(
 				PENALTY_TEXT_HEIGHT / resources.paintDigits.height,
 			)
 		: null;
-	const timerSets: GlyphSet[] = resources.paintDigits
-		? TIMER_TEXT_HEIGHTS.map((h) =>
-				scaleGlyphSet(
-					resources.paintDigits!,
-					h / resources.paintDigits!.height,
-				),
-			)
-		: [];
+	const timerSets = timerGlyphSets(resources);
 
 	/** Mean and standard deviation of a grayscale ROI. */
 	function meanStd(gray: Mat, roi: Roi): { mean: number; std: number } {
@@ -176,10 +151,7 @@ export function createObjectiveDetector(
 		const gray = new cv.Mat();
 		cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
 		const checks = [
-			...TIMER_DARK_PROBES.map(
-				(roi) => meanBrightness(gray, roi) <= GATE_TIMER_MAX_MEAN,
-			),
-			maxBrightness(gray, TIMER_DIGIT_ROI) >= GATE_TIMER_MIN_MAX_BRIGHTNESS,
+			...timerBoxChecks(gray),
 			plateProbeOk(gray, PLATE_PROBE_ROIS[0]),
 			plateProbeOk(gray, PLATE_PROBE_ROIS[1]),
 			scoreInkOk(frame, SCORE_ROIS[0]),
@@ -226,61 +198,21 @@ export function createObjectiveDetector(
 	}
 
 	/**
-	 * M:SS timer: the colon's dots fall under the digit height floor, so a valid
-	 * read is exactly three full-height digits. Each glyph size is tried (digits
-	 * render bigger on upscaled 720p) and the most confident valid read wins.
+	 * Penalty pill: presence probes at the rounded ends first, then the white
+	 * "+N" digits. A nameplate badge can cover one end, so a lone pill-like
+	 * probe still reads but the digits must be confident on their own.
 	 */
-	function readTimer(gray: Mat): { value: number | null; reading: string } {
-		const band = copyRoi(gray, TIMER_DIGIT_ROI);
-		let best: { value: number | null; reading: string; score: number } = {
-			value: null,
-			reading: "",
-			score: 0,
-		};
-		for (const timerSet of timerSets) {
-			const raw = recognizeText(band, timerSet, {
-				binThreshold: TIMER_BIN_THRESHOLD,
-				spaceGap: Number.POSITIVE_INFINITY,
-				minCharScore: 0.3,
-			});
-			if (!best.reading) best = { ...best, reading: raw.text };
-			const isTimerDigit = (c: RecognizedChar) =>
-				c.score >= TIMER_DIGIT_MIN_CONF &&
-				c.y1 - c.y0 >= timerSet.height * TIMER_DIGIT_MIN_HEIGHT_RATIO;
-			const chars = raw.chars.filter(isTimerDigit);
-			const digits = chars.map((c) => Number(c.char));
-			if (digits.length !== 3 || digits.some(Number.isNaN)) continue;
-			const [minutes, secondsTens, secondsOnes] = digits as [
-				number,
-				number,
-				number,
-			];
-			if (secondsTens >= 6) continue;
-			const score = chars.reduce((sum, c) => sum + c.score, 0) / chars.length;
-			if (score > best.score) {
-				best = {
-					value: minutes * 60 + secondsTens * 10 + secondsOnes,
-					reading: raw.text,
-					score,
-				};
-			}
-		}
-		band.delete();
-		return { value: best.value, reading: best.reading };
-	}
-
-	/** Penalty pill: presence probes first, then the white "+N" digits. */
 	function readPenalty(
 		frame: Mat,
 		gray: Mat,
 		side: 0 | 1,
 	): BannerScoreRead | null {
 		if (!penaltySet) return null;
-		const pillLike = PENALTY_PROBE_ROIS[side].every((roi) => {
+		const pillLikeProbes = PENALTY_PROBE_ROIS[side].filter((roi) => {
 			const { mean, std } = meanStd(gray, roi);
 			return mean <= PENALTY_PROBE_MAX_MEAN && std <= PENALTY_PROBE_MAX_STD;
-		});
-		if (!pillLike) return null;
+		}).length;
+		if (pillLikeProbes === 0) return null;
 		const band = minChannel(frame, PENALTY_ROIS[side]);
 		const raw = recognizeText(band, penaltySet, {
 			binThreshold: PENALTY_BIN_THRESHOLD,
@@ -288,7 +220,14 @@ export function createObjectiveDetector(
 			minCharScore: 0.3,
 		});
 		band.delete();
-		return trailingDigitRun(raw, penaltySet);
+		const read = trailingDigitRun(raw, penaltySet);
+		if (
+			pillLikeProbes < PENALTY_PROBE_ROIS[side].length &&
+			read.confidence < PENALTY_SINGLE_PROBE_MIN_CONF
+		) {
+			return null;
+		}
+		return read;
 	}
 
 	/** Plate fill over the probe strip; saturated = team-color style = in control (CONTROL_PLATE_MIN_SATURATION). */
@@ -339,7 +278,7 @@ export function createObjectiveDetector(
 				]),
 			};
 		}) as [SideRead, SideRead];
-		const timer = readTimer(gray);
+		const timer = readMatchTimer(gray, timerSets);
 		gray.delete();
 
 		// no readable count on either side = the gate hit a lookalike

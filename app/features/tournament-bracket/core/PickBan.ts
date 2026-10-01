@@ -11,7 +11,7 @@ import type {
 	StageId,
 } from "~/modules/in-game-lists/types";
 import type { TournamentMapListMap } from "~/modules/tournament-map-list-generator/types";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import { seededRandom } from "~/utils/random";
 import { assertUnreachable } from "~/utils/types";
@@ -96,7 +96,7 @@ export function turnOf({
 			const latestWinner = results[results.length - 1]?.winnerTeamId;
 			invariant(latestWinner, "turnOf: No winner found");
 
-			const team = teams.find((team) => latestWinner !== team.id);
+			const team = teams.find((candidate) => latestWinner !== candidate.id);
 			invariant(team, "turnOf: No result found");
 
 			return { teamId: team.id, action: "PICK" };
@@ -532,7 +532,7 @@ interface MapListWithStatusesArgs {
 	mapList: TournamentMapListMap[] | null;
 	teams: [MapPoolTeam, MapPoolTeam];
 	pickerTeamId: number;
-	tieBreakerMapPool: ModeWithStage[];
+	/** The organizer's maps, empty when the teams picked their own (the legal maps are then the union of their picks). */
 	toSetMapPool: Array<{ mode: ModeShort; stageId: StageId }>;
 	pickBanEvents?: PickBanEvent[];
 }
@@ -553,7 +553,6 @@ export function mapsListWithLegality(args: MapListWithStatusesArgs) {
 					const combinedPools = [
 						...(args.teams[0].mapPool ?? []),
 						...(args.teams[1].mapPool ?? []),
-						...args.tieBreakerMapPool,
 					];
 
 					const result: ModeWithStage[] = [];
@@ -580,7 +579,6 @@ export function mapsListWithLegality(args: MapListWithStatusesArgs) {
 				const combinedPools = [
 					...(args.teams[0].mapPool ?? []),
 					...(args.teams[1].mapPool ?? []),
-					...args.tieBreakerMapPool,
 				];
 
 				return R.uniqueBy(combinedPools, (m) => `${m.mode}-${m.stageId}`);
@@ -602,11 +600,11 @@ export function mapsListWithLegality(args: MapListWithStatusesArgs) {
 			: new Set();
 
 	const result = mapPool.map((map) => {
-		const isLegal =
+		const mapIsLegal =
 			!unavailableStagesSet.has(map.stageId) &&
 			!unavailableModesSet.has(map.mode);
 
-		return { ...map, isLegal };
+		return { ...map, isLegal: mapIsLegal };
 	});
 
 	const everythingBanned = result.every((map) => !map.isLegal);
@@ -709,7 +707,7 @@ function unavailableModes({
 			: null;
 		const noModeRepeatModes =
 			currentStep?.action === "PICK_NO_MODE_REPEAT"
-				? results.map((result) => result.mode)
+				? results.map((pastResult) => pastResult.mode)
 				: [];
 
 		return new Set([
@@ -722,9 +720,9 @@ function unavailableModes({
 	// COUNTERPICK: can't pick the same mode last won on
 	const result = new Set(
 		results
-			.filter((result) => result.winnerTeamId === pickerTeamId)
+			.filter((pastResult) => pastResult.winnerTeamId === pickerTeamId)
 			.slice(-1)
-			.map((result) => result.mode),
+			.map((pastResult) => pastResult.mode),
 	);
 
 	return result;

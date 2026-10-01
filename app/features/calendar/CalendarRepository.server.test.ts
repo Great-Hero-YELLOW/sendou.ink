@@ -1,8 +1,12 @@
 import { sub } from "date-fns";
 import { beforeEach, describe, expect, test } from "vitest";
+import * as CalendarEventFactory from "~/db/seed/factories/CalendarEventFactory";
+import * as ImageFactory from "~/db/seed/factories/ImageFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentOrganizationFactory from "~/db/seed/factories/TournamentOrganizationFactory";
+import * as TournamentTeamFactory from "~/db/seed/factories/TournamentTeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
+import { db } from "~/db/sql";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import * as CalendarRepository from "./CalendarRepository.server";
 
@@ -186,5 +190,128 @@ describe("findRecentTournamentsByOrganizerUserId", () => {
 		await seedTournament({ name: "Low Ink February", startedDaysAgo: 1 });
 
 		expect(await recentTournamentNames()).toEqual(["Low Ink February"]);
+	});
+});
+
+describe("findAvatarImgIds", () => {
+	const authorId = () => users.id(1);
+
+	beforeEach(async () => {
+		await users.create(1);
+	});
+
+	test("returns the logos of the edited event and of the copied tournament's event", async () => {
+		const copiedLogo = await ImageFactory.create({
+			submitterUserId: authorId(),
+		});
+		const tournamentToCopy = await TournamentFactory.create({
+			authorId: authorId(),
+			avatarImgId: copiedLogo.id,
+		});
+		const editedLogo = await ImageFactory.create({
+			submitterUserId: authorId(),
+		});
+		const eventToEdit = await CalendarEventFactory.create({
+			authorId: authorId(),
+			avatarImgId: editedLogo.id,
+		});
+		await CalendarEventFactory.create({
+			authorId: authorId(),
+			hasAvatar: true,
+		});
+
+		const imgIds = await CalendarRepository.findAvatarImgIds({
+			eventId: eventToEdit.id,
+			tournamentId: tournamentToCopy.id,
+		});
+
+		expect(imgIds.toSorted((a, b) => a - b)).toEqual(
+			[copiedLogo.id, editedLogo.id].toSorted((a, b) => a - b),
+		);
+	});
+
+	test("returns nothing when neither an event nor a tournament is given", async () => {
+		await CalendarEventFactory.create({
+			authorId: authorId(),
+			hasAvatar: true,
+		});
+
+		expect(await CalendarRepository.findAvatarImgIds({})).toEqual([]);
+	});
+});
+
+describe("deleteById", () => {
+	const authorId = () => users.id(1);
+
+	beforeEach(async () => {
+		await users.create(5);
+	});
+
+	test("deleting a tournament's event deletes the tournament and its chat rooms", async () => {
+		const tournament = await TournamentFactory.create({ authorId: authorId() });
+		for (const memberUserIds of [
+			[users.id(2), users.id(3)],
+			[users.id(4), users.id(5)],
+		]) {
+			await TournamentTeamFactory.create(
+				{ tournamentId: tournament.id, memberUserIds },
+				{ isCheckedIn: true },
+			);
+		}
+		await TournamentFactory.startBracket(tournament.id);
+		expect(await rowCount("ChatRoom")).toBeGreaterThan(0);
+
+		await CalendarRepository.deleteById(tournament.eventId);
+
+		expect(await rowCount("Tournament")).toBe(0);
+		expect(await rowCount("CalendarEvent")).toBe(0);
+		expect(await rowCount("ChatRoom")).toBe(0);
+	});
+
+	test("deletes an event without a tournament", async () => {
+		const event = await CalendarEventFactory.create({ authorId: authorId() });
+
+		await CalendarRepository.deleteById(event.id);
+
+		expect(await rowCount("CalendarEvent")).toBe(0);
+	});
+
+	const rowCount = async (table: "Tournament" | "CalendarEvent" | "ChatRoom") =>
+		(
+			await db
+				.selectFrom(table)
+				.select(db.fn.countAll().as("count"))
+				.executeTakeFirstOrThrow()
+		).count;
+});
+
+describe("findAllBetweenTwoTimestamps", () => {
+	const authorId = () => users.id(1);
+
+	beforeEach(async () => {
+		await users.create(1);
+	});
+
+	test("tags only leagues with the virtual LEAGUE tag, ahead of their own tags", async () => {
+		await TournamentFactory.create(
+			{ authorId: authorId(), name: "League", tags: ["SPECIAL"] },
+			{ isLeague: true },
+		);
+		await TournamentFactory.create({
+			authorId: authorId(),
+			name: "Tournament",
+			tags: ["SPECIAL"],
+		});
+
+		const days = await CalendarRepository.findAllBetweenTwoTimestamps({
+			startTime: sub(new Date(), { hours: 1 }),
+			endTime: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		const tagsOf = (name: string) =>
+			days.flatMap((day) => day.events).find((event) => event.name === name)
+				?.tags;
+
+		expect(tagsOf("League")).toEqual(["LEAGUE", "SPECIAL"]);
+		expect(tagsOf("Tournament")).toEqual(["SPECIAL"]);
 	});
 });

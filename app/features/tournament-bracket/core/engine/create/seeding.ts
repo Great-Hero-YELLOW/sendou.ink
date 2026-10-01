@@ -1,6 +1,6 @@
 // https://web.archive.org/web/20200601102344/https://tl.net/forum/sc2-tournaments/202139-superior-double-elimination-losers-bracket-seeding
 
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import type { OrderingMap, Seeding, SeedOrdering } from "../types";
 
 export const ordering: OrderingMap = {
@@ -30,10 +30,10 @@ export const ordering: OrderingMap = {
 			pls = nextLayer(pls);
 		}
 		return seedsToOrderedArray(pls);
-		function nextLayer(pls: number[]) {
+		function nextLayer(layer: number[]) {
 			const out: number[] = [];
-			const length = pls.length * 2 + 1;
-			for (const d of pls) {
+			const length = layer.length * 2 + 1;
+			for (const d of layer) {
 				out.push(d);
 				out.push(length - d);
 			}

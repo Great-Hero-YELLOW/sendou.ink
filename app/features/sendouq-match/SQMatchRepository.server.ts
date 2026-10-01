@@ -22,15 +22,15 @@ import { identifierToUserIds } from "~/features/mmr/mmr-utils";
 import type { TieredSkill } from "~/features/mmr/tiered.server";
 import { serializeMaplistSource } from "~/modules/tournament-map-list-generator/source";
 import type { TournamentMapListMap } from "~/modules/tournament-map-list-generator/types";
-import { mostPopularArrayElement } from "~/utils/arrays";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
+	groupMemberOfSeasonSql,
 	jsonArrayFrom,
 	jsonObjectFrom,
 	matchProfileWeapons,
@@ -42,8 +42,12 @@ import type { Unpacked } from "~/utils/types";
 import { FULL_GROUP_SIZE } from "../sendouq/q-constants";
 import { SendouQError } from "../sendouq/q-utils.server";
 import * as SQGroupRepository from "../sendouq/SQGroupRepository.server";
-import { MATCHES_PER_SEASONS_PAGE } from "../user-page/user-page-constants";
+import {
+	MATCHES_PER_SEASONS_PAGE,
+	type SeasonResultSource,
+} from "../user-page/user-page-constants";
 import { compareMatchToReportedScores } from "./core/match.server";
+import * as RejoinVote from "./core/RejoinVote";
 import * as SendouQMatch from "./core/SendouQMatch";
 import * as SkillDifference from "./core/SkillDifference";
 import { calculateMatchSkills } from "./core/skills.server";
@@ -102,10 +106,22 @@ export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 		.execute();
 }
 
+/** Just enough of a match to tell still being played apart from over, for the header status. */
+export async function findLiveStateById(id: number) {
+	return db
+		.selectFrom("GroupMatch")
+		.select((eb) => [
+			isLockedSubquery(eb, id).as("isLocked"),
+			isCanceledSubquery(eb, id).as("isCanceled"),
+		])
+		.where("GroupMatch.id", "=", id)
+		.executeTakeFirst();
+}
+
 export async function findById(id: number) {
 	const result = await db
 		.selectFrom("GroupMatch")
-		.select(({ exists, selectFrom, eb }) => [
+		.select((eb) => [
 			"GroupMatch.id",
 			"GroupMatch.createdAt",
 			"GroupMatch.confirmedAt",
@@ -115,17 +131,8 @@ export async function findById(id: number) {
 			"GroupMatch.cancelAcceptedByUserId",
 			"GroupMatch.noScreen",
 
-			exists(
-				selectFrom("Skill")
-					.select("Skill.id")
-					.where("Skill.groupMatchId", "=", id),
-			).as("isLocked"),
-			exists(
-				selectFrom("Skill")
-					.select("Skill.id")
-					.where("Skill.groupMatchId", "=", id)
-					.where("Skill.season", "=", CANCELED_MATCH_SEASON),
-			).as("isCanceled"),
+			isLockedSubquery(eb, id).as("isLocked"),
+			isCanceledSubquery(eb, id).as("isCanceled"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("GroupMatchMap")
@@ -225,8 +232,8 @@ function skillDifferences(match: {
 		// a roster is identified by its members rather than by its group, so it is matched
 		// back to one of the two through a member the two cannot share
 		const rosterUserIds = identifierToUserIds(skill.identifier);
-		const group = [match.groupAlpha, match.groupBravo].find((group) =>
-			group.members.some((member) => rosterUserIds.includes(member.id)),
+		const group = [match.groupAlpha, match.groupBravo].find((candidate) =>
+			candidate.members.some((member) => rosterUserIds.includes(member.id)),
 		);
 		if (!group) continue;
 
@@ -236,6 +243,32 @@ function skillDifferences(match: {
 	return { users, groups };
 }
 
+/** Whether the match's skills have been calculated, i.e. it can no longer be edited. */
+function isLockedSubquery(
+	eb: ExpressionBuilder<DB, "GroupMatch">,
+	matchId: number,
+) {
+	return eb.exists(
+		eb
+			.selectFrom("Skill")
+			.select("Skill.id")
+			.where("Skill.groupMatchId", "=", matchId),
+	);
+}
+
+function isCanceledSubquery(
+	eb: ExpressionBuilder<DB, "GroupMatch">,
+	matchId: number,
+) {
+	return eb.exists(
+		eb
+			.selectFrom("Skill")
+			.select("Skill.id")
+			.where("Skill.groupMatchId", "=", matchId)
+			.where("Skill.season", "=", CANCELED_MATCH_SEASON),
+	);
+}
+
 function groupWithTeamAndMembers(
 	eb: ExpressionBuilder<DB, "GroupMatch">,
 	groupIdRef: "GroupMatch.alphaGroupId" | "GroupMatch.bravoGroupId",
@@ -243,33 +276,33 @@ function groupWithTeamAndMembers(
 	return jsonObjectFrom(
 		eb
 			.selectFrom("Group")
-			.select(({ eb }) => [
+			.select((groupEb) => [
 				"Group.id",
 				"Group.chatRoomId",
 				"Group.matchmade",
 				"Group.tierName",
 				"Group.tierIsPlus",
 				jsonObjectFrom(
-					eb
+					groupEb
 						.selectFrom("AllTeam")
 						.leftJoin(
 							"UserSubmittedImage",
 							"AllTeam.avatarImgId",
 							"UserSubmittedImage.id",
 						)
-						.select((eb) => [
+						.select((teamEb) => [
 							"AllTeam.id",
 							"AllTeam.name",
 							"AllTeam.customUrl",
 							"AllTeam.mapModePreferences",
 							concatUserSubmittedImagePrefix(
-								eb.ref("UserSubmittedImage.url"),
+								teamEb.ref("UserSubmittedImage.url"),
 							).as("avatarUrl"),
 						])
-						.where("AllTeam.id", "=", eb.ref("Group.teamId")),
+						.where("AllTeam.id", "=", groupEb.ref("Group.teamId")),
 				).as("team"),
 				jsonArrayFrom(
-					eb
+					groupEb
 						.selectFrom("GroupMember")
 						.innerJoin("User", "User.id", "GroupMember.userId")
 						.leftJoin("GroupMatchContinueVote", (join) =>
@@ -313,24 +346,50 @@ function groupWithTeamAndMembers(
 	);
 }
 
-/** Page count of a user's season results, counting both SendouQ matches and ranked tournaments. */
+/** Page count of a user's season results, counting SendouQ matches, ranked tournaments or both per `source`. */
 export async function countSeasonResultPagesByUserId({
 	userId,
 	season,
+	source = "ALL",
 }: {
 	userId: number;
 	season: number;
+	source?: SeasonResultSource;
 }): Promise<number> {
 	const row = await db
 		.selectFrom("Skill")
 		.select(({ fn }) => [fn.countAll().as("count")])
-		.where("userId", "=", userId)
-		.where("season", "=", season)
-		.where((eb) => skillCountsAsSeasonSet(eb, userId))
+		.where((eb) => isSeasonResult(eb, { userId, season, source }))
 		.executeTakeFirstOrThrow();
 
 	return Math.ceil((row.count as number) / MATCHES_PER_SEASONS_PAGE);
 }
+
+/** The user's Skill rows of the season that are results of `source`. */
+const isSeasonResult = (
+	eb: ExpressionBuilder<DB, "Skill">,
+	{
+		userId,
+		season,
+		source,
+	}: { userId: number; season: number; source: SeasonResultSource },
+) =>
+	eb.and([
+		eb("Skill.userId", "=", userId),
+		eb("Skill.season", "=", season),
+		skillCountsAsSeasonSet(eb, userId),
+		isOfSeasonResultSource(eb, source),
+	]);
+
+const isOfSeasonResultSource = (
+	eb: ExpressionBuilder<DB, "Skill">,
+	source: SeasonResultSource,
+) => {
+	if (source === "SENDOUQ") return eb("Skill.groupMatchId", "is not", null);
+	if (source === "TOURNAMENT") return eb("Skill.tournamentId", "is not", null);
+
+	return eb.and([]);
+};
 
 const tournamentResultsSubQuery = (
 	eb: ExpressionBuilder<DB, "Skill">,
@@ -348,27 +407,40 @@ const tournamentResultsSubQuery = (
 			"CalendarEvent.id",
 			"CalendarEventDate.eventId",
 		)
-		.select((eb) => [
+		.select((resultEb) => [
 			"TournamentResult.setResults",
 			"TournamentResult.tournamentId",
 			"TournamentResult.tournamentTeamId",
+			"TournamentResult.placement",
+			"TournamentResult.participantCount",
 			"CalendarEventDate.startsAt as tournamentStartTime",
 			"CalendarEvent.name as tournamentName",
-			tournamentLogoWithDefault(eb).as("logoUrl"),
+			tournamentLogoWithDefault(resultEb).as("logoUrl"),
+			jsonArrayFrom(
+				resultEb
+					.selectFrom("TournamentResult as TeammateResult")
+					.innerJoin("User", "User.id", "TeammateResult.userId")
+					.select((teammateEb) => commonUserSelect(teammateEb))
+					.whereRef(
+						"TeammateResult.tournamentTeamId",
+						"=",
+						"TournamentResult.tournamentTeamId",
+					),
+			).as("teamMembers"),
 		])
 		.whereRef("TournamentResult.tournamentId", "=", "Skill.tournamentId")
 		.where("TournamentResult.userId", "=", userId);
 
 const groupMatchResultsSubQuery = (eb: ExpressionBuilder<DB, "Skill">) => {
 	const groupMembersSubQuery = (
-		eb: ExpressionBuilder<DB, "GroupMatch">,
+		matchEb: ExpressionBuilder<DB, "GroupMatch">,
 		side: "alpha" | "bravo",
 	) =>
 		jsonArrayFrom(
-			eb
+			matchEb
 				.selectFrom("GroupMember")
 				.innerJoin("User", "GroupMember.userId", "User.id")
-				.select((eb) => commonUserSelect(eb))
+				.select((memberEb) => commonUserSelect(memberEb))
 				.whereRef(
 					"GroupMember.groupId",
 					"=",
@@ -380,34 +452,30 @@ const groupMatchResultsSubQuery = (eb: ExpressionBuilder<DB, "Skill">) => {
 
 	return eb
 		.selectFrom("GroupMatch")
+		.innerJoin(
+			"Group as AlphaGroup",
+			"AlphaGroup.id",
+			"GroupMatch.alphaGroupId",
+		)
+		.innerJoin(
+			"Group as BravoGroup",
+			"BravoGroup.id",
+			"GroupMatch.bravoGroupId",
+		)
 		.select((innerEb) => [
 			"GroupMatch.id",
-			"GroupMatch.createdAt",
 			"GroupMatch.alphaGroupId",
 			"GroupMatch.bravoGroupId",
+			"AlphaGroup.tierName as alphaTierName",
+			"AlphaGroup.tierIsPlus as alphaTierIsPlus",
+			"BravoGroup.tierName as bravoTierName",
+			"BravoGroup.tierIsPlus as bravoTierIsPlus",
 			groupMembersSubQuery(innerEb, "alpha").as("groupAlphaMembers"),
 			groupMembersSubQuery(innerEb, "bravo").as("groupBravoMembers"),
 			jsonArrayFrom(
 				innerEb
 					.selectFrom("GroupMatchMap")
-					.select((innerEb2) => [
-						"GroupMatchMap.winnerGroupId",
-						jsonArrayFrom(
-							innerEb2
-								.selectFrom("ReportedWeapon")
-								.select(["ReportedWeapon.userId", "ReportedWeapon.weaponSplId"])
-								.whereRef(
-									"ReportedWeapon.groupMatchId",
-									"=",
-									"GroupMatchMap.matchId",
-								)
-								.whereRef(
-									"ReportedWeapon.mapIndex",
-									"=",
-									"GroupMatchMap.index",
-								),
-						).as("weapons"),
-					])
+					.select("GroupMatchMap.winnerGroupId")
 					.whereRef("GroupMatchMap.matchId", "=", "GroupMatch.id"),
 			).as("maps"),
 		])
@@ -468,30 +536,61 @@ const previousRatingColumns = (
 			.as("previousMatchesCount"),
 	] as const;
 
-/** A page of a user's season results, both SendouQ matches and ranked tournaments. */
+/** User's Skill rows of the season, each carrying the rating it replaced. */
+const userSeasonSkills = ({
+	userId,
+	season,
+}: {
+	userId: number;
+	season: number;
+}) =>
+	db
+		.selectFrom("Skill")
+		.select((eb) => [
+			"Skill.id",
+			"Skill.ordinal",
+			...previousRatingColumns(eb, "Skill.userId"),
+		])
+		.where("Skill.userId", "=", userId)
+		.where("Skill.season", "=", season);
+
+/** When a season set was played. Older Skill rows lack `createdAt`, so the match's or tournament's start stands in. */
+const seasonSetPlayedAt = (eb: ExpressionBuilder<DB, "Skill">) =>
+	eb.fn
+		.coalesce(
+			"Skill.createdAt",
+			eb
+				.selectFrom("GroupMatch")
+				.select("GroupMatch.createdAt")
+				.whereRef("GroupMatch.id", "=", "Skill.groupMatchId"),
+			eb
+				.selectFrom("CalendarEventDate")
+				.innerJoin(
+					"CalendarEvent",
+					"CalendarEvent.id",
+					"CalendarEventDate.eventId",
+				)
+				.select(({ fn }) => fn.min("CalendarEventDate.startsAt").as("startsAt"))
+				.whereRef("CalendarEvent.tournamentId", "=", "Skill.tournamentId"),
+		)
+		.$castTo<number>();
+
+/** A page of a user's season results, SendouQ matches, ranked tournaments or both per `source`. */
 export async function findSeasonResultsByUserId({
 	userId,
 	season,
 	page = 1,
+	source = "ALL",
 }: {
 	userId: number;
 	season: number;
 	page: number;
+	source?: SeasonResultSource;
 }) {
 	const rows = await db
-		.with("userSkill", (db) =>
-			db
-				.selectFrom("Skill")
-				.select((eb) => [
-					"Skill.id",
-					"Skill.ordinal",
-					...previousRatingColumns(eb, "Skill.userId"),
-				])
-				.where("Skill.userId", "=", userId)
-				.where("Skill.season", "=", season),
-		)
-		.with("rosterSkill", (db) =>
-			db
+		.with("userSkill", () => userSeasonSkills({ userId, season }))
+		.with("rosterSkill", (cte) =>
+			cte
 				.selectFrom("Skill")
 				.innerJoin("SkillTeamUser", "SkillTeamUser.skillId", "Skill.id")
 				.select((eb) => [
@@ -504,8 +603,8 @@ export async function findSeasonResultsByUserId({
 				.where("SkillTeamUser.userId", "=", userId)
 				.where("Skill.season", "=", season),
 		)
-		.with("tournamentRosterSkill", (db) =>
-			db
+		.with("tournamentRosterSkill", (cte) =>
+			cte
 				.selectFrom("rosterSkill")
 				.select((eb) => [
 					"rosterSkill.tournamentId",
@@ -539,7 +638,7 @@ export async function findSeasonResultsByUserId({
 		)
 		.select((eb) => [
 			"Skill.id",
-			"Skill.createdAt",
+			seasonSetPlayedAt(eb).as("createdAt"),
 			spDiffOf("userSkill").as("spDiff"),
 			"tournamentRosterSkill.teamSp",
 			"tournamentRosterSkill.teamSpDiff",
@@ -548,9 +647,7 @@ export async function findSeasonResultsByUserId({
 			),
 			jsonObjectFrom(groupMatchResultsSubQuery(eb)).as("groupMatch"),
 		])
-		.where("Skill.userId", "=", userId)
-		.where("Skill.season", "=", season)
-		.where((eb) => skillCountsAsSeasonSet(eb, userId))
+		.where((eb) => isSeasonResult(eb, { userId, season, source }))
 		.limit(MATCHES_PER_SEASONS_PAGE)
 		.offset(MATCHES_PER_SEASONS_PAGE * (page - 1))
 		.orderBy("Skill.id", "desc")
@@ -559,15 +656,6 @@ export async function findSeasonResultsByUserId({
 	return rows
 		.map((row) => {
 			if (row.groupMatch) {
-				const chooseMostPopularWeapon = (userId: number) => {
-					const weaponSplIds = row
-						.groupMatch!.maps.flatMap((map) => map.weapons)
-						.filter((w) => w.userId === userId)
-						.map((w) => w.weaponSplId);
-
-					return mostPopularArrayElement(weaponSplIds);
-				};
-
 				return {
 					type: "GROUP_MATCH" as const,
 					...R.omit(row, [
@@ -577,21 +665,25 @@ export async function findSeasonResultsByUserId({
 						"teamSp",
 						"teamSpDiff",
 					]),
-					// older skills don't have createdAt, so we use groupMatch's createdAt as fallback
-					createdAt: row.createdAt ?? row.groupMatch.createdAt,
 					groupMatch: {
-						...R.omit(row.groupMatch, ["createdAt", "maps"]),
+						...R.omit(row.groupMatch, [
+							"maps",
+							"alphaTierName",
+							"alphaTierIsPlus",
+							"bravoTierName",
+							"bravoTierIsPlus",
+						]),
+						alphaTier: SendouQMatch.groupTier({
+							tierName: row.groupMatch.alphaTierName,
+							tierIsPlus: row.groupMatch.alphaTierIsPlus,
+						}),
+						bravoTier: SendouQMatch.groupTier({
+							tierName: row.groupMatch.bravoTierName,
+							tierIsPlus: row.groupMatch.bravoTierIsPlus,
+						}),
 						// null while the rating is still being calculated and so has never been
 						// shown, which is the case expression spDiffOf builds
 						spDiff: row.spDiff,
-						groupAlphaMembers: row.groupMatch.groupAlphaMembers.map((m) => ({
-							...m,
-							weaponSplId: chooseMostPopularWeapon(m.id),
-						})),
-						groupBravoMembers: row.groupMatch.groupBravoMembers.map((m) => ({
-							...m,
-							weaponSplId: chooseMostPopularWeapon(m.id),
-						})),
 						score: row.groupMatch.maps.reduce(
 							(acc, cur) => [
 								acc[0] +
@@ -615,8 +707,6 @@ export async function findSeasonResultsByUserId({
 						"teamSp",
 						"teamSpDiff",
 					]),
-					// older skills don't have createdAt, so we use tournament's start time as a fallback
-					createdAt: row.createdAt ?? row.tournamentResult.tournamentStartTime,
 					tournamentResult: {
 						...row.tournamentResult,
 						spDiff: row.spDiff,
@@ -631,6 +721,108 @@ export async function findSeasonResultsByUserId({
 		})
 		.filter((result) => result !== null);
 }
+
+/**
+ * Summary of each of the given days (`yyyy-MM-dd`, UTC, ascending) a user played season sets on, SendouQ matches,
+ * ranked tournaments or both per `source`. The SP change is `null` when every change of the day was made while the
+ * rating was still being calculated and so never shown.
+ */
+export async function findSeasonDaySummariesByUserId({
+	userId,
+	season,
+	source = "ALL",
+	dates,
+}: {
+	userId: number;
+	season: number;
+	source?: SeasonResultSource;
+	dates: string[];
+}) {
+	const playedOn = (eb: ExpressionBuilder<DB, "Skill">) =>
+		sql<string>`date(${seasonSetPlayedAt(eb)}, 'unixepoch')`;
+
+	return db
+		.with("userSkill", () => userSeasonSkills({ userId, season }))
+		.with("daySet", (cte) =>
+			cte
+				.selectFrom("Skill")
+				.innerJoin("userSkill", "userSkill.id", "Skill.id")
+				.select((eb) => [
+					playedOn(eb).as("date"),
+					"Skill.groupMatchId",
+					"Skill.tournamentId",
+					spDiffOf("userSkill").as("spDiff"),
+					groupMatchMapBalance(eb, userId).as("mapBalance"),
+				])
+				.where((eb) => isSeasonResult(eb, { userId, season, source }))
+				.where((eb) => eb(playedOn(eb), "in", dates)),
+		)
+		.selectFrom("daySet")
+		.select(({ fn, eb }) => [
+			"daySet.date",
+			fn.count<number>("daySet.groupMatchId").as("setsCount"),
+			fn
+				.sum<number>(
+					eb.case().when("daySet.mapBalance", ">", 0).then(1).else(0).end(),
+				)
+				.as("setWins"),
+			fn
+				.sum<number>(
+					eb.case().when("daySet.mapBalance", "<", 0).then(1).else(0).end(),
+				)
+				.as("setLosses"),
+			fn.count<number>("daySet.tournamentId").as("tournamentsCount"),
+			fn.sum<number | null>("daySet.spDiff").as("spDiff"),
+		])
+		.groupBy("daySet.date")
+		.orderBy("daySet.date", "asc")
+		.execute();
+}
+
+/** Maps the user's group won minus the ones it lost of a SendouQ set, `null` for a tournament. */
+const groupMatchMapBalance = (
+	eb: ExpressionBuilder<DB, "Skill">,
+	userId: number,
+) =>
+	eb
+		.selectFrom("GroupMatchMap")
+		.innerJoin("GroupMatch", "GroupMatch.id", "GroupMatchMap.matchId")
+		.innerJoin("GroupMember", (join) =>
+			join
+				.on("GroupMember.userId", "=", userId)
+				.on((onEb) =>
+					onEb.or([
+						onEb(
+							"GroupMember.groupId",
+							"=",
+							onEb.ref("GroupMatch.alphaGroupId"),
+						),
+						onEb(
+							"GroupMember.groupId",
+							"=",
+							onEb.ref("GroupMatch.bravoGroupId"),
+						),
+					]),
+				),
+		)
+		.select(({ fn, eb: mapEb }) =>
+			fn
+				.sum<number>(
+					mapEb
+						.case()
+						.when(
+							"GroupMatchMap.winnerGroupId",
+							"=",
+							mapEb.ref("GroupMember.groupId"),
+						)
+						.then(1)
+						.else(-1)
+						.end(),
+				)
+				.as("mapBalance"),
+		)
+		.whereRef("GroupMatchMap.matchId", "=", "Skill.groupMatchId")
+		.where("GroupMatchMap.winnerGroupId", "is not", null);
 
 export async function findSeasonCanceledMatchesByUserId({
 	userId,
@@ -694,6 +886,7 @@ export async function findSeasonCanceledMatchesByUserId({
 			).as("cancelReports"),
 		])
 		.where("GroupMember.userId", "=", userId)
+		.where(groupMemberOfSeasonSql(season))
 		.where("GroupMatch.createdAt", ">=", dateToDatabaseTimestamp(starts))
 		.where("GroupMatch.createdAt", "<=", dateToDatabaseTimestamp(ends))
 		.orderBy("GroupMatch.createdAt", "desc")
@@ -1205,6 +1398,15 @@ export async function acceptCancelMatch({
 			trx,
 		);
 
+		await recordAgreedNominationNoVote(
+			{
+				match,
+				requesterGroupId,
+				accepterNominatedUserIds: nominatedUserIds,
+			},
+			trx,
+		);
+
 		return { status: "ACCEPTED" };
 	});
 }
@@ -1273,12 +1475,14 @@ export async function reportMapWinner({
 	winnerId,
 	reportedByUserId,
 	reportedCount,
+	confirmingReportedAt,
 	isStaffReport,
 }: {
 	matchId: number;
 	winnerId: number;
 	reportedByUserId: number;
 	reportedCount: number;
+	confirmingReportedAt?: number;
 	isStaffReport?: boolean;
 }): Promise<ReportMapWinnerResult> {
 	const match = await findById(matchId);
@@ -1299,7 +1503,6 @@ export async function reportMapWinner({
 		isDecisive: scoreAlreadyDecisive,
 	} = SendouQMatch.score(match);
 
-	// Confirmation flow: score is already decisive (first team reported the set-ending map)
 	if (scoreAlreadyDecisive) {
 		return handleMatchConfirmation({
 			match,
@@ -1307,6 +1510,7 @@ export async function reportMapWinner({
 			reportedByUserId,
 			existingAlphaWins,
 			mapsToWin,
+			confirmingReportedAt,
 			isStaffReport,
 		});
 	}
@@ -1380,6 +1584,7 @@ async function handleMatchConfirmation({
 	reportedByUserId,
 	existingAlphaWins,
 	mapsToWin,
+	confirmingReportedAt,
 	isStaffReport,
 }: {
 	match: NonNullable<Awaited<ReturnType<typeof findById>>>;
@@ -1387,6 +1592,7 @@ async function handleMatchConfirmation({
 	reportedByUserId: number;
 	existingAlphaWins: number;
 	mapsToWin: number;
+	confirmingReportedAt?: number;
 	isStaffReport?: boolean;
 }): Promise<ReportMapWinnerResult> {
 	const members = buildMembers(match);
@@ -1396,6 +1602,13 @@ async function handleMatchConfirmation({
 		.toReversed()
 		.find((m) => m.winnerGroupId !== null);
 	invariant(decidingMap, "No deciding map found");
+
+	if (
+		typeof confirmingReportedAt === "number" &&
+		confirmingReportedAt !== decidingMap.reportedAt
+	) {
+		return { status: "STALE" };
+	}
 
 	const originalReporterGroupId = decidingMap.reportedByUserId
 		? members.find((m) => m.id === decidingMap.reportedByUserId)?.groupId
@@ -1589,13 +1802,9 @@ async function finalizeMatch({
 function findLockState(matchId: number, trx: Transaction<DB>) {
 	return trx
 		.selectFrom("GroupMatch")
-		.select(({ exists, selectFrom }) => [
+		.select((eb) => [
 			"GroupMatch.confirmedAt",
-			exists(
-				selectFrom("Skill")
-					.select("Skill.id")
-					.where("Skill.groupMatchId", "=", matchId),
-			).as("isLocked"),
+			isLockedSubquery(eb, matchId).as("isLocked"),
 		])
 		.where("GroupMatch.id", "=", matchId)
 		.executeTakeFirstOrThrow();
@@ -1605,13 +1814,28 @@ function findLockState(matchId: number, trx: Transaction<DB>) {
 export function findUnfinishedMatchesCreatedBefore(cutoff: Date) {
 	return db
 		.selectFrom("GroupMatch")
-		.select(["GroupMatch.id", "GroupMatch.chatRoomId"])
+		.select(({ eb }) => [
+			"GroupMatch.id",
+			"GroupMatch.chatRoomId",
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMember")
+					.select("GroupMember.userId")
+					.where((wb) =>
+						wb.or([
+							wb("GroupMember.groupId", "=", wb.ref("GroupMatch.alphaGroupId")),
+							wb("GroupMember.groupId", "=", wb.ref("GroupMatch.bravoGroupId")),
+						]),
+					),
+			).as("members"),
+		])
 		.where("GroupMatch.confirmedAt", "is", null)
 		.where("GroupMatch.createdAt", "<", dateToDatabaseTimestamp(cutoff))
-		.where(({ not, exists, selectFrom }) =>
-			not(
-				exists(
-					selectFrom("Skill")
+		.where((eb) =>
+			eb.not(
+				eb.exists(
+					eb
+						.selectFrom("Skill")
 						.select("Skill.id")
 						.whereRef("Skill.groupMatchId", "=", "GroupMatch.id"),
 				),
@@ -1808,16 +2032,65 @@ export async function undoMapReport({
 function findCancelState(matchId: number, trx: Transaction<DB>) {
 	return trx
 		.selectFrom("GroupMatch")
-		.select(({ exists, selectFrom }) => [
+		.select((eb) => [
 			"GroupMatch.cancelRequestedByUserId",
-			exists(
-				selectFrom("Skill")
-					.select("Skill.id")
-					.where("Skill.groupMatchId", "=", matchId),
-			).as("isLocked"),
+			isLockedSubquery(eb, matchId).as("isLocked"),
 		])
 		.where("GroupMatch.id", "=", matchId)
 		.executeTakeFirstOrThrow();
+}
+
+/**
+ * Votes the one player both teams blamed for the cancellation out of their group's requeue
+ * vote, so the rest can carry on without waiting for them. The teams naming nobody in common,
+ * or more than one player between them, leaves the requeue to a plain vote. A group that was
+ * put together by invites is left alone: it never votes and requeues with whoever it likes.
+ */
+async function recordAgreedNominationNoVote(
+	{
+		match,
+		requesterGroupId,
+		accepterNominatedUserIds,
+	}: {
+		match: NonNullable<Awaited<ReturnType<typeof findById>>>;
+		requesterGroupId: number;
+		accepterNominatedUserIds: number[];
+	},
+	trx: Transaction<DB>,
+) {
+	const requesterNominations = await trx
+		.selectFrom("GroupMatchCancelReportPlayer")
+		.innerJoin(
+			"GroupMatchCancelReport",
+			"GroupMatchCancelReport.id",
+			"GroupMatchCancelReportPlayer.cancelReportId",
+		)
+		.select("GroupMatchCancelReportPlayer.userId")
+		.where("GroupMatchCancelReport.groupMatchId", "=", match.id)
+		.where("GroupMatchCancelReport.groupId", "=", requesterGroupId)
+		.execute();
+
+	const agreedUserId = RejoinVote.agreedNominatedUserId([
+		requesterNominations.map((nomination) => nomination.userId),
+		accepterNominatedUserIds,
+	]);
+	const blamedGroup = [match.groupAlpha, match.groupBravo].find((group) =>
+		group.members.some((member) => member.id === agreedUserId),
+	);
+
+	if (agreedUserId === null || !blamedGroup?.matchmade) return;
+
+	await trx
+		.insertInto("GroupMatchContinueVote")
+		.values({
+			groupId: blamedGroup.id,
+			userId: agreedUserId,
+			isContinuing: 0,
+		})
+		.onConflict((oc) =>
+			oc.columns(["groupId", "userId"]).doUpdateSet({ isContinuing: 0 }),
+		)
+		.execute();
 }
 
 async function insertCancelReport(

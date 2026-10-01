@@ -7,7 +7,6 @@ import {
 } from "~/features/events/events-hooks";
 import { useUser } from "../auth/core/user";
 import type { ClientChatMessage } from "./chat-types";
-import { playMessageSound } from "./chat-utils";
 import {
 	revalidateWithScope,
 	scheduleBroadcastRevalidation,
@@ -60,8 +59,10 @@ export function useChatAutoScroll(
 				messagesContainer.scrollTop + messagesContainer.clientHeight >=
 				messagesContainer.scrollHeight - THRESHOLD;
 
-			// react-aria's Virtualizer resets scroll to the top whenever the collection
-			// changes; undo so it neither unpins auto scroll nor yanks the user out of history
+			// a virtualizer relayout can reset the scroll position to the top
+			// whenever the message collection changes; undo those resets so
+			// they neither unpin the auto scroll nor yank the user out of the
+			// history they were reading
 			if (!isUserScroll) {
 				if (pinnedToBottomRef.current && !isScrolledToBottom) {
 					messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -171,14 +172,12 @@ export function useLiveRevalidation(enabled = true) {
 	});
 }
 
-/** Handles SSE `revalidate` events: plays the carried sound and schedules a loader revalidation, skipping the actor's own broadcasts (their submission already reran the loaders). */
+/** Handles SSE `revalidate` events: schedules a loader revalidation, skipping the actor's own broadcasts (their submission already reran the loaders). */
 export function useServerRevalidationEvents(userId: number) {
 	const { revalidate } = useRevalidator();
 
 	useServerEventListener((event) => {
 		if (event.kind !== "revalidate") return;
-
-		playMessageSound(event.type);
 
 		if (event.authorUserId === userId) return;
 

@@ -4,6 +4,10 @@ import type { DBBoolean } from "~/db/tables";
 import type { CalendarFilters } from "~/features/calendar/calendar-types";
 import type { ScrimFilters } from "~/features/scrims/scrims-types";
 import type { CustomThemeVar } from "~/features/theme/theme-constants";
+import type {
+	TeamPickPool,
+	TournamentRoundSection,
+} from "~/features/tournament/tournament-constants";
 import type * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import type * as Progression from "~/features/tournament-bracket/core/Progression";
 import type {
@@ -51,13 +55,13 @@ export interface UserPreferences {
 	defaultScrimsFilters?: ScrimFilters;
 	/** "auto" (default) = browser default */
 	clockFormat?: "24h" | "12h" | "auto";
-	/** Widget based user page (supporter early preview) */
-	newProfileEnabled?: boolean;
 	/** Hides recent tournament results and scores until revealed */
 	spoilerFreeMode?: boolean;
 	weaponReportDefaultOpen?: boolean;
 	/** Start of the week the schedule sidebar nudge was last dismissed for, so it stays gone until the horizon rolls over. */
 	scheduleNudgeDismissedWeekStartsAt?: number;
+	/** Who may see the user's schedule. Missing = everyone. Once set it is an allow-list, so a team joined later stays hidden until added. */
+	scheduleVisibility?: { friends: boolean; teamIds: Array<number> };
 }
 
 export type Pronouns = {
@@ -100,6 +104,14 @@ export interface TournamentSettings {
 	requireSendouQParticipation?: boolean;
 	/** Is this tournament a league? Leagues are played over many weeks, each starting bracket being a division. */
 	isLeague?: boolean;
+	/** Team picked map configuration, always set when `Tournament.mapPickingStyle` is "AUTO". */
+	teamPick?: TeamPickSettings;
+}
+
+export interface TeamPickSettings {
+	/** Modes teams pick maps for and how many maps for each, unique modes in `modesShort` order, count ≥ 1. */
+	modes: Array<{ mode: ModeShort; count: number }>;
+	pool: TeamPickPool;
 }
 
 export interface CastedMatchesInfo {
@@ -124,12 +136,22 @@ export interface SeedingSnapshot {
 export interface PreparedMaps {
 	authorId: number;
 	createdAt: number;
-	maps: Array<TournamentRoundMaps & { roundId: number; groupId: number }>;
+	/** Keyed by the local round ids of the bracket preview the maps were picked against; groups share one map list per round number. */
+	maps: Array<
+		TournamentRoundMaps & {
+			roundId: number;
+			section: TournamentRoundSection | null;
+			/** Leagues: when the round's sets are playable from, so sibling divisions start with the same times. */
+			isPlayableAt?: number | null;
+		}
+	>;
 	eliminationTeamCount?: number;
 }
 
 export interface TournamentRoundMaps {
 	list?: Array<{ mode: ModeShort; stageId: StageId }> | null;
+	/** Fixed mode of each slot of a team picked round with a mode pattern, the maps still come from the teams' picks. `count + 2` long for "BAN_2". */
+	modes?: ModeShort[] | null;
 	count: number;
 	type: "BEST_OF" | "PLAY_ALL";
 	pickBan?: PickBan.Type | null;

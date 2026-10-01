@@ -349,8 +349,8 @@ test.describe("Team page", () => {
 		const user = new UserPage(page);
 		await user.goto(ADMIN_DISCORD_ID);
 
-		await expect(user.locators.secondaryTeamsTrigger).toBeVisible();
-		await expect(user.locators.mainTeamLink).not.toContainText(TEAM_NAME);
+		await expect(user.teamLinks()).toHaveCount(2);
+		await expect(user.teamLinks().first()).not.toContainText(TEAM_NAME);
 
 		const mainTeam = await user.openMainTeam();
 
@@ -360,8 +360,8 @@ test.describe("Team page", () => {
 
 		await user.goto(ADMIN_DISCORD_ID);
 
-		await isNotVisible(user.locators.secondaryTeamsTrigger);
-		await expect(user.locators.mainTeamLink).toContainText(TEAM_NAME);
+		await expect(user.teamLinks()).toHaveCount(1);
+		await expect(user.teamLinks().first()).toContainText(TEAM_NAME);
 	});
 
 	test("makes another user editor, who can edit the page & becomes owner after the original leaves", async ({
@@ -419,11 +419,13 @@ async function createFullTeam(factories: Factories) {
 }
 
 test.describe("Team schedule", () => {
-	test("member sees the grid states and playable windows", async ({
+	test("member sees the heatmap, the grid states and playable windows", async ({
 		page,
 		factories,
 	}) => {
-		const noScheduleMember = await factories.UserFactory.create();
+		const noScheduleMember = await factories.UserFactory.create({
+			discordName: "Schedules-Later",
+		});
 		const { id: teamId, customUrl } = await factories.TeamFactory.create({
 			name: TEAM_NAME,
 			memberUserIds: [ADMIN_ID, NZAP_TEST_ID, noScheduleMember.id],
@@ -450,7 +452,8 @@ test.describe("Team schedule", () => {
 			slots: [daySlot(WEDNESDAY, "19:00", "23:00")],
 		});
 		// a commitment late in the shared Wednesday evening: renders as a busy
-		// block and trims effective availability without removing the window
+		// block beside the reported time in the grid and trims the heatmap's
+		// effective availability without removing the window
 		await factories.TeamEventFactory.create({
 			teamId,
 			authorId: ADMIN_ID,
@@ -465,14 +468,50 @@ test.describe("Team schedule", () => {
 		await team.goto(customUrl);
 
 		const schedule = await team.openSchedule();
+
+		// heatmap is the default view: two share Wed 19-22, one is also free Wed 18-19 and Thu 1-2
+		await expect(schedule.locators.heatmap).toBeVisible();
+		await expect(schedule.heatmapCells(2)).toHaveCount(3);
+		await expect(schedule.heatmapCells(1)).toHaveCount(2);
+		// the count shade must actually paint: an equal-specificity base background once blanked the whole grid
+		expect(await schedule.heatmapCellBackground(2)).not.toBe(
+			await schedule.heatmapCellBackground(0),
+		);
+		await expect(schedule.locators.heatmapUnreported).toContainText(
+			"Schedules-Later",
+		);
+		await expect(schedule.dayDot(WEDNESDAY)).toBeVisible();
+
+		// hovering a block names who is free then and who has no schedule
+		await schedule.heatmapCells(2).first().hover();
+		await expect(schedule.locators.heatmapTooltip).toContainText("2/3");
+		await expect(schedule.locators.heatmapTooltip).toContainText("N-ZAP");
+		await expect(schedule.locators.heatmapTooltip).toContainText(
+			"Schedules-Later",
+		);
+
+		// dropping the member without a schedule from the count clears the nudge about them
+		await schedule.memberChip(noScheduleMember.id).click();
+		await isNotVisible(schedule.locators.heatmapUnreported);
+		await schedule.memberChip(noScheduleMember.id).click();
+
+		await schedule.locators.gridViewTab.click();
 		await expect(schedule.locators.grid).toBeVisible();
 
 		await expect(schedule.cellRange(ADMIN_ID, WEDNESDAY)).toBeVisible();
 		await expect(schedule.cellRange(ADMIN_ID, THURSDAY)).toBeVisible();
 		await expect(schedule.cell(ADMIN_ID, 0)).toHaveText("—");
 		await expect(schedule.cell(noScheduleMember.id, 0)).toHaveText("?");
-		await expect(schedule.cellBusy(NZAP_TEST_ID, WEDNESDAY)).toHaveText(
+		// the grid shows the reported 19-23 in full, the commitment named beside
+		// it with its own time rather than cut out of it
+		await expect(schedule.cellRange(NZAP_TEST_ID, WEDNESDAY)).toContainText(
+			"11:00",
+		);
+		await expect(schedule.cellBusy(NZAP_TEST_ID, WEDNESDAY)).toContainText(
 			"VoD review",
+		);
+		await expect(schedule.cellBusy(NZAP_TEST_ID, WEDNESDAY)).toContainText(
+			"10:00",
 		);
 		await expect(schedule.locators.notes).toContainText("Leaving early");
 

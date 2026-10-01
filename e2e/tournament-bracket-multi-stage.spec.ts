@@ -13,6 +13,7 @@ import {
 	teamSeeds,
 } from "./helpers/tournament";
 import { CalendarNewEventPage } from "./pages/calendar/calendar-new-event-page";
+import { TopRightButtons } from "./pages/layout/top-right-buttons";
 import { TournamentAdminPage } from "./pages/tournament/tournament-admin-page";
 import { TournamentAdminRegistrationPage } from "./pages/tournament/tournament-admin-registration-page";
 import { TournamentBracketsPage } from "./pages/tournament/tournament-brackets-page";
@@ -155,6 +156,8 @@ test.describe("Tournament bracket multi stage", () => {
 		await userPage.openSeasons();
 		await expect(userPage.locators.seasonsTournamentResult).toBeVisible();
 
+		await userPage.backToProfile();
+
 		const userResults = await userPage.openResults();
 		await expect(
 			userResults.locators.tournamentNameCells.first(),
@@ -207,7 +210,10 @@ test.describe("Tournament bracket multi stage", () => {
 			await match.backToBracket();
 		}
 
-		await expect(brackets.locators.waitingOnGroupText).toBeVisible();
+		// Sendou's team has finished its group's matches, the header says so while the last one plays out
+		await expect(
+			new TopRightButtons(page).globalStatus("Waiting for match"),
+		).toBeVisible();
 
 		const lastGroupsMatch = await brackets.openMatch(5);
 		await lastGroupsMatch.openTab("action");
@@ -319,7 +325,7 @@ test.describe("Tournament bracket multi stage", () => {
 		// start time in the past so the brackets can be started right away
 		await newTournament.setFirstDate(subMinutes(new Date(), 30));
 
-		await newTournament.form.select("toToolsMode", "TO");
+		await newTournament.form.checkItems("mapPickingStyle", ["TO"]);
 		await newTournament.selectMapPoolTemplate("preset:SZ");
 
 		// groups of 4: top 2 advance to the finals directly, 3rd placers get

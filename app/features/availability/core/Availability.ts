@@ -14,7 +14,7 @@ import {
 	databaseTimestampToJavascriptTimestamp,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { AVAILABILITY } from "../availability-constants";
 import type {
 	BusyBlock,
@@ -65,9 +65,9 @@ export function isoWeekNumber(timestamp: number, timezone: string) {
 }
 
 /** Whether the two week starts name the same week: closer than timezones can set them apart (hours, never days). */
-export function isSameWeek(weekStartsAt: number, rangeStartsAt: number) {
+export function isSameWeek(weekStart: number, rangeStartsAt: number) {
 	return (
-		Math.abs(weekStartsAt - rangeStartsAt) <
+		Math.abs(weekStart - rangeStartsAt) <
 		AVAILABILITY.WEEK_MATCH_MAX_DISTANCE_SECONDS
 	);
 }
@@ -358,8 +358,11 @@ export function snapMinutes(
 	return Math.round(minutes / step) * step;
 }
 
-/** Splits the members' availability at every start/end into spans, each with the members free throughout. */
-function availabilitySegments(members: Array<MemberAvailability>) {
+/**
+ * Splits the members' availability at every start/end into spans, each with the members free
+ * throughout. Spans nobody is free in come out with an empty `userIds`.
+ */
+export function availabilitySegments(members: Array<MemberAvailability>) {
 	const normalized = members.map((member) => ({
 		userId: member.userId,
 		ranges: normalize(member.ranges),

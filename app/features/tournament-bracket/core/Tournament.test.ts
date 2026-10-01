@@ -1,9 +1,11 @@
+import { addMinutes } from "date-fns";
 import { describe, expect, test } from "vitest";
 import type {
 	BracketData,
 	GeneratedRound,
 	MatchData,
 } from "~/features/tournament-bracket/core/engine/types";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { unwrap } from "~/utils/result";
 import * as Engine from "./engine";
 import type * as Progression from "./Progression";
@@ -447,6 +449,39 @@ describe("Adjusting team starting bracket", () => {
 	});
 });
 
+describe("eligibleTeamIdsOfBracket", () => {
+	const notCheckedIn = (teamId: number) =>
+		tournamentCtxTeam(teamId, { checkIns: [] });
+
+	test("includes teams not checked in for the starting bracket", () => {
+		const tournament = testTournament({
+			ctx: {
+				teams: [tournamentCtxTeam(1), tournamentCtxTeam(2), notCheckedIn(3)],
+			},
+		});
+
+		expect(tournament.eligibleTeamIdsOfBracket(0)).toEqual([1, 2, 3]);
+	});
+
+	test("includes only teams starting in the bracket when there are many starting brackets", () => {
+		const tournament = testTournament({
+			ctx: {
+				teams: [
+					tournamentCtxTeam(1, { startingBracketIdx: 0 }),
+					tournamentCtxTeam(2, { startingBracketIdx: 1 }),
+					notCheckedIn(3),
+				],
+				settings: {
+					bracketProgression: progressions.manyStartBrackets,
+				},
+			},
+		});
+
+		expect(tournament.eligibleTeamIdsOfBracket(0)).toEqual([1, 3]);
+		expect(tournament.eligibleTeamIdsOfBracket(1)).toEqual([2]);
+	});
+});
+
 describe("League divisions", () => {
 	const leagueTournament = (isLeague = true) =>
 		testTournament({
@@ -602,6 +637,136 @@ describe("teamMemberOfProgressStatus in swiss", () => {
 		expect(tournament.teamMemberOfProgressStatus({ id: 104 })?.type).toBe(
 			"THANKS_FOR_PLAYING",
 		);
+	});
+});
+
+describe("teamMemberOfProgressStatus with a follow-up bracket check-in", () => {
+	const teamsWithMembers = [1, 2, 3, 4].map((teamId) =>
+		tournamentCtxTeam(teamId, { memberUserIds: [100 + teamId] }),
+	);
+
+	const progressionStartingIn = (
+		minutes: number,
+	): Progression.ParsedBracket[] => [
+		{
+			...progressions.swissEarlyAdvance[0],
+		},
+		{
+			...progressions.swissEarlyAdvance[1],
+			requiresCheckIn: true,
+			startTime: dateToDatabaseTimestamp(addMinutes(new Date(), minutes)),
+		},
+	];
+
+	const progressStatusWithFollowUpIn = (minutes: number) => {
+		const bracketProgression = progressionStartingIn(minutes);
+
+		return testTournament({
+			data: playOutEarlyAdvanceSwiss(bracketProgression),
+			ctx: { settings: { bracketProgression }, teams: teamsWithMembers },
+		}).teamMemberOfProgressStatus({ id: 101 });
+	};
+
+	test("asks for the check-in once the bracket's check-in has opened", () => {
+		expect(progressStatusWithFollowUpIn(30)).toEqual({
+			type: "CHECKIN",
+			bracketIdx: 1,
+		});
+	});
+
+	test("waits for the bracket while its check-in has yet to open", () => {
+		expect(progressStatusWithFollowUpIn(3 * 60)).toEqual({
+			type: "WAITING_FOR_BRACKET",
+			bracketIdx: 1,
+		});
+	});
+});
+
+describe("follow-up bracket check-in shared between brackets", () => {
+	const DAY_2_START = 1_790_528_400;
+
+	const progressionWithBetaStartingAt = (
+		betaStartTime: number,
+	): Progression.ParsedBracket[] => [
+		{
+			name: "Groups",
+			type: "round_robin",
+			requiresCheckIn: false,
+			settings: {},
+		},
+		{
+			name: "Alpha",
+			type: "single_elimination",
+			requiresCheckIn: true,
+			startTime: DAY_2_START,
+			settings: {},
+			sources: [{ bracketIdx: 0, placements: [1, 2] }],
+		},
+		{
+			name: "Beta",
+			type: "single_elimination",
+			requiresCheckIn: true,
+			startTime: betaStartTime,
+			settings: {},
+			sources: [{ bracketIdx: 0, placements: [3, 4] }],
+		},
+	];
+
+	const alphaAfterMovingBetaTeamThere = (betaStartTime: number) => {
+		const data = Engine.create({
+			type: "round_robin",
+			seeding: [1, 2, 3, 4],
+			settings: { groupCount: 1 },
+		});
+		finishPendingMatches(data);
+		const bracketProgression = progressionWithBetaStartingAt(betaStartTime);
+
+		const betaTeamId = testTournament({
+			data,
+			ctx: { settings: { bracketProgression } },
+		}).bracketByIdx(2)!.teamsPendingCheckIn![0];
+
+		const alpha = testTournament({
+			data,
+			ctx: {
+				settings: { bracketProgression },
+				teams: [1, 2, 3, 4].map((teamId) =>
+					tournamentCtxTeam(teamId, {
+						checkIns: [
+							{ checkedInAt: 1, bracketIdx: null, isCheckOut: 0 },
+							...(teamId === betaTeamId
+								? [{ checkedInAt: 2, bracketIdx: 2, isCheckOut: 0 as const }]
+								: []),
+						],
+					}),
+				),
+				bracketProgressionOverrides: [
+					{
+						sourceBracketIdx: 0,
+						destinationBracketIdx: 1,
+						tournamentTeamId: betaTeamId,
+					},
+				],
+			},
+		}).bracketByIdx(1)!;
+
+		return { alpha, betaTeamId };
+	};
+
+	test("keeps the check-in of a team moved to a bracket starting at the same time", () => {
+		const { alpha, betaTeamId } = alphaAfterMovingBetaTeamThere(DAY_2_START);
+
+		expect(alpha.seeding).toContain(betaTeamId);
+		expect(alpha.teamsPendingCheckIn).not.toContain(betaTeamId);
+	});
+
+	test("requires a new check-in from a team moved to a bracket starting at a different time", () => {
+		const { alpha, betaTeamId } = alphaAfterMovingBetaTeamThere(
+			DAY_2_START + 3600,
+		);
+
+		expect(alpha.seeding).not.toContain(betaTeamId);
+		expect(alpha.teamsPendingCheckIn).toContain(betaTeamId);
 	});
 });
 

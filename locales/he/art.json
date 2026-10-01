@@ -6,7 +6,6 @@
 	"radios.all": "הכל",
 	"radios.madeBy": "ציור מעשה ידי",
 	"radios.madeFor": "ציור בשביל",
-	"filterByTag": "לסנן לפי תג",
 	"filteringByTag": "מראה תוצאות לפי סינון של #{{tag}}",
 	"commissionsOpen": "בקשות פתוחות",
 	"commissionsClosed": "בקשות סגורות",
@@ -24,5 +23,7 @@
 	"forms.tags.maxReached": "הגעת לכמות תגים מקסימלית",
 	"delete.title": "האם אתה בטוח שאתה רוצה למחוק את הציור?",
 	"unlink.title": "האם אתה בטוח שאתה רוצה להסיר את הציור הזה מהפרופיל שלך (רק {{username}} יוכל להוסיף אותו חזרה)?",
-	"noArtForTag": ""
+	"noArtForTag": "",
+	"imageFailed": "",
+	"openImage": ""
 }

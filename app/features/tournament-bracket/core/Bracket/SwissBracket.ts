@@ -3,11 +3,11 @@ import type { Tables } from "~/db/tables";
 import * as Standings from "~/features/tournament/core/Standings";
 import * as Engine from "~/features/tournament-bracket/core/engine";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import { cutToNDecimalPlaces } from "../../../../utils/number";
 import { calculateTeamStatus } from "../engine/swiss/team-status";
-import type { BracketMapCounts } from "../toMapList";
+import { type BracketMapCounts, roundSetKey } from "../toMapList";
 import { Bracket, type Standing, type TeamTrackRecord } from "./Bracket";
 
 export class SwissBracket extends Bracket {
@@ -161,7 +161,7 @@ export class SwissBracket extends Bracket {
 				opponentSets?: TeamTrackRecord;
 				opponentMaps?: TeamTrackRecord;
 			}) => {
-				const team = teams.find((team) => team.id === teamId);
+				const team = teams.find((candidate) => candidate.id === teamId);
 				if (team) {
 					team.setWins += setWins;
 					team.setLosses += setLosses;
@@ -259,7 +259,7 @@ export class SwissBracket extends Bracket {
 				}
 
 				const round = this.data.round.find(
-					(round) => round.id === match.roundId,
+					(candidate) => candidate.id === match.roundId,
 				);
 				const mapWins =
 					round?.maps?.type === "PLAY_ALL"
@@ -274,7 +274,7 @@ export class SwissBracket extends Bracket {
 					teamId: winner.id,
 					setWins: 1,
 					setLosses: 0,
-					mapWins: mapWins,
+					mapWins,
 					mapLosses: 0,
 				});
 			}
@@ -319,13 +319,23 @@ export class SwissBracket extends Bracket {
 				.filter((t) => t.droppedOut)
 				.map((t) => t.id);
 
-			// wins against tied, results against dropped out teams don't count
+			// teams that finished their run keep counting so dropping them only moves the teams below up
+			const droppedOutMidRunTeamIds = new Set(
+				teams
+					.filter(
+						(team) =>
+							droppedOutTeams.includes(team.id) && !this.runIsComplete(team),
+					)
+					.map((team) => team.id),
+			);
+
+			// wins against tied, results against teams that dropped out mid-run don't count
 			for (const team of teams) {
-				if (droppedOutTeams.includes(team.id)) continue;
+				if (droppedOutMidRunTeamIds.has(team.id)) continue;
 
 				for (const team2 of teams) {
 					if (team.id === team2.id) continue;
-					if (droppedOutTeams.includes(team2.id)) continue;
+					if (droppedOutMidRunTeamIds.has(team2.id)) continue;
 					if (
 						team.setWins !== team2.setWins ||
 						// check also set losses to account for dropped teams
@@ -476,6 +486,30 @@ export class SwissBracket extends Bracket {
 		);
 	}
 
+	/** Has the team played every round or, with an advance threshold, already advanced or been eliminated? */
+	private runIsComplete({
+		setWins,
+		setLosses,
+	}: {
+		setWins: number;
+		setLosses: number;
+	}) {
+		const roundCount = this.swissRoundCount;
+		if (setWins + setLosses >= roundCount) return true;
+
+		const advanceThreshold = this.settings?.advanceThreshold;
+		if (!advanceThreshold) return false;
+
+		return (
+			calculateTeamStatus({
+				wins: setWins,
+				losses: setLosses,
+				advanceThreshold,
+				roundCount,
+			}) !== "active"
+		);
+	}
+
 	private trackRecordToWinPercentage(trackRecord: TeamTrackRecord) {
 		const onlyByes = trackRecord.wins === 0 && trackRecord.losses === 0;
 		if (onlyByes) {
@@ -496,13 +530,12 @@ export class SwissBracket extends Bracket {
 		const result: BracketMapCounts = new Map();
 
 		for (const round of data.round) {
-			if (!result.get(round.groupId)) {
-				result.set(round.groupId, new Map());
+			const key = roundSetKey(round);
+			if (!result.get(key)) {
+				result.set(key, new Map());
 			}
 
-			result
-				.get(round.groupId)!
-				.set(round.number, { count: 3, type: "BEST_OF" });
+			result.get(key)!.set(round.number, { count: 3, type: "BEST_OF" });
 		}
 
 		return result;

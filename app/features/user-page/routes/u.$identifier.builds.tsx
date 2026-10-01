@@ -1,7 +1,7 @@
 import { ArrowDownNarrowWide, Lock, LockOpen, Trash } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { useFetcher, useLoaderData, useMatches } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { BuildCard } from "~/components/BuildCard";
 import { EmptyState } from "~/components/EmptyState";
 import { SendouButton } from "~/components/elements/Button";
@@ -21,20 +21,19 @@ import { mainWeaponIds } from "~/modules/in-game-lists/weapon-ids";
 import { hasPermission } from "~/modules/permissions/utils";
 import { useSearchParam } from "~/modules/search-params/hooks";
 import type { SendouRouteHandle } from "~/utils/remix.server";
-import { userPage, weaponCategoryUrl } from "~/utils/urls";
+import { weaponCategoryUrl } from "~/utils/urls";
 import { action } from "../actions/u.$identifier.builds.server";
 import { SubPageHeader } from "../components/SubPageHeader";
 import {
 	loader,
 	type UserBuildsPageData,
 } from "../loaders/u.$identifier.builds.server";
-import type { UserPageLoaderData } from "../loaders/u.$identifier.server";
 import { DEFAULT_BUILD_SORT } from "../user-page-constants";
+import { useUserPageLayoutData } from "../user-page-hooks";
 import { userBuildsSearchParams } from "../user-page-search-params";
+import styles from "./u.$identifier.builds.module.css";
 
 export { action, loader };
-
-import styles from "./u.$identifier.builds.module.css";
 
 export const handle: SendouRouteHandle = {
 	i18n: ["weapons", "builds", "gear", "analyzer"],
@@ -43,9 +42,9 @@ export const handle: SendouRouteHandle = {
 type BuildFilter = "ALL" | "PUBLIC" | "PRIVATE" | MainWeaponId;
 
 export default function UserBuildsPage() {
-	const { t } = useTranslation(["builds", "user"]);
+	const { t } = useTranslation(["builds", "user", "common"]);
 	const user = useUser();
-	const layoutData = useMatches().at(-2)!.loaderData as UserPageLoaderData;
+	const layoutData = useUserPageLayoutData();
 	const data = useLoaderData<typeof loader>();
 	const [weaponFilter, setWeaponFilter] = useSearchParam(
 		userBuildsSearchParams,
@@ -84,10 +83,10 @@ export default function UserBuildsPage() {
 					fetcher={sortingFetcher}
 				/>
 			) : null}
-			<SubPageHeader user={layoutData.user} backTo={userPage(layoutData.user)}>
+			<SubPageHeader user={layoutData.user} title={t("common:pages.builds")}>
 				{isOwnPage ? (
 					<SendouButton
-						onPress={() => setChangingSorting(true)}
+						onClick={() => setChangingSorting(true)}
 						size="small"
 						variant="outlined"
 						icon={<ArrowDownNarrowWide />}
@@ -130,7 +129,7 @@ function BuildsFilters({
 	const { t } = useTranslation(["weapons", "builds"]);
 	const data = useLoaderData<typeof loader>();
 	const user = useUser();
-	const layoutData = useMatches().at(-2)!.loaderData as UserPageLoaderData;
+	const layoutData = useUserPageLayoutData();
 
 	if (data.builds.length === 0) return null;
 
@@ -145,7 +144,7 @@ function BuildsFilters({
 	return (
 		<div className="stack horizontal sm flex-wrap">
 			<SendouButton
-				onPress={() => setWeaponFilter("ALL")}
+				onClick={() => setWeaponFilter("ALL")}
 				variant={weaponFilter === "ALL" ? undefined : "outlined"}
 				size="small"
 				className={styles.buildFilterButton}
@@ -155,7 +154,7 @@ function BuildsFilters({
 			{showPublicPrivateFilters ? (
 				<>
 					<SendouButton
-						onPress={() => setWeaponFilter("PUBLIC")}
+						onClick={() => setWeaponFilter("PUBLIC")}
 						variant={weaponFilter === "PUBLIC" ? undefined : "outlined"}
 						size="small"
 						className={styles.buildFilterButton}
@@ -164,7 +163,7 @@ function BuildsFilters({
 						{t("builds:stats.public")} ({publicBuildsCount})
 					</SendouButton>
 					<SendouButton
-						onPress={() => setWeaponFilter("PRIVATE")}
+						onClick={() => setWeaponFilter("PRIVATE")}
 						variant={weaponFilter === "PRIVATE" ? undefined : "outlined"}
 						size="small"
 						className={styles.buildFilterButton}
@@ -240,7 +239,7 @@ function ChangeSortingDialog({
 							className="ml-auto"
 							variant="minimal"
 							size="small"
-							onPress={() => setBuildSorting([...DEFAULT_BUILD_SORT, null])}
+							onClick={() => setBuildSorting([...DEFAULT_BUILD_SORT, null])}
 						>
 							{t("user:builds.sorting.backToDefaults")}
 						</SendouButton>
@@ -276,7 +275,7 @@ function ChangeSortingDialog({
 											size="small"
 											icon={<Trash />}
 											variant="minimal-destructive"
-											onPress={deleteLastSorting}
+											onClick={deleteLastSorting}
 											data-testid="delete-sorting-button"
 										/>
 									) : null}
@@ -329,7 +328,7 @@ function ChangeSortingDialogSelect({
 }
 
 function WeaponFilterMenu({
-	mainWeaponIds,
+	mainWeaponIds: weaponIds,
 	counts,
 	weaponFilter,
 	setWeaponFilter,
@@ -360,7 +359,7 @@ function WeaponFilterMenu({
 				</SendouButton>
 			}
 		>
-			{mainWeaponIds.map((weaponId) => {
+			{weaponIds.map((weaponId) => {
 				const count = counts[weaponId];
 
 				if (!count) return null;

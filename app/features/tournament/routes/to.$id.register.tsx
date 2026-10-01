@@ -1,7 +1,6 @@
 import clsx from "clsx";
-import { AlertCircle, Check, UserRound, UsersRound, X } from "lucide-react";
+import { Check, UserRound, UsersRound, X } from "lucide-react";
 import * as React from "react";
-import { Text } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { useFetcher, useLoaderData } from "react-router";
 import * as R from "remeda";
@@ -119,7 +118,12 @@ export default function TournamentRegisterPage() {
 
 	return (
 		<div className={clsx("stack lg", containerClassName("normal"))}>
-			{isRegularMemberOfATeam ? (
+			{tournament.hasStarted && teamMemberOf ? (
+				<div className="stack md">
+					<Alert>{t("tournament:pre.startedNoEdit")}</Alert>
+					<RegistrationForms readOnly />
+				</div>
+			) : isRegularMemberOfATeam ? (
 				<div className="stack md">
 					<Alert>{t("tournament:pre.captainOnlyEdit")}</Alert>
 					<div className="stack md items-center">
@@ -347,12 +351,6 @@ function RegistrationProgress({
 					status: completedIfTruthy(checkedIn),
 				}
 			: null,
-		tournament.isLeague
-			? {
-					name: t("tournament:pre.steps.googleSheet"),
-					status: "notice" as const,
-				}
-			: null,
 	].filter((step) => step !== null);
 
 	const regClosesBeforeStart =
@@ -385,8 +383,6 @@ function RegistrationProgress({
 										className="color-success"
 										data-testid={`checkmark-icon-num-${i + 1}`}
 									/>
-								) : step.status === "notice" ? (
-									<AlertCircle className="color-info" />
 								) : (
 									<X className="color-error" />
 								)}
@@ -965,15 +961,15 @@ function QuickAddPlayers({
 		>
 			{entryByUserId ? (
 				<span className={styles.quickAddItem}>
-					<Text slot="label">{player.username}</Text>
-					<Text slot="description">
+					<span slot="label">{player.username}</span>
+					<span slot="description">
 						<span className={styles.quickAddItemAvailability}>
 							<AvailabilityStatusDots
 								statuses={[availabilityRowStatus(entryByUserId.get(player.id))]}
 							/>
 							<AvailabilityRowDetail entry={entryByUserId.get(player.id)} />
 						</span>
-					</Text>
+					</span>
 				</span>
 			) : (
 				player.username
@@ -990,7 +986,6 @@ function QuickAddPlayers({
 						items={sections}
 						selectedKey={selectedUserId}
 						onSelectionChange={(key) => setSelectedUserId(key as number | null)}
-						estimatedRowHeight={entryByUserId ? 52 : undefined}
 						className={styles.quickAddSelect}
 						data-testid="quick-add-select"
 					>

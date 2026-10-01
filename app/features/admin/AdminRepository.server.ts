@@ -7,7 +7,7 @@ import * as BuildRepository from "~/features/builds/BuildRepository.server";
 import * as XRankPlacementRepository from "~/features/top-search/XRankPlacementRepository.server";
 import * as TrophyRepository from "~/features/trophies/TrophyRepository.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 
 /**
  * For a user switching Discord accounts: moves the new account's data onto the old user and deletes
@@ -22,10 +22,6 @@ export function migrate(args: { newUserId: number; oldUserId: number }) {
 
 		// small data on the new account is dropped so it doesn't block the migration;
 		// bigger things (e.g. played tournaments) still fail validation
-		await trx
-			.deleteFrom("UserWeapon")
-			.where("userId", "=", args.newUserId)
-			.execute();
 		await trx
 			.deleteFrom("Build")
 			.where("ownerId", "=", args.newUserId)
@@ -204,6 +200,13 @@ export function migrate(args: { newUserId: number; oldUserId: number }) {
 			.set({ userId: args.oldUserId })
 			.execute();
 
+		await migrateBadges(trx, args);
+		await trx
+			.updateTable("TournamentStreamer")
+			.where("userId", "=", args.newUserId)
+			.set({ userId: args.oldUserId })
+			.execute();
+
 		const deletedUser = await trx
 			.deleteFrom("User")
 			.where("User.id", "=", args.newUserId)
@@ -218,6 +221,96 @@ export function migrate(args: { newUserId: number; oldUserId: number }) {
 
 		return null;
 	});
+}
+
+/** Manual grants of the same badge are merged by summing their counts; other duplicates keep the remaining user's row. */
+async function migrateBadges(
+	trx: Transaction<DB>,
+	args: { newUserId: number; oldUserId: number },
+) {
+	await trx
+		.deleteFrom("BadgeManager")
+		.where("userId", "=", args.newUserId)
+		.where((eb) =>
+			eb(
+				"BadgeManager.badgeId",
+				"in",
+				eb
+					.selectFrom("BadgeManager")
+					.select("badgeId")
+					.where("userId", "=", args.oldUserId),
+			),
+		)
+		.execute();
+	await trx
+		.updateTable("BadgeManager")
+		.where("userId", "=", args.newUserId)
+		.set({ userId: args.oldUserId })
+		.execute();
+
+	await trx
+		.updateTable("TournamentBadgeOwner")
+		.where("userId", "=", args.oldUserId)
+		.where("tournamentId", "is", null)
+		.set((eb) => ({
+			count: eb(
+				"count",
+				"+",
+				eb.fn.coalesce(
+					eb
+						.selectFrom("TournamentBadgeOwner as migrated")
+						.select((inner) =>
+							inner.fn.sum<number>("migrated.count").as("count"),
+						)
+						.where("migrated.userId", "=", args.newUserId)
+						.where("migrated.tournamentId", "is", null)
+						.whereRef("migrated.badgeId", "=", "TournamentBadgeOwner.badgeId"),
+					eb.lit(0),
+				),
+			),
+		}))
+		.execute();
+	await trx
+		.deleteFrom("TournamentBadgeOwner")
+		.where("userId", "=", args.newUserId)
+		.where((eb) =>
+			eb.exists(
+				eb
+					.selectFrom("TournamentBadgeOwner as existing")
+					.select("existing.badgeId")
+					.where("existing.userId", "=", args.oldUserId)
+					.where((inner) =>
+						inner.or([
+							inner.and([
+								inner("existing.tournamentId", "is", null),
+								inner("TournamentBadgeOwner.tournamentId", "is", null),
+								inner(
+									"existing.badgeId",
+									"=",
+									inner.ref("TournamentBadgeOwner.badgeId"),
+								),
+							]),
+							inner(
+								"existing.tournamentId",
+								"=",
+								inner.ref("TournamentBadgeOwner.tournamentId"),
+							),
+						]),
+					),
+			),
+		)
+		.execute();
+	await trx
+		.updateTable("TournamentBadgeOwner")
+		.where("userId", "=", args.newUserId)
+		.set({ userId: args.oldUserId })
+		.execute();
+
+	await trx
+		.updateTable("Badge")
+		.where("authorId", "=", args.newUserId)
+		.set({ authorId: args.oldUserId })
+		.execute();
 }
 
 /** Merging can collide on the one-report-per-pair unique index; the newer report (createdAt, then id) wins. */
@@ -403,6 +496,7 @@ export async function findAllBannedUsers() {
 	return result;
 }
 
+/** Bans the user, logging it unless it's an automatic ban. Revokes their API tokens. */
 export function banUser({
 	userId,
 	banned,
@@ -437,6 +531,8 @@ export function banUser({
 				})
 				.execute();
 		}
+
+		await trx.deleteFrom("ApiToken").where("userId", "=", userId).execute();
 	});
 }
 

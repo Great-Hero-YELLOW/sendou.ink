@@ -12,6 +12,7 @@ import { parseFormData } from "~/form/parse.server";
 import { requirePermission } from "~/modules/permissions/guards.server";
 import { errorToastIfFalsy, parseRequestPayload } from "~/utils/remix.server";
 import { assertUnreachable } from "~/utils/types";
+import { stripDisabledEffects } from "../core/model-analysis";
 import * as TrophyRepository from "../TrophyRepository.server";
 import { TROPHY_PENDING_PER_USER_LIMIT } from "../trophies-constants";
 import {
@@ -60,12 +61,13 @@ export const action: ActionFunction = async ({ request }) => {
 
 			await TrophyRepository.createPending({
 				name: data.name,
-				model: compressTrophyModel(data.model),
+				model: compressTrophyModel(stripDisabledEffects(data.model)),
 				description: data.description ?? "",
 				organizationId: data.organizationId,
 				submitterUserId: user.id,
 				targetTrophyId: data.targetTrophyId,
 				managerId: data.managerId,
+				creatorId: data.creatorId ?? undefined,
 			});
 
 			await notifyReviewersOfSubmission({
@@ -85,10 +87,11 @@ export const action: ActionFunction = async ({ request }) => {
 
 		await TrophyRepository.createPending({
 			name: data.name,
-			model: compressTrophyModel(data.model),
+			model: compressTrophyModel(stripDisabledEffects(data.model)),
 			description: data.description ?? "",
 			organizationId: data.organizationId,
 			submitterUserId: user.id,
+			creatorId: data.creatorId ?? user.id,
 		});
 
 		await notifyReviewersOfSubmission({

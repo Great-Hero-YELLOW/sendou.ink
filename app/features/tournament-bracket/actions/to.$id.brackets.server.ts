@@ -1,5 +1,5 @@
 import type { ActionFunction } from "react-router";
-import type { PreparedMaps } from "~/db/tables-json";
+import type { PreparedMaps, TournamentRoundMaps } from "~/db/tables-json";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { notify } from "~/features/notifications/core/notify.server";
@@ -10,7 +10,7 @@ import {
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import {
 	errorToastIfErr,
@@ -25,6 +25,7 @@ import * as PreparedMapsUtils from "../core/PreparedMaps";
 import type { Tournament } from "../core/Tournament";
 import {
 	clearTournamentDataCache,
+	notifyTournamentStatusChanged,
 	requireTournamentOrganizer,
 	tournamentFromDB,
 	tournamentFromParams,
@@ -40,6 +41,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 	const data = await parseRequestPayload({ request, schema: bracketSchema });
 
 	let emitTournamentUpdate = false;
+	let statusChangedUserIds: number[] = [];
 
 	switch (data._action) {
 		case "START_BRACKET": {
@@ -68,12 +70,22 @@ export const action: ActionFunction = async ({ params, request }) => {
 				participantsCount: seeding.length,
 			});
 
-			const maps = hasThirdPlaceMatch
+			errorToastIfFalsy(
+				roundModesAreIncluded(data.maps, tournament),
+				"Mode order includes a mode not played in the tournament",
+			);
+
+			const isRealtime = tournament.isLeague && data.isRealtime;
+
+			const linkedMaps = hasThirdPlaceMatch
 				? adjustLinkedRounds({
 						maps: data.maps,
 						thirdPlaceMatchLinked: data.thirdPlaceMatchLinked,
 					})
 				: data.maps;
+			const maps = isRealtime
+				? linkedMaps.map((round) => ({ ...round, isPlayableAt: null }))
+				: linkedMaps;
 
 			const abDivisions =
 				bracket.type === "round_robin" && bracket.settings?.hasAbDivisions
@@ -96,7 +108,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 				type: bracket.type,
 				seeding,
 				settings: bracket.settings,
-				independentRounds: tournament.isLeague,
+				independentRounds: tournament.isLeague && !isRealtime,
+				isRealtime,
 				abDivisions,
 				maps,
 			});
@@ -187,6 +200,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 			await tournamentFromDB(tournamentId);
 
 			emitTournamentUpdate = true;
+			statusChangedUserIds = seeding.flatMap(
+				(tournamentTeamId) =>
+					tournament.teamById(tournamentTeamId)!.memberUserIds,
+			);
 
 			break;
 		}
@@ -199,6 +216,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 			errorToastIfFalsy(
 				bracket.preview,
 				"Bracket has started, preparing maps no longer possible",
+			);
+			errorToastIfFalsy(
+				roundModesAreIncluded(data.maps, tournament),
+				"Mode order includes a mode not played in the tournament",
 			);
 
 			const hasThirdPlaceMatch = Engine.hasThirdPlaceMatch({
@@ -246,10 +267,13 @@ export const action: ActionFunction = async ({ params, request }) => {
 			await BracketRepository.insertRoundMatches({
 				stageId,
 				round: round.value,
-				isLeague: tournament.isLeague,
+				hasScheduling: bracket.hasScheduling,
 			});
 
 			emitTournamentUpdate = true;
+			statusChangedUserIds = bracket.participantTournamentTeamIds.flatMap(
+				(teamId) => tournament.teamById(teamId)?.memberUserIds ?? [],
+			);
 
 			break;
 		}
@@ -263,13 +287,24 @@ export const action: ActionFunction = async ({ params, request }) => {
 				"Can't unadvance non-swiss bracket",
 			);
 			errorToastIfFalsyNoFollowUpBrackets(tournament, data.bracketIdx);
+			errorToastIfFalsy(
+				bracket.data.round.some(
+					(round) =>
+						round.id === data.roundId && round.groupId === data.groupId,
+				),
+				"Round not found in bracket",
+			);
 
 			await BracketRepository.deleteRoundMatches({
+				stageId: bracket.id,
 				groupId: data.groupId,
 				roundId: data.roundId,
 			});
 
 			emitTournamentUpdate = true;
+			statusChangedUserIds = bracket.participantTournamentTeamIds.flatMap(
+				(teamId) => tournament.teamById(teamId)?.memberUserIds ?? [],
+			);
 
 			break;
 		}
@@ -294,6 +329,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 			logger.info(
 				`Checking in (bracket success): tournament team id: ${teamMemberOf.id} - user id: ${user.id} - tournament id: ${tournament.ctx.id} - bracket idx: ${data.bracketIdx}`,
 			);
+
+			statusChangedUserIds = teamMemberOf.memberUserIds;
 			break;
 		}
 		case "OVERRIDE_BRACKET_PROGRESSION": {
@@ -323,6 +360,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 			});
 
 			emitTournamentUpdate = true;
+			statusChangedUserIds =
+				tournament.teamById(data.tournamentTeamId)?.memberUserIds ?? [];
 
 			break;
 		}
@@ -332,6 +371,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 	}
 
 	clearTournamentDataCache(tournamentId);
+
+	await notifyTournamentStatusChanged(tournamentId, statusChangedUserIds);
 
 	if (emitTournamentUpdate) {
 		ChatSystemMessage.send([{ channel: tournamentChannel(tournament.ctx.id) }]);
@@ -371,6 +412,17 @@ function abDivisionsForSeeding(
 	return result.value;
 }
 
+function roundModesAreIncluded(
+	maps: Array<Pick<TournamentRoundMaps, "modes">>,
+	tournament: Tournament,
+) {
+	return maps.every((round) =>
+		(round.modes ?? []).every((mode) =>
+			tournament.modesIncluded.includes(mode),
+		),
+	);
+}
+
 function adjustLinkedRounds({
 	maps,
 	thirdPlaceMatchLinked,
@@ -380,18 +432,18 @@ function adjustLinkedRounds({
 }): Omit<PreparedMaps, "createdAt">["maps"] {
 	if (thirdPlaceMatchLinked) {
 		const finalsMaps = maps
-			.filter((m) => m.groupId === 0)
+			.filter((m) => m.section === "winners")
 			.sort((a, b) => b.roundId - a.roundId)[0];
 		invariant(finalsMaps, "Missing finals maps");
 
 		return [
-			...maps.filter((m) => m.groupId === 0),
-			{ ...finalsMaps, groupId: 1, roundId: finalsMaps.roundId + 1 },
+			...maps.filter((m) => m.section === "winners"),
+			{ ...finalsMaps, section: "finals", roundId: finalsMaps.roundId + 1 },
 		];
 	}
 
 	invariant(
-		maps.some((m) => m.groupId === 1),
+		maps.some((m) => m.section === "finals"),
 		"Missing 3rd place match maps",
 	);
 

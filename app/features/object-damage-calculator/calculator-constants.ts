@@ -131,6 +131,7 @@ export const damagePriorities: Array<
 > = [
 	["MAIN", [210, 220, 260], "DIRECT", "Blaster_KillOneShot"],
 	["MAIN", [210, 260], "DISTANCE", "Blaster_BlasterMiddle"],
+	["MAIN", [260], "DISTANCE_JUMP", "Blaster_BlasterMiddle"],
 	["MAIN", [220], "DISTANCE", "Blaster"],
 
 	["MAIN", [400], "NORMAL_MAX", "Shooter_Flash"],
@@ -202,6 +203,7 @@ export const damagePriorities: Array<
 	["SPECIAL", [5], "SPECIAL_TICK", "InkStorm"],
 	["SPECIAL", [8], "SPECIAL_MAX_CHARGE", "BlowerExhale_BombCore"],
 	["SPECIAL", [8], "SPECIAL_MIN_CHARGE", "BlowerExhale_BombCore"],
+	["SPECIAL", [8], "SPECIAL_INHALE", "BlowerInhale"],
 	["SPECIAL", [10], "BOMB_DIRECT", "Jetpack_BombCore"],
 	["SPECIAL", [10], "BOMB_NORMAL", "Jetpack_Bullet"],
 	["SPECIAL", [11], "SPECIAL_THROW_DIRECT", "UltraStamp_Throw_BombCore"],

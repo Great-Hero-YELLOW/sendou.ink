@@ -3,9 +3,17 @@ import { Link2 as LinkIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { BuildCard } from "~/components/BuildCard";
+import { Divider } from "~/components/Divider";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
-import { Image, StageImage, WeaponImage } from "~/components/Image";
+import {
+	Image,
+	ModeImage,
+	SpecialWeaponImage,
+	StageImage,
+	SubWeaponImage,
+	WeaponImage,
+} from "~/components/Image";
 import { BskyIcon } from "~/components/icons/Bsky";
 import { DiscordIcon } from "~/components/icons/Discord";
 import { TwitchIcon } from "~/components/icons/Twitch";
@@ -21,6 +29,7 @@ import { previewUrl } from "~/features/art/art-utils";
 import { BadgeDisplay } from "~/features/badges/components/BadgeDisplay";
 import { lfgSearchParams } from "~/features/lfg/lfg-search-params";
 import { tierListMakerSearchParams } from "~/features/tier-list-maker/tier-list-maker-search-params";
+import { DivisionImage } from "~/features/top-search/components/DivisionImage";
 import { topSearchPlayerPage } from "~/features/top-search/top-search-urls";
 import { tournamentBracketsPage } from "~/features/tournament-bracket/tournament-bracket-urls";
 import { tournamentOrganizationPage } from "~/features/tournament-organization/tournament-organization-urls";
@@ -36,11 +45,12 @@ import type {
 	ModeShort,
 	StageId,
 } from "~/modules/in-game-lists/types";
+import { twitchThumbnailUrlToSrc } from "~/modules/twitch/utils";
 import { logger } from "~/utils/logger";
 import type { SerializeFrom } from "~/utils/remix";
+import { rawSensToString } from "~/utils/strings";
 import { assertUnreachable } from "~/utils/types";
 import {
-	brandImageUrl,
 	calendarEventPage,
 	controllerImageUrl,
 	gameBadgeUrl,
@@ -49,10 +59,12 @@ import {
 	modeImageUrl,
 	navIconUrl,
 	teamPage,
+	twitchUrl,
 	userBuildsPage,
 	userResultsPage,
 	userVodsPage,
 } from "~/utils/urls";
+import * as Countdown from "../core/widgets/countdown";
 import type { LoadedWidget } from "../core/widgets/types";
 import styles from "./Widget.module.css";
 
@@ -73,35 +85,37 @@ export function Widget({
 	const content = () => {
 		switch (widget.id) {
 			case "bio":
-				return <article>{widget.data.bio}</article>;
+				return widget.data.bio ? <article>{widget.data.bio}</article> : null;
 			case "bio-md":
-				return (
-					<article>
+				return widget.data.bio ? (
+					<article className={styles.mdBio}>
 						<Markdown>{widget.data.bio}</Markdown>
 					</article>
-				);
+				) : null;
 			case "trophies-owned":
-				return <TrophyDisplay trophies={widget.data} userId={user.id} />;
+				return widget.data.length === 0 ? null : (
+					<TrophyDisplay trophies={widget.data} userId={user.id} />
+				);
 			case "badges-owned":
-				return (
+				return widget.data.length === 0 ? null : (
 					<BadgeDisplay badges={widget.data} key={`badges-owned-${user.id}`} />
 				);
 			case "badges-authored":
-				return (
+				return widget.data.length === 0 ? null : (
 					<BadgeDisplay
 						badges={widget.data}
 						key={`badges-authored-${user.id}`}
 					/>
 				);
 			case "badges-managed":
-				return (
+				return widget.data.length === 0 ? null : (
 					<BadgeDisplay
 						badges={widget.data}
 						key={`badges-managed-${user.id}`}
 					/>
 				);
 			case "teams":
-				return (
+				return widget.data.length === 0 ? null : (
 					<Memberships
 						memberships={widget.data.map((team) => ({
 							id: team.id,
@@ -115,7 +129,7 @@ export function Widget({
 					/>
 				);
 			case "organizations":
-				return (
+				return widget.data.length === 0 ? null : (
 					<Memberships
 						memberships={widget.data.map((org) => ({
 							id: org.id,
@@ -248,8 +262,15 @@ export function Widget({
 				return widget.data.length === 0 ? null : (
 					<WeaponPool weapons={widget.data} />
 				);
+			case "custom-kits":
+				return widget.data.length === 0 ? null : (
+					<CustomKits kits={widget.data} />
+				);
 			case "sens":
-				return <SensWidget data={widget.data} />;
+				return typeof widget.data.motionSens !== "number" &&
+					typeof widget.data.stickSens !== "number" ? null : (
+					<SensWidget data={widget.data} />
+				);
 			case "art":
 				return widget.data.length === 0 ? null : (
 					<ArtWidget arts={widget.data} />
@@ -273,6 +294,37 @@ export function Widget({
 				return widget.data.length === 0 ? null : (
 					<FriendsWidget friends={widget.data} />
 				);
+			case "luti-div":
+				if (!widget.data) return null;
+				return (
+					<BigValue
+						value={`Div ${widget.data.div}`}
+						footer={
+							widget.data.divSeason
+								? t("user:widget.luti-div.season", {
+										season: widget.data.divSeason,
+									})
+								: undefined
+						}
+					/>
+				);
+			case "map-mode-preferences":
+				return widget.data.length === 0 ? null : (
+					<MapModePreferencesWidget rows={widget.data} />
+				);
+			case "live-stream":
+				if (!widget.data) return null;
+				return <LiveStreamWidget stream={widget.data} />;
+			case "countdown":
+				return (
+					<CountdownWidget title={widget.data.title} date={widget.data.date} />
+				);
+			case "markdown":
+				return widget.data.content ? (
+					<article>
+						<Markdown>{widget.data.content}</Markdown>
+					</article>
+				) : null;
 			default:
 				assertUnreachable(widget);
 		}
@@ -303,8 +355,12 @@ export function Widget({
 		}
 	})();
 
+	const renderedContent = content();
+
+	if (!renderedContent) return null;
+
 	return (
-		<div className={styles.widget}>
+		<div className={styles.widget} data-testid={`widget-${widget.id}`}>
 			<div className={styles.header}>
 				<h2 className={styles.headerText}>{t(`user:widget.${widget.id}`)}</h2>
 				{widgetLink ? (
@@ -313,7 +369,7 @@ export function Widget({
 					</Link>
 				) : null}
 			</div>
-			<div className={styles.content}>{content()}</div>
+			<div className={styles.content}>{renderedContent}</div>
 		</div>
 	);
 }
@@ -507,9 +563,6 @@ function LFGPosts({
 	);
 }
 
-const TENTATEK_BRAND_ID = "B10";
-const TAKOROKA_BRAND_ID = "B11";
-
 function XRankPeaks({
 	peaks,
 }: {
@@ -527,15 +580,10 @@ function XRankPeaks({
 							height={24}
 						/>
 						<div className={styles.xRankPeakDivision}>
-							<Image
-								path={brandImageUrl(
-									peak.region === "WEST"
-										? TENTATEK_BRAND_ID
-										: TAKOROKA_BRAND_ID,
-								)}
+							<DivisionImage
+								region={peak.region}
 								alt={peak.region === "WEST" ? "Tentatek" : "Takoroka"}
-								width={12}
-								height={12}
+								size={12}
 							/>
 						</div>
 					</div>
@@ -639,13 +687,56 @@ function WeaponPool({
 }) {
 	return (
 		<div className="stack horizontal sm justify-center flex-wrap">
-			{weapons.map((weapon) => {
+			{weapons.map((weapon, i) => {
 				return (
-					<div key={weapon.weaponSplId} className="u__weapon">
-						<WeaponImage weapon={weapon} width={38} height={38} />
+					<div key={weapon.weaponSplId} className={styles.weapon}>
+						<WeaponImage
+							testId={`${weapon.weaponSplId}-${i + 1}`}
+							weapon={weapon}
+							width={38}
+							height={38}
+						/>
 					</div>
 				);
 			})}
+		</div>
+	);
+}
+
+function CustomKits({
+	kits,
+}: {
+	kits: Extract<LoadedWidget, { id: "custom-kits" }>["data"];
+}) {
+	const { t } = useTranslation(["weapons"]);
+
+	return (
+		<div className={styles.customKits}>
+			{kits.map((kit, i) => (
+				<div key={i} className={styles.customKit}>
+					<div className={styles.customKitWeapon}>
+						<WeaponImage
+							weaponSplId={kit.weaponSplId}
+							variant="build"
+							size={28}
+						/>
+					</div>
+					<div className={styles.customKitName}>
+						{t(`weapons:MAIN_${kit.weaponSplId}`)}
+					</div>
+					<div className={styles.customKitParts}>
+						<div className={styles.customKitPart}>
+							<SubWeaponImage subWeaponId={kit.subWeaponId} size={20} />
+						</div>
+						<div className={styles.customKitPart}>
+							<SpecialWeaponImage
+								specialWeaponId={kit.specialWeaponId}
+								size={20}
+							/>
+						</div>
+					</div>
+				</div>
+			))}
 		</div>
 	);
 }
@@ -678,9 +769,6 @@ function SensWidget({
 	data: Extract<LoadedWidget, { id: "sens" }>["data"];
 }) {
 	const { t } = useTranslation(["user"]);
-
-	const rawSensToString = (sens: number) =>
-		`${sens > 0 ? "+" : ""}${sens / 10}`;
 
 	return (
 		<div className="stack md items-center">
@@ -783,6 +871,28 @@ const urlToIcon = (url: string) => {
 	return <LinkIcon />;
 };
 
+const SOCIAL_PLATFORM_FALLBACK_NAMES = {
+	twitch: "Twitch",
+	youtube: "YouTube",
+	bsky: "Bluesky",
+	discord: "Discord",
+} as const;
+
+const platformToIcon = (
+	platform: "twitch" | "youtube" | "bsky" | "discord",
+) => {
+	switch (platform) {
+		case "twitch":
+			return <TwitchIcon />;
+		case "youtube":
+			return <YouTubeIcon />;
+		case "bsky":
+			return <BskyIcon />;
+		case "discord":
+			return <DiscordIcon />;
+	}
+};
+
 function SocialLinksWidget({
 	data,
 }: {
@@ -791,43 +901,42 @@ function SocialLinksWidget({
 	if (data.length === 0) return null;
 
 	return (
-		<div className={styles.socialLinksIcons}>
-			{data.map((link, i) => {
-				if (link.type === "popover") {
-					return (
-						<SendouPopover
-							key={i}
-							trigger={
-								<SendouButton
-									variant="minimal"
-									className={clsx(
-										styles.socialLinkIconContainer,
-										styles.discord,
-									)}
-								>
-									{link.platform === "discord" ? <DiscordIcon /> : null}
-								</SendouButton>
-							}
+		<div className={styles.socialLinksList}>
+			{data.map((link) => {
+				const content = (
+					<>
+						<div
+							className={clsx(
+								styles.socialLinkIconContainer,
+								styles.socialLinkIconCircle,
+								styles[link.platform],
+							)}
 						>
-							{link.value}
-						</SendouPopover>
+							{platformToIcon(link.platform)}
+						</div>
+						<span className={styles.socialLinkName}>
+							{link.name ?? SOCIAL_PLATFORM_FALLBACK_NAMES[link.platform]}
+						</span>
+					</>
+				);
+
+				if (link.type === "text") {
+					return (
+						<div key={link.platform} className={styles.linkRow}>
+							{content}
+						</div>
 					);
 				}
 
-				const type = urlToLinkType(link.value);
 				return (
 					<a
-						key={i}
-						href={link.value}
+						key={link.platform}
+						href={link.url}
 						target="_blank"
 						rel="noreferrer"
-						className={clsx(styles.socialLinkIconContainer, {
-							[styles.twitch]: type === "twitch",
-							[styles.youtube]: type === "youtube",
-							[styles.bsky]: type === "bsky",
-						})}
+						className={styles.linkRow}
 					>
-						{urlToIcon(link.value)}
+						{content}
 					</a>
 				);
 			})}
@@ -915,7 +1024,7 @@ function FriendsWidget({
 	return (
 		<div className={styles.friendsList}>
 			{itemsToDisplay.map((friend) => (
-				<UserLink key={friend.id} user={friend} className={styles.friendLink} />
+				<UserLink key={friend.id} user={friend} className={styles.linkRow} />
 			))}
 			{!everythingVisible ? (
 				<div className="mt-4">
@@ -961,6 +1070,113 @@ function GameBadgesDisplay({ badgeIds }: { badgeIds: string[] }) {
 					</SendouPopover>
 				);
 			})}
+		</div>
+	);
+}
+
+function MapModePreferencesWidget({
+	rows,
+}: {
+	rows: Extract<LoadedWidget, { id: "map-mode-preferences" }>["data"];
+}) {
+	return (
+		<div className={styles.mapModePreferences}>
+			{rows.map((row) => (
+				<div key={row.mode} className="stack sm">
+					<Divider>
+						<ModeImage mode={row.mode} size={32} />
+					</Divider>
+					<div className={styles.mapModePreferenceStages}>
+						{row.stages.map((stageId) => (
+							<StageImage
+								key={stageId}
+								stageId={stageId}
+								width={80}
+								className="rounded-sm"
+							/>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function LiveStreamWidget({
+	stream,
+}: {
+	stream: NonNullable<Extract<LoadedWidget, { id: "live-stream" }>["data"]>;
+}) {
+	const { t } = useTranslation(["user"]);
+
+	return (
+		<a
+			href={twitchUrl(stream.twitch)}
+			target="_blank"
+			rel="noreferrer"
+			className={styles.liveStream}
+		>
+			<img
+				src={twitchThumbnailUrlToSrc(stream.thumbnailUrl)}
+				alt=""
+				className={styles.liveStreamThumbnail}
+				loading="lazy"
+			/>
+			<div className={styles.liveStreamInfo}>
+				<span className={styles.liveBadge}>
+					{t("user:widget.live-stream.live")}
+				</span>
+				<span>
+					{t("user:widget.live-stream.viewers", {
+						count: stream.viewerCount,
+					})}
+				</span>
+				<span className={styles.liveStreamName}>{stream.twitch}</span>
+			</div>
+		</a>
+	);
+}
+
+const COUNTDOWN_UNITS_FAR = ["days", "hours", "minutes"] as const;
+const COUNTDOWN_UNITS_NEAR = ["hours", "minutes", "seconds"] as const;
+
+/** Comes out of the JSON column as an ISO string even though the settings type says `Date`. */
+function CountdownWidget({
+	title,
+	date,
+}: {
+	title: string;
+	date: Date | string;
+}) {
+	const { t } = useTranslation(["user"]);
+	const now = useAutoRerender("second");
+	const target = new Date(date);
+	const remaining = Countdown.remainingUntil(now, target);
+
+	return (
+		<div className="stack sm items-center">
+			{title ? <div className={styles.countdownTitle}>{title}</div> : null}
+			{remaining ? (
+				<div className={styles.countdown}>
+					{(remaining.days > 0
+						? COUNTDOWN_UNITS_FAR
+						: COUNTDOWN_UNITS_NEAR
+					).map((unit) => (
+						<div key={unit} className={styles.countdownPart}>
+							<div className={styles.widgetValueMain}>{remaining[unit]}</div>
+							<div className={styles.widgetValueFooter}>
+								{t(`user:widget.countdown.${unit}` as const)}
+							</div>
+						</div>
+					))}
+				</div>
+			) : (
+				<LocaleTime
+					date={target}
+					options={{ day: "numeric", month: "numeric", year: "numeric" }}
+					className={styles.widgetValueMain}
+				/>
+			)}
 		</div>
 	);
 }

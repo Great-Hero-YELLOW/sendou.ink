@@ -78,15 +78,18 @@ export function WeekAvailabilityEditor({
 	value,
 	onChange,
 	commitments = [],
+	notSharedWith = [],
 	onPendingDraftChange,
 }: {
 	value: AvailabilityEditorWeek;
 	onChange: (value: AvailabilityEditorWeek) => void;
 	commitments?: Array<EditorCommitment>;
+	/** Named friends and teams the week is kept from, called out under the tracks. */
+	notSharedWith?: Array<string>;
 	/** Reports edits typed in the day popover but not yet committed into `value`, which an unsaved changes guard would otherwise miss. */
 	onPendingDraftChange?: (hasPendingDraft: boolean) => void;
 }) {
-	const { t } = useTranslation(["schedule", "common"]);
+	const { t, i18n } = useTranslation(["schedule", "common"]);
 	const { formatter: dayFormatter } = useDateTimeFormat({
 		weekday: "short",
 		day: "numeric",
@@ -624,8 +627,20 @@ export function WeekAvailabilityEditor({
 					})}
 				</div>
 				<p className={styles.footer}>
-					{t("schedule:editor.timesInYourTimezone")} ·{" "}
-					{t("schedule:editor.visibility")}
+					{t("schedule:editor.timesInYourTimezone")}
+					{notSharedWith.length > 0 ? (
+						<span
+							className={styles.notSharedWith}
+							data-testid="schedule-not-shared-with"
+						>
+							{" · "}
+							{t("schedule:editor.notSharedWith", {
+								audiences: new Intl.ListFormat(i18n.language).format(
+									notSharedWith,
+								),
+							})}
+						</span>
+					) : null}
 				</p>
 			</div>
 			{openDay ? (
@@ -724,7 +739,7 @@ function DayEditor({
 						variant="minimal-destructive"
 						size="small"
 						aria-label={t("common:actions.delete")}
-						onPress={() => {
+						onClick={() => {
 							const remaining = ranges.filter((other) => other.id !== range.id);
 							update(remaining, note);
 							onRangeDelete({ ranges: remaining, note });
@@ -737,7 +752,7 @@ function DayEditor({
 				variant="minimal"
 				size="small"
 				className={styles.dayEditorAdd}
-				onPress={() => {
+				onClick={() => {
 					const id = nextIdRef.current;
 					nextIdRef.current += 1;
 					update([...ranges, { id, start: "", end: "" }], note);

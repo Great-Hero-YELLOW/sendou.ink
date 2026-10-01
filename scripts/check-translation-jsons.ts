@@ -67,8 +67,8 @@ for (const file of fileNames) {
 			let otherLanguageContent: Record<string, string>;
 			try {
 				otherLanguageContent = JSON.parse(otherRawContent);
-			} catch {
-				throw new Error(`failed to parse ${lang}/${file}`);
+			} catch (error) {
+				throw new Error(`failed to parse ${lang}/${file}`, { cause: error });
 			}
 
 			const otherLanguageContentKeys = getKeysWithoutSuffix(
@@ -90,7 +90,7 @@ for (const file of fileNames) {
 			});
 
 			const missingKeys = englishContentKeys.filter(
-				(key) => !otherLanguageContentKeys.includes(key),
+				(missingKey) => !otherLanguageContentKeys.includes(missingKey),
 			);
 
 			if (key === "weapons" || key === "gear") {
@@ -264,11 +264,11 @@ function MDCompletionStatus({
 }
 
 function MDOverviewTable({
-	totalTranslationCounts,
+	totalTranslationCounts: keyCountsByFile,
 }: {
 	totalTranslationCounts: Record<string, number>;
 }) {
-	const totalKeysCount = Object.values(totalTranslationCounts).reduce(
+	const totalKeysCount = Object.values(keyCountsByFile).reduce(
 		(a, b) => a + b,
 		0,
 	);
@@ -276,7 +276,7 @@ function MDOverviewTable({
 		(name) => name !== "weapons.json" && name !== "gear.json",
 	);
 
-	const rows = [];
+	const rows: string[] = [];
 
 	rows.push(
 		`| Language | Total | ${relevantFiles.map(MD.inlineCode).join(" | ")} |`,
@@ -285,7 +285,7 @@ function MDOverviewTable({
 	rows.push(`| :-- | :-: | ${relevantFiles.map(() => ":-:").join(" | ")} |`);
 
 	for (const [lang, missingKeysObj] of Object.entries(missingTranslations)) {
-		const cells = [];
+		const cells: string[] = [];
 
 		cells.push(MD.strong(lang));
 
@@ -313,7 +313,7 @@ function MDOverviewTable({
 
 			cells.push(
 				MDCompletionStatus({
-					totalCount: totalTranslationCounts[fileKey],
+					totalCount: keyCountsByFile[fileKey],
 					missingCount: missingKeysInFile.length,
 				}),
 			);
@@ -326,7 +326,7 @@ function MDOverviewTable({
 }
 
 function createTranslationProgessMarkdown({
-	totalTranslationCounts,
+	totalTranslationCounts: keyCountsByFile,
 }: {
 	totalTranslationCounts: Record<string, number>;
 }) {
@@ -341,5 +341,5 @@ If you want to contribute by adding missing translations, make sure to read the 
 
 Key: 🟢 = Done, 🟡 = In progress, 🔴 = Not started
 
-${MDOverviewTable({ totalTranslationCounts })}`;
+${MDOverviewTable({ totalTranslationCounts: keyCountsByFile })}`;
 }

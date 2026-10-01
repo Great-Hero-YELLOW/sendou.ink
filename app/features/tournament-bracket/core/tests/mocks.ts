@@ -3,6 +3,7 @@ import type { TournamentData } from "../Tournament.server";
 export const PADDLING_POOL_257 = () =>
 	({
 		streams: [],
+		divisionTiers: [],
 		data: {
 			stage: [
 				{
@@ -68,162 +69,189 @@ export const PADDLING_POOL_257 = () =>
 					groupId: 85,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 387,
 					groupId: 85,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 388,
 					groupId: 85,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 389,
 					groupId: 86,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 390,
 					groupId: 86,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 391,
 					groupId: 86,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 392,
 					groupId: 87,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 393,
 					groupId: 87,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 394,
 					groupId: 87,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 395,
 					groupId: 88,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 396,
 					groupId: 88,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 397,
 					groupId: 88,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 398,
 					groupId: 89,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 399,
 					groupId: 89,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 400,
 					groupId: 89,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 401,
 					groupId: 90,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 402,
 					groupId: 90,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 403,
 					groupId: 90,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 404,
 					groupId: 91,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 405,
 					groupId: 91,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 406,
 					groupId: 91,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 407,
 					groupId: 92,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 408,
 					groupId: 92,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 409,
 					groupId: 92,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 410,
 					groupId: 93,
 					number: 1,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 411,
 					groupId: 93,
 					number: 2,
 					stageId: 28,
+					section: null,
 				},
 				{
 					id: 412,
 					groupId: 93,
 					number: 3,
 					stageId: 28,
+					section: null,
 				},
 			],
 			match: [
@@ -1262,7 +1290,7 @@ export const PADDLING_POOL_257 = () =>
 				],
 				lockedMatches: [],
 			},
-			mapPickingStyle: "AUTO_ALL",
+			mapPickingStyle: "AUTO",
 			name: "Paddling Pool 257",
 			hasRules: false,
 			logoUrl: "/test.avif",
@@ -2517,24 +2545,6 @@ export const PADDLING_POOL_257 = () =>
 				},
 			],
 			toSetMapPool: [],
-			tieBreakerMapPool: [
-				{
-					stageId: 15,
-					mode: "SZ",
-				},
-				{
-					stageId: 0,
-					mode: "CB",
-				},
-				{
-					stageId: 16,
-					mode: "RM",
-				},
-				{
-					stageId: 8,
-					mode: "TC",
-				},
-			],
 			latestTeamIdByDuplicatedUserId: {},
 		},
 	}) as TournamentData;
@@ -2542,6 +2552,7 @@ export const PADDLING_POOL_257 = () =>
 export const PADDLING_POOL_255 = () =>
 	({
 		streams: [],
+		divisionTiers: [],
 		data: {
 			stage: [
 				{
@@ -2609,6 +2620,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 286,
@@ -2616,6 +2628,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 287,
@@ -2623,6 +2636,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 288,
@@ -2630,6 +2644,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 289,
@@ -2637,6 +2652,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 290,
@@ -2644,6 +2660,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 291,
@@ -2651,6 +2668,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 292,
@@ -2658,6 +2676,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 293,
@@ -2665,6 +2684,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 294,
@@ -2672,6 +2692,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 295,
@@ -2679,6 +2700,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 296,
@@ -2686,6 +2708,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 297,
@@ -2693,6 +2716,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 298,
@@ -2700,6 +2724,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 299,
@@ -2707,6 +2732,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 300,
@@ -2714,6 +2740,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 301,
@@ -2721,6 +2748,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 302,
@@ -2728,6 +2756,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 303,
@@ -2735,6 +2764,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 304,
@@ -2742,6 +2772,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 305,
@@ -2749,6 +2780,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 306,
@@ -2756,6 +2788,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 307,
@@ -2763,6 +2796,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 308,
@@ -2770,6 +2804,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 309,
@@ -2777,6 +2812,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 1,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 310,
@@ -2784,6 +2820,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 2,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 				{
 					id: 311,
@@ -2791,6 +2828,7 @@ export const PADDLING_POOL_255 = () =>
 					number: 3,
 					stageId: 20,
 					maps: null,
+					section: null,
 				},
 			],
 			match: [
@@ -3876,7 +3914,7 @@ export const PADDLING_POOL_255 = () =>
 				],
 				lockedMatches: [],
 			},
-			mapPickingStyle: "AUTO_ALL",
+			mapPickingStyle: "AUTO",
 			name: "Paddling Pool 255",
 			hasRules: false,
 			logoUrl: "/test.avif",
@@ -5098,24 +5136,6 @@ export const PADDLING_POOL_255 = () =>
 				},
 			],
 			toSetMapPool: [],
-			tieBreakerMapPool: [
-				{
-					stageId: 15,
-					mode: "SZ",
-				},
-				{
-					stageId: 0,
-					mode: "CB",
-				},
-				{
-					stageId: 16,
-					mode: "RM",
-				},
-				{
-					stageId: 8,
-					mode: "TC",
-				},
-			],
 			latestTeamIdByDuplicatedUserId: {},
 		},
 	}) as TournamentData;
@@ -5126,6 +5146,7 @@ export const IN_THE_ZONE_32 = ({
 }) =>
 	({
 		streams: [],
+		divisionTiers: [],
 		data: {
 			stage: [
 				{
@@ -5142,16 +5163,6 @@ export const IN_THE_ZONE_32 = ({
 					number: 1,
 					stageId: 16,
 				},
-				{
-					id: 47,
-					number: 2,
-					stageId: 16,
-				},
-				{
-					id: 48,
-					number: 3,
-					stageId: 16,
-				},
 			],
 			round: [
 				{
@@ -5159,90 +5170,105 @@ export const IN_THE_ZONE_32 = ({
 					groupId: 46,
 					number: 1,
 					stageId: 16,
+					section: "winners",
 				},
 				{
 					id: 239,
 					groupId: 46,
 					number: 2,
 					stageId: 16,
+					section: "winners",
 				},
 				{
 					id: 240,
 					groupId: 46,
 					number: 3,
 					stageId: 16,
+					section: "winners",
 				},
 				{
 					id: 241,
 					groupId: 46,
 					number: 4,
 					stageId: 16,
+					section: "winners",
 				},
 				{
 					id: 242,
 					groupId: 46,
 					number: 5,
 					stageId: 16,
+					section: "winners",
 				},
 				{
 					id: 243,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 244,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 245,
-					groupId: 47,
+					groupId: 46,
 					number: 3,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 246,
-					groupId: 47,
+					groupId: 46,
 					number: 4,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 247,
-					groupId: 47,
+					groupId: 46,
 					number: 5,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 248,
-					groupId: 47,
+					groupId: 46,
 					number: 6,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 249,
-					groupId: 47,
+					groupId: 46,
 					number: 7,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 250,
-					groupId: 47,
+					groupId: 46,
 					number: 8,
 					stageId: 16,
+					section: "losers",
 				},
 				{
 					id: 251,
-					groupId: 48,
+					groupId: 46,
 					number: 1,
 					stageId: 16,
+					section: "finals",
 				},
 				{
 					id: 252,
-					groupId: 48,
+					groupId: 46,
 					number: 2,
 					stageId: 16,
+					section: "finals",
 				},
 			],
 			match: [
@@ -5776,7 +5802,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1265,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 605,
@@ -5794,7 +5820,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1266,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 551,
@@ -5812,7 +5838,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1267,
-					groupId: 47,
+					groupId: 46,
 					number: 3,
 					opponent1: {
 						id: 611,
@@ -5830,7 +5856,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1268,
-					groupId: 47,
+					groupId: 46,
 					number: 4,
 					opponent1: {
 						id: 612,
@@ -5848,7 +5874,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1269,
-					groupId: 47,
+					groupId: 46,
 					number: 5,
 					opponent1: {
 						id: 608,
@@ -5866,7 +5892,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1270,
-					groupId: 47,
+					groupId: 46,
 					number: 6,
 					opponent1: {
 						id: 597,
@@ -5884,7 +5910,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1271,
-					groupId: 47,
+					groupId: 46,
 					number: 7,
 					opponent1: {
 						id: 606,
@@ -5902,7 +5928,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1272,
-					groupId: 47,
+					groupId: 46,
 					number: 8,
 					opponent1: {
 						id: 589,
@@ -5920,7 +5946,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1273,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 590,
@@ -5937,7 +5963,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1274,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 603,
@@ -5954,7 +5980,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1275,
-					groupId: 47,
+					groupId: 46,
 					number: 3,
 					opponent1: {
 						id: 591,
@@ -5971,7 +5997,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1276,
-					groupId: 47,
+					groupId: 46,
 					number: 4,
 					opponent1: {
 						id: 594,
@@ -5988,7 +6014,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1277,
-					groupId: 47,
+					groupId: 46,
 					number: 5,
 					opponent1: {
 						id: 595,
@@ -6005,7 +6031,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1278,
-					groupId: 47,
+					groupId: 46,
 					number: 6,
 					opponent1: {
 						id: 596,
@@ -6022,7 +6048,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1279,
-					groupId: 47,
+					groupId: 46,
 					number: 7,
 					opponent1: {
 						id: 609,
@@ -6039,7 +6065,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1280,
-					groupId: 47,
+					groupId: 46,
 					number: 8,
 					opponent1: {
 						id: 509,
@@ -6056,7 +6082,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1281,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 590,
@@ -6072,7 +6098,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1282,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 591,
@@ -6088,7 +6114,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1283,
-					groupId: 47,
+					groupId: 46,
 					number: 3,
 					opponent1: {
 						id: 595,
@@ -6104,7 +6130,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1284,
-					groupId: 47,
+					groupId: 46,
 					number: 4,
 					opponent1: {
 						id: 609,
@@ -6120,7 +6146,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1285,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 564,
@@ -6137,7 +6163,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1286,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 546,
@@ -6154,7 +6180,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1287,
-					groupId: 47,
+					groupId: 46,
 					number: 3,
 					opponent1: {
 						id: 592,
@@ -6171,7 +6197,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1288,
-					groupId: 47,
+					groupId: 46,
 					number: 4,
 					opponent1: {
 						id: 507,
@@ -6188,7 +6214,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1289,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 564,
@@ -6204,7 +6230,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1290,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 592,
@@ -6220,7 +6246,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1291,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 547,
@@ -6237,7 +6263,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1292,
-					groupId: 47,
+					groupId: 46,
 					number: 2,
 					opponent1: {
 						id: 499,
@@ -6254,7 +6280,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1293,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 547,
@@ -6270,7 +6296,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1294,
-					groupId: 47,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 552,
@@ -6287,7 +6313,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1295,
-					groupId: 48,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 548,
@@ -6304,7 +6330,7 @@ export const IN_THE_ZONE_32 = ({
 				},
 				{
 					id: 1296,
-					groupId: 48,
+					groupId: 46,
 					number: 1,
 					opponent1: {
 						id: 548,
@@ -6341,6 +6367,7 @@ export const IN_THE_ZONE_32 = ({
 			eventId: 1134,
 			bracketProgressionOverrides: [],
 			settings: {
+				teamPick: { modes: [{ mode: "SZ", count: 6 }], pool: "SENDOUQ" },
 				bracketProgression: [
 					{
 						name: "Main bracket",
@@ -6363,7 +6390,7 @@ export const IN_THE_ZONE_32 = ({
 			discordUrl: null,
 			castTwitchAccounts: ["dappleproductions", "kyochandxd"],
 			castedMatchesInfo: null,
-			mapPickingStyle: "AUTO_SZ",
+			mapPickingStyle: "AUTO",
 			name: "In The Zone 32",
 			hasRules: false,
 			logoUrl: "/test.avif",
@@ -7281,7 +7308,6 @@ export const IN_THE_ZONE_32 = ({
 				},
 			],
 			toSetMapPool: [],
-			tieBreakerMapPool: [],
 			latestTeamIdByDuplicatedUserId: {},
 		},
 	}) as TournamentData;

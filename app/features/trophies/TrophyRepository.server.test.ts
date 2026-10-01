@@ -52,6 +52,36 @@ describe("trophy approvals", () => {
 		expect(await trophyCount()).toBe(1);
 	});
 
+	test("the named creator becomes the trophy's creator", async () => {
+		const artist = await UserFactory.create();
+		const submitter = await UserFactory.create();
+		const organization = await TournamentOrganizationFactory.create({
+			ownerId: submitter.id,
+		});
+		const pending = await TrophyFactory.createPending({
+			organizationId: organization.id,
+			submitterUserId: submitter.id,
+			creatorId: artist.id,
+		});
+
+		let accepted: null | {
+			id: number;
+		} = null;
+		for (const userId of reviewerIds.slice(0, TROPHY_APPROVALS_REQUIRED)) {
+			accepted = await TrophyRepository.addApproval({
+				pendingTrophyId: pending.id,
+				userId,
+			});
+		}
+
+		const trophy = await db
+			.selectFrom("Trophy")
+			.select(["creatorId", "managerId"])
+			.where("id", "=", accepted!.id)
+			.executeTakeFirstOrThrow();
+		expect(trophy).toEqual({ creatorId: artist.id, managerId: submitter.id });
+	});
+
 	test("ignores repeated approvals from the same user", async () => {
 		await TrophyRepository.addApproval({
 			pendingTrophyId,
@@ -254,7 +284,7 @@ describe("trophy list tiers", () => {
 	});
 
 	function createTrophyTournament({
-		trophyId,
+		trophyId: forTrophyId,
 		tier,
 		startInDays,
 	}: {
@@ -266,7 +296,7 @@ describe("trophy list tiers", () => {
 			{
 				authorId,
 				startTimes: [dateToDatabaseTimestamp(daysFromNow(startInDays))],
-				trophyId,
+				trophyId: forTrophyId,
 			},
 			tier ? { tier } : undefined,
 		);
@@ -343,7 +373,8 @@ describe("existsByName", () => {
 describe("user deletion", () => {
 	test("keeps their trophies and drops their approvals", async () => {
 		const submitter = await UserFactory.create();
-		const deleted = await UserFactory.create();
+		// bare: a random profile's weapon pool would block the delete on its own
+		const deleted = await UserFactory.create({ profile: null });
 
 		const trophy = await TrophyFactory.create({
 			name: "Orphaned Trophy",

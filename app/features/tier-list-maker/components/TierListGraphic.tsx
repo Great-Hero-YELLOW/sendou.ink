@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 import { Avatar } from "~/components/Avatar";
 import { GraphicContainer } from "~/features/img-export/components/Graphic";
@@ -5,7 +6,11 @@ import type {
 	TierListItem,
 	TierListMakerTier,
 } from "../tier-list-maker-schemas";
-import { tierListItemId, tierNameFontSize } from "../tier-list-maker-utils";
+import {
+	tierListItemId,
+	tierNameFontSize,
+	tierTextColor,
+} from "../tier-list-maker-utils";
 import styles from "./TierListGraphic.module.css";
 import { TierListItemImage } from "./TierListItemImage";
 
@@ -38,13 +43,20 @@ export function TierListGraphic({
 					<span className={styles.authorName}>{author.username}</span>
 				</div>
 			) : null}
-			<div className={styles.tiers}>
+			<div
+				className={clsx(styles.tiers, {
+					[styles.tiersWithoutLabels]: !showTierHeaders,
+				})}
+			>
 				{tiers.map((tier) => (
 					<div key={tier.id} className={styles.tierRow}>
 						{showTierHeaders ? (
 							<div
 								className={styles.tierLabel}
-								style={{ backgroundColor: tier.color }}
+								style={{
+									backgroundColor: tier.color,
+									color: tierTextColor(tier.color),
+								}}
 							>
 								<span style={{ fontSize: tierNameFontSize(tier.name) }}>
 									{tier.name}

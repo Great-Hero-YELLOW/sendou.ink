@@ -50,7 +50,7 @@
 	& li::marker {
 		font-size: var(--font-lg);
 		font-weight: var(--weight-bold);
-		color: var(--color-accent);
+		color: var(--color-fg-accent);
 		padding-inline-end: var(--s-2);
 	}
 }
@@ -60,14 +60,6 @@
 	flex-direction: column;
 	gap: var(--s-2);
 	padding-inline-start: var(--s-3);
-}
-
-.trophyGridButton {
-	all: unset;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
 }
 
 .trophyModalTournaments {

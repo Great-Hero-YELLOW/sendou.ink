@@ -5,11 +5,12 @@ import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournam
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import {
 	clearTournamentDataCache,
+	notifyTournamentStatusChanged,
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { errorToastIfFalsy, notFoundIfNullish } from "~/utils/remix.server";
 import { tournamentPage, tournamentRegisterPage } from "~/utils/urls";
 import { tournamentJoinSearchParams } from "../tournament-search-params";
@@ -91,6 +92,8 @@ export const action: ActionFunction = async ({ params, url }) => {
 	await ShowcaseTournaments.refreshCachedTournamentCounts(tournamentId);
 
 	clearTournamentDataCache(tournamentId);
+
+	await notifyTournamentStatusChanged(tournamentId, [user.id]);
 
 	throw redirect(
 		tournament.registrationOpen

@@ -20,7 +20,6 @@ export interface GetUserResponse {
 		twitch: string | null;
 		/** @deprecated */
 		twitter: null;
-		battlefy: string | null;
 		bsky: string | null;
 	};
 	plusServerTier: 1 | 2 | 3 | null;
@@ -147,9 +146,19 @@ export type GetTournamentTeamsResponse = Array<{
 	url: string;
 	/** URL for the global team page. @example "https://sendou.ink/t/moonlight" */
 	teamPageUrl: string | null;
-	/** @example "https://sendou.nyc3.cdn.digitaloceanspaces.com/pickup-logo-uReSb1b1XS3TWGLCKMDUD-1719054364813.webp" */
+	/** Pickup team logos are only shown before the tournament starts to organizers and the team's own members. @example "https://sendou.nyc3.cdn.digitaloceanspaces.com/pickup-logo-uReSb1b1XS3TWGLCKMDUD-1719054364813.webp" */
 	logoUrl: string | null;
 	seed: number | null;
+	/** Overall placement in the tournament. Null while the team is still playing. @example 5 */
+	placement: number | null;
+	/** Sets and maps the team has won and lost across every bracket it played. Null before the tournament has started. */
+	stats: {
+		setWins: number;
+		setLosses: number;
+		mapWins: number;
+		mapLosses: number;
+	} | null;
+	/** Only shown before the tournament starts to organizers and the team's own members. */
 	mapPool: Array<StageWithMode> | null;
 	/** Non-resetting MMR used for autoseeding: average of the members' seeding power. Ranked and unranked tournaments feed separate values. */
 	seedingPower: {
@@ -162,8 +171,6 @@ export type GetTournamentTeamsResponse = Array<{
 		name: string;
 		/** @example "79237403620945920" */
 		discordId: string;
-		/** @example "sendouc" */
-		battlefy: string | null;
 		/** @example "https://cdn.discordapp.com/avatars/79237403620945920/6fc41a44b069a0d2152ac06d1e496c6c.png" */
 		avatarUrl: string | null;
 		/** @example "FI" */
@@ -173,8 +180,8 @@ export type GetTournamentTeamsResponse = Array<{
 		inGameName: string | null;
 		/** User's pronouns. @example { "subject": "he", "object": "him" } */
 		pronouns: Pronouns | null;
-		/** Switch friend code used for identification purposes. @example "1234-5678-9101" */
-		friendCode: string;
+		/** Switch friend code used for identification purposes. Only shown to the tournament's organizers and only for 30 days after the start (120 days for leagues). @example "1234-5678-9101" */
+		friendCode: string | null;
 		/** @example "2024-01-12T20:00:00.000Z" */
 		joinedAt: string;
 	}>;
@@ -380,7 +387,7 @@ export type MapListMap = {
 	 * One of the following:
 	 * - id of the team that picked the map
 	 * - "DEFAULT" if it was a default map, something went wrong with the algorithm typically
-	 * - "TIEBREAKER" if it was a tiebreaker map (selected by the TO)
+	 * - "RANDOM" if it was a random map from the tournament's map pool that neither team picked
 	 * - "BOTH" both teams picked the map
 	 * - "TO" if it was a TO pick (from predefined maplist)
 	 * - "COUNTERPICK" if it was a counterpick
@@ -389,7 +396,7 @@ export type MapListMap = {
 	source:
 		| number
 		| "DEFAULT"
-		| "TIEBREAKER"
+		| "RANDOM"
 		| "BOTH"
 		| "TO"
 		| "COUNTERPICK"

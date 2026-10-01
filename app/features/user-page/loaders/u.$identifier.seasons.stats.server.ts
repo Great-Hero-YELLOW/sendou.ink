@@ -1,59 +1,123 @@
 import type { LoaderFunctionArgs } from "react-router";
-import * as v from "valibot";
 import { requireUser } from "~/features/auth/core/user.server";
 import * as LeaderboardRepository from "~/features/leaderboards/LeaderboardRepository.server";
+import * as SkillRepository from "~/features/mmr/SkillRepository.server";
+import { rankedUserSkill } from "~/features/mmr/tiered.server";
 import * as PlayerStatRepository from "~/features/sendouq-match/PlayerStatRepository.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
-import * as UserRepository from "~/features/user-page/UserRepository.server";
+import { userPageUserId } from "~/features/user-page/user-page-context.server";
 import type { SerializeFrom } from "~/utils/remix";
-import { notFoundIfNullish } from "~/utils/remix.server";
-import { userParamsSchema } from "../user-page-schemas";
-import { userSeasonsSearchParams } from "../user-page-search-params";
+import * as SeasonPlayerActivity from "../core/SeasonPlayerActivity";
+import { userSeasonsStatsSearchParams } from "../user-page-search-params";
 
 export type UserSeasonsStatsLoaderData = NonNullable<
 	SerializeFrom<typeof loader>
 >;
 
-export const loader = async ({ params, url }: LoaderFunctionArgs) => {
-	requireUser();
-	const { identifier } = v.parse(userParamsSchema, params);
-	const { info, season: seasonParam } = userSeasonsSearchParams.parse(url);
+const OVERVIEW_PLAYERS_COUNT = 4;
 
-	const user = notFoundIfNullish(
-		await UserRepository.findIdByIdentifier(identifier),
-	);
+export const loader = async ({ url }: LoaderFunctionArgs) => {
+	requireUser();
+	const { season: seasonParam, tab } = userSeasonsStatsSearchParams.parse(url);
+
+	const userId = userPageUserId();
 	const seasonsParticipatedIn =
-		await LeaderboardRepository.findSeasonsParticipatedInByUserId(user.id);
+		await LeaderboardRepository.findSeasonsParticipatedInByUserId(userId);
 
 	if (seasonsParticipatedIn.length === 0) {
 		return null;
 	}
 
-	const season = seasonParam ?? seasonsParticipatedIn[0];
+	const args = { season: seasonParam ?? seasonsParticipatedIn[0], userId };
+	const tabToLoad = seasonsParticipatedIn.includes(args.season) ? tab : null;
 
 	return {
-		season,
+		season: args.season,
+		seasonsParticipatedIn,
+		tab,
+		overview: tabToLoad === "overview" ? await overview(args) : null,
 		stages:
-			info === "stages"
-				? await PlayerStatRepository.findSeasonStagesByUserId({
-						season,
-						userId: user.id,
-					})
+			tabToLoad === "stages"
+				? await PlayerStatRepository.findSeasonStagesByUserId(args)
 				: null,
 		weapons:
-			info === "weapons"
-				? await ReportedWeaponRepository.findSeasonReportedWeaponsByUserId({
-						season,
-						userId: user.id,
-					})
+			tabToLoad === "weapons"
+				? await ReportedWeaponRepository.findSeasonReportedWeaponsByUserId(args)
 				: null,
 		players:
-			info === "enemies" || info === "mates"
-				? await PlayerStatRepository.findSeasonMatesEnemiesByUserId({
-						season,
-						userId: user.id,
-						type: info === "enemies" ? "ENEMY" : "MATE",
+			tabToLoad === "mates" || tabToLoad === "enemies"
+				? await playersWithActivity({
+						...args,
+						type: tabToLoad === "mates" ? "MATE" : "ENEMY",
 					})
 				: null,
 	};
 };
+
+async function overview(args: { season: number; userId: number }) {
+	const [
+		skill,
+		maps,
+		sets,
+		tournamentPlacements,
+		skills,
+		stages,
+		weapons,
+		mates,
+		enemies,
+	] = await Promise.all([
+		rankedUserSkill(args),
+		PlayerStatRepository.findSeasonMapWinrateByUserId(args),
+		PlayerStatRepository.findSeasonSetWinrateByUserId(args),
+		PlayerStatRepository.findSeasonTournamentPlacementsByUserId(args),
+		SkillRepository.findSeasonProgressionByUserId(args),
+		PlayerStatRepository.findSeasonStagesByUserId(args),
+		ReportedWeaponRepository.findSeasonReportedWeaponsByUserId(args),
+		PlayerStatRepository.findSeasonMatesEnemiesByUserId({
+			...args,
+			type: "MATE",
+		}),
+		PlayerStatRepository.findSeasonMatesEnemiesByUserId({
+			...args,
+			type: "ENEMY",
+		}),
+	]);
+
+	return {
+		skill,
+		winrates: { maps, sets },
+		tournaments: {
+			count: tournamentPlacements.length,
+			bestPlacement:
+				tournamentPlacements.length > 0
+					? Math.min(...tournamentPlacements.map((t) => t.placement))
+					: null,
+		},
+		skills,
+		stages,
+		weapons,
+		mates: mates.slice(0, OVERVIEW_PLAYERS_COUNT),
+		enemies: enemies.slice(0, OVERVIEW_PLAYERS_COUNT),
+	};
+}
+
+async function playersWithActivity(args: {
+	season: number;
+	userId: number;
+	type: "MATE" | "ENEMY";
+}) {
+	const [players, setParticipants] = await Promise.all([
+		PlayerStatRepository.findSeasonMatesEnemiesByUserId(args),
+		PlayerStatRepository.findSeasonSetParticipantsByUserId(args),
+	]);
+
+	const activity = SeasonPlayerActivity.summarize(setParticipants);
+
+	return {
+		activityWeeks: activity.weeks,
+		list: players.map((player) => ({
+			...player,
+			setsPerWeek: activity.players[args.type].get(player.user.id) ?? [],
+		})),
+	};
+}

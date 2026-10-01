@@ -9,6 +9,7 @@ import * as v from "valibot";
 import type { SendouButtonProps } from "~/components/elements/Button";
 import { FormMessage } from "~/components/FormMessage";
 import { SubmitButton } from "~/components/SubmitButton";
+import { holdRevalidationsDuring } from "~/features/chat/revalidation-scope";
 import { FormField as FormFieldComponent } from "./FormField";
 import { getFormFieldMetadata } from "./fields";
 import styles from "./SendouForm.module.css";
@@ -107,10 +108,6 @@ type BaseFormProps<T extends v.ObjectEntries> = {
 	) => boolean;
 	/** Called once after the action returns without field errors. */
 	onSuccess?: () => void;
-	/** For forms that render their own submit control inside `children`. */
-	hideSubmitButton?: boolean;
-	/** When false, navigating away with unsaved edits is not blocked (e.g. a chat draft). */
-	guardUnsavedChanges?: boolean;
 };
 
 /**
@@ -186,8 +183,6 @@ function SendouFormInner<T extends v.ObjectEntries>({
 	secondarySubmit,
 	hideSubmitButtonWhen,
 	onSuccess,
-	hideSubmitButton = false,
-	guardUnsavedChanges = true,
 }: SendouFormProps<T>) {
 	const { t } = useTranslation(["forms"]);
 	const fetcher = useFetcher<{ fieldErrors?: Record<string, string> }>();
@@ -263,11 +258,7 @@ function SendouFormInner<T extends v.ObjectEntries>({
 
 	const hasUnsavedChangesRef = React.useRef<() => boolean>(() => false);
 	hasUnsavedChangesRef.current = () =>
-		guardUnsavedChanges &&
-		mode === "submit" &&
-		!readOnly &&
-		store.dirty &&
-		fetcher.state === "idle";
+		mode === "submit" && !readOnly && store.dirty && fetcher.state === "idle";
 	useUnsavedChangesChecker(hasUnsavedChangesRef);
 
 	const previousFetcherStateRef = React.useRef(fetcher.state);
@@ -324,7 +315,7 @@ function SendouFormInner<T extends v.ObjectEntries>({
 		<>
 			{title ? <h2 className={styles.title}>{title}</h2> : null}
 			{resolvedChildren}
-			{mode !== "submit" || readOnly || hideSubmitButton ? null : (
+			{mode !== "submit" || readOnly ? null : (
 				<SubmitRow
 					hideWhen={
 						hideSubmitButtonWhen as ((values: unknown) => boolean) | undefined
@@ -505,11 +496,13 @@ function createFormActions({
 		const submitted = revalidateRoot
 			? { ...values, revalidateRoot: true }
 			: values;
-		fetcher.submit(submitted as Record<string, string>, {
-			method: "post",
-			action,
-			encType: "application/json",
-		});
+		void holdRevalidationsDuring(() =>
+			fetcher.submit(submitted as Record<string, string>, {
+				method: "post",
+				action,
+				encType: "application/json",
+			}),
+		);
 	};
 
 	const setClientError = (name: string, error: string | undefined) => {

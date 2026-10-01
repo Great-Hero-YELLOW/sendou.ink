@@ -189,7 +189,7 @@ function TrophyTermsGate({ children }: { children: React.ReactNode }) {
 					</Trans>
 				</p>
 			</div>
-			<SendouButton className={styles.termsAgreeButton} onPress={agreeToTerms}>
+			<SendouButton className={styles.termsAgreeButton} onClick={agreeToTerms}>
 				{t("trophies:new.terms.agree")}
 			</SendouButton>
 		</div>
@@ -197,16 +197,30 @@ function TrophyTermsGate({ children }: { children: React.ReactNode }) {
 }
 
 function NewTrophyForm() {
-	const { t } = useTranslation(["trophies"]);
+	const { t } = useTranslation(["trophies", "forms"]);
+	const data = useLoaderData<typeof loader>();
 
 	return (
-		<SendouForm schema={createTrophyFormSchema}>
+		<SendouForm
+			schema={createTrophyFormSchema}
+			defaultValues={{ creatorId: data.currentUserId }}
+		>
 			{({ FormField }) => (
 				<>
 					<FormField name="name" />
 					<FormField name="organizationId">
 						{({ error, value, onChange }: CustomFieldRenderProps) => (
 							<OrganizationField
+								error={error}
+								value={value as number | null}
+								onChange={onChange}
+							/>
+						)}
+					</FormField>
+					<FormField name="creatorId">
+						{({ error, value, onChange }: CustomFieldRenderProps) => (
+							<UserField
+								label={t("forms:labels.trophyCreator")}
 								error={error}
 								value={value as number | null}
 								onChange={onChange}
@@ -224,9 +238,6 @@ function NewTrophyForm() {
 						)}
 					</FormField>
 					<FormField name="description" />
-					<FormMessage type="info">
-						{t("trophies:new.form.creatorNotice")}
-					</FormMessage>
 				</>
 			)}
 		</SendouForm>
@@ -238,7 +249,9 @@ function UpdateTrophyTab() {
 	const data = useLoaderData<typeof loader>();
 	const [selectedId, setSelectedId] = React.useState<number | null>(null);
 
-	const selectedTrophy = data.editableTrophies.find((t) => t.id === selectedId);
+	const selectedTrophy = data.editableTrophies.find(
+		(candidate) => candidate.id === selectedId,
+	);
 
 	return (
 		<div className={styles.updateContainer}>
@@ -271,6 +284,7 @@ function UpdateTrophyForm({
 }: {
 	trophy: NewTrophyLoaderData["editableTrophies"][number];
 }) {
+	const { t } = useTranslation(["forms"]);
 	const decompressedModel = decompressTrophyModel(trophy.model) ?? "";
 
 	return (
@@ -282,6 +296,7 @@ function UpdateTrophyForm({
 				model: decompressedModel,
 				organizationId: trophy.organizationId,
 				managerId: trophy.managerId,
+				creatorId: trophy.creatorId,
 				description: "",
 			}}
 		>
@@ -299,7 +314,18 @@ function UpdateTrophyForm({
 					</FormField>
 					<FormField name="managerId">
 						{({ error, value, onChange }: CustomFieldRenderProps) => (
-							<ManagerField
+							<UserField
+								label={t("forms:labels.trophyManager")}
+								error={error}
+								value={value as number | null}
+								onChange={onChange}
+							/>
+						)}
+					</FormField>
+					<FormField name="creatorId">
+						{({ error, value, onChange }: CustomFieldRenderProps) => (
+							<UserField
+								label={t("forms:labels.trophyCreator")}
 								error={error}
 								value={value as number | null}
 								onChange={onChange}
@@ -323,20 +349,20 @@ function UpdateTrophyForm({
 	);
 }
 
-function ManagerField({
+function UserField({
+	label,
 	error,
 	value,
 	onChange,
 }: {
+	label: string;
 	error?: string;
 	value: number | null;
 	onChange: (value: number | null) => void;
 }) {
-	const { t } = useTranslation(["forms"]);
-
 	return (
 		<div>
-			<Label required>{t("forms:labels.trophyManager")}</Label>
+			<Label required>{label}</Label>
 			<UserSearch
 				initialUserId={value ?? undefined}
 				onChange={(user) => onChange(user?.id ?? null)}
@@ -415,14 +441,14 @@ function ModelField({
 								</span>
 								<Trophy
 									model={preview.compressedModel}
-									className={styles.trophyPreview}
 									preview
 									tier={1}
+									colorScheme={theme}
 								/>
 								<Trophy
 									model={preview.compressedModel}
-									className={styles.trophyPreview}
 									onRenderStats={reportRenderStats}
+									colorScheme={theme}
 								/>
 							</div>
 						))}
@@ -615,12 +641,13 @@ function TrophyList({
 	return (
 		<TrophyContextProvider>
 			<div className={styles.pendingList}>
-				{items.slice(0, visibleCount).map((item) => (
+				{items.map((item, i) => (
 					<TrophyListRow
 						key={item.id}
 						pending={item}
 						currentUserId={data.currentUserId}
 						canReview={data.canReview}
+						deferred={i >= visibleCount}
 					/>
 				))}
 			</div>
@@ -632,10 +659,12 @@ function TrophyListRow({
 	pending,
 	currentUserId,
 	canReview,
+	deferred,
 }: {
 	pending: NewTrophyLoaderData["pendingTrophies"][number];
 	currentUserId: number;
 	canReview: boolean;
+	deferred: boolean;
 }) {
 	const { t } = useTranslation(["trophies", "common"]);
 	const { submit, state } = useActionSubmit(pendingTrophyActionSchema);
@@ -676,7 +705,7 @@ function TrophyListRow({
 				className={styles.trophyPreviewButton}
 				onClick={() => setPreviewOpen(true)}
 			>
-				<Trophy model={pending.model} preview />
+				<Trophy model={pending.model} preview deferred={deferred} />
 			</button>
 			<SendouDialog
 				heading={pending.name}
@@ -684,11 +713,7 @@ function TrophyListRow({
 				onClose={() => setPreviewOpen(false)}
 				showCloseButton
 			>
-				<Trophy
-					model={pending.model}
-					className={styles.trophyPreview}
-					onRenderStats={reportRenderStats}
-				/>
+				<Trophy model={pending.model} onRenderStats={reportRenderStats} />
 			</SendouDialog>
 			<div className={styles.pendingMain}>
 				<div className={styles.pendingHeader}>
@@ -717,6 +742,23 @@ function TrophyListRow({
 						) : (
 							pending.submitterUsername
 						)}
+						{pending.creator &&
+						pending.creator.id !==
+							(pending.manager?.id ?? pending.submitterUserId) ? (
+							<>
+								{" • "}
+								<Trans
+									t={t}
+									i18nKey="trophies:details.createdBy"
+									values={{ name: pending.creator.username }}
+								>
+									Created by
+									<Link to={userPage({ discordId: pending.creator.discordId })}>
+										{pending.creator.username}
+									</Link>
+								</Trans>
+							</>
+						) : null}
 						{pending.organizationName ? (
 							<>
 								{" • "}
@@ -817,7 +859,7 @@ function TrophyListRow({
 						<>
 							<SendouButton
 								size="small"
-								onPress={handleApprove}
+								onClick={handleApprove}
 								isDisabled={state !== "idle" || alreadyApproved}
 							>
 								{alreadyApproved
@@ -830,7 +872,7 @@ function TrophyListRow({
 								size="small"
 								shape="square"
 								icon={<Clipboard size={16} />}
-								onPress={() =>
+								onClick={() =>
 									navigator.clipboard.writeText(
 										decompressTrophyModel(pending.model ?? "{}") ?? "",
 									)
@@ -843,7 +885,7 @@ function TrophyListRow({
 							variant="minimal-destructive"
 							size="small"
 							shape="square"
-							onPress={handleDelete}
+							onClick={handleDelete}
 							isDisabled={state !== "idle"}
 							icon={<Trash2 size={16} />}
 						/>
@@ -873,7 +915,7 @@ function DeclineButton({ pendingTrophyId }: { pendingTrophyId: number }) {
 			<SendouButton
 				variant="outlined-destructive"
 				size="small"
-				onPress={() => setIsOpen(true)}
+				onClick={() => setIsOpen(true)}
 			>
 				{t("trophies:new.pending.decline")}
 			</SendouButton>
@@ -961,6 +1003,13 @@ function PendingTrophyDiff({
 			oldValue: target.managerUsername ?? "—",
 			newValue: newManagerName,
 			changed: target.managerId !== newManagerId,
+		},
+		{
+			label: t("forms:labels.trophyCreator"),
+			oldValue: target.creatorUsername ?? "—",
+			newValue: pending.creator?.username ?? target.creatorUsername ?? "—",
+			changed:
+				pending.creatorId !== null && target.creatorId !== pending.creatorId,
 		},
 		{
 			label: t("forms:labels.trophyModel"),

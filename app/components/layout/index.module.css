@@ -17,12 +17,23 @@
 	position: sticky;
 	top: 0;
 	z-index: 10;
+	/* captured on its own so animating content slides under it instead of over it */
+	view-transition-name: layout-header;
+
+	/* snapshots paint above the top layer, which would lift it over an open modal's backdrop */
+	:root:has(:modal) & {
+		view-transition-name: none;
+	}
 }
 
-.siteTitleFlipper {
-	min-width: 0;
-	padding: 3px;
-	margin: -3px;
+::view-transition-group(layout-header) {
+	z-index: 1;
+}
+
+::view-transition-group(layout-header),
+::view-transition-old(layout-header),
+::view-transition-new(layout-header) {
+	animation-duration: 0s;
 }
 
 .siteTitle {
@@ -40,12 +51,12 @@
 	flex-direction: row;
 	align-items: center;
 	justify-content: center;
-	width: 40px;
+	width: 36px;
 	height: 36px;
-	background-color: var(--color-text-accent);
+	background-color: var(--color-fill-accent);
 	border-radius: var(--radius-field);
 	font-weight: var(--weight-bold);
-	color: var(--color-text-inverse);
+	color: var(--color-fg-on-accent);
 	text-decoration: none;
 	flex-shrink: 0;
 	transition: background-color 0.2s;
@@ -141,9 +152,13 @@
 		height: calc(var(--layout-nav-height) + env(safe-area-inset-top));
 	}
 
-	.sideNavModalOverlay,
-	.chatSidebarModalOverlay {
+	.chatSidebarModal {
 		top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
+		height: calc(100% - var(--layout-nav-height) - env(safe-area-inset-top));
+
+		&::backdrop {
+			top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
+		}
 	}
 }
 
@@ -168,8 +183,8 @@
 .friendRequestsBadge {
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-bold);
-	color: var(--color-text-inverse);
-	background-color: var(--color-text-accent);
+	color: var(--color-fg-on-accent);
+	background-color: var(--color-fill-accent);
 	min-width: 18px;
 	height: 18px;
 	padding: 0 var(--s-1);
@@ -186,8 +201,8 @@
 	inset-inline-end: -5px;
 	font-size: var(--font-2xs);
 	font-weight: var(--weight-bold);
-	color: var(--color-text-inverse);
-	background-color: var(--color-text-accent);
+	color: var(--color-fg-on-accent);
+	background-color: var(--color-fill-accent);
 	min-width: 16px;
 	height: 16px;
 	padding: 0 var(--s-0-5);
@@ -201,6 +216,10 @@
 		inset-inline-end: auto;
 		inset-inline-start: -5px;
 	}
+}
+
+.sideNavCollapseForm {
+	display: contents;
 }
 
 .sideNavCollapseButtonContainer {
@@ -246,33 +265,50 @@
 	}
 }
 
-.sideNavModalOverlay {
-	position: fixed;
-	inset: 0;
-	top: var(--layout-nav-height);
-	background-color: rgba(0, 0, 0, 0.4);
-	backdrop-filter: blur(4px);
-	z-index: 20;
-}
-
-.sideNavModal {
-	height: 100%;
-	width: var(--layout-sidenav-width);
-	border-right: 1.5px solid var(--color-border);
-}
-
-.sideNavModalDialog {
+/*
+The sidebar doubles as the tablet drawer: it is a popover, hidden on tablet
+until its header button opens it into the top layer. On desktop it is just
+shown, so the popover's user agent styles are reset here.
+*/
+.sideNavDrawer {
+	margin: 0;
+	padding: 0;
+	inset-block-end: auto;
+	inset-inline-end: auto;
+	width: auto;
+	border-block: 0;
+	border-inline-start: 0;
+	color: inherit;
 	outline: none;
-	height: 100%;
-}
 
-.sideNavInModal.sideNavInModal {
-	display: flex;
-	position: static;
-	height: 100%;
-	min-width: unset;
-	max-width: unset;
-	border-right: none;
+	@media screen and (min-width: 600px) and (max-width: 999px) {
+		&:popover-open {
+			display: flex;
+			position: fixed;
+			top: var(--layout-nav-height);
+			left: 0;
+			height: calc(100% - var(--layout-nav-height));
+
+			&::backdrop {
+				background-color: rgba(0, 0, 0, 0.4);
+				backdrop-filter: blur(4px);
+				top: var(--layout-nav-height);
+			}
+
+			@media screen and (display-mode: standalone) {
+				top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
+				height: calc(
+					100% -
+					var(--layout-nav-height) -
+					env(safe-area-inset-top)
+				);
+
+				&::backdrop {
+					top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
+				}
+			}
+		}
+	}
 }
 
 .mobileLogo {
@@ -307,26 +343,28 @@
 	}
 }
 
-.chatSidebarModalOverlay {
+.chatSidebarModal {
 	position: fixed;
 	inset: 0;
 	top: var(--layout-nav-height);
-	background-color: rgba(0, 0, 0, 0.4);
-	backdrop-filter: blur(4px);
-	z-index: 20;
-}
-
-.chatSidebarModal {
-	height: 100%;
-	width: var(--layout-sidenav-width);
+	margin: 0;
 	margin-left: auto;
+	padding: 0;
+	max-width: none;
+	max-height: none;
+	height: calc(100% - var(--layout-nav-height));
+	width: var(--layout-sidenav-width);
+	border: none;
 	border-left: 1.5px solid var(--color-border);
 	background-color: var(--color-bg-nav);
-}
-
-.chatSidebarModalDialog {
+	color: var(--color-text);
 	outline: none;
-	height: 100%;
+
+	&::backdrop {
+		background-color: rgba(0, 0, 0, 0.4);
+		backdrop-filter: blur(4px);
+		top: var(--layout-nav-height);
+	}
 }
 
 @media screen and (min-width: 1475px) {
@@ -393,6 +431,11 @@
 		width: 18px;
 		height: 18px;
 	}
+}
+
+.sideNavFooterTeamAvatar {
+	border-radius: 50%;
+	object-fit: cover;
 }
 
 .sideNavFooterNotification {

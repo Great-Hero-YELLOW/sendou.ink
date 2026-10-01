@@ -3,6 +3,7 @@ import type { TournamentData } from "../Tournament.server";
 /** Low Ink with groups (swiss) finished but none of the follow-up brackets started */
 export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 	streams: [],
+	divisionTiers: [],
 	data: {
 		stage: [
 			{
@@ -58,43 +59,13 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 				stageId: 1429,
 			},
 			{
-				id: 4360,
-				number: 2,
-				stageId: 1429,
-			},
-			{
-				id: 4361,
-				number: 3,
-				stageId: 1429,
-			},
-			{
 				id: 4362,
 				number: 1,
 				stageId: 1430,
 			},
 			{
-				id: 4363,
-				number: 2,
-				stageId: 1430,
-			},
-			{
-				id: 4364,
-				number: 3,
-				stageId: 1430,
-			},
-			{
 				id: 4365,
 				number: 1,
-				stageId: 1431,
-			},
-			{
-				id: 4366,
-				number: 2,
-				stageId: 1431,
-			},
-			{
-				id: 4367,
-				number: 3,
 				stageId: 1431,
 			},
 		],
@@ -108,6 +79,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13349,
@@ -118,6 +90,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13350,
@@ -128,6 +101,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13351,
@@ -138,6 +112,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13352,
@@ -148,6 +123,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13353,
@@ -158,6 +134,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13354,
@@ -168,6 +145,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13355,
@@ -178,6 +156,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13356,
@@ -188,6 +167,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13357,
@@ -198,6 +178,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13358,
@@ -208,6 +189,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13359,
@@ -218,6 +200,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					count: 3,
 					type: "PLAY_ALL",
 				},
+				section: null,
 			},
 			{
 				id: 13452,
@@ -229,6 +212,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13453,
@@ -240,6 +224,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13454,
@@ -251,6 +236,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13455,
@@ -262,10 +248,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13456,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				stageId: 1429,
 				maps: {
@@ -273,10 +260,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13457,
-				groupId: 4360,
+				groupId: 4359,
 				number: 2,
 				stageId: 1429,
 				maps: {
@@ -284,10 +272,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13458,
-				groupId: 4360,
+				groupId: 4359,
 				number: 3,
 				stageId: 1429,
 				maps: {
@@ -295,10 +284,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13459,
-				groupId: 4360,
+				groupId: 4359,
 				number: 4,
 				stageId: 1429,
 				maps: {
@@ -306,10 +296,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13460,
-				groupId: 4360,
+				groupId: 4359,
 				number: 5,
 				stageId: 1429,
 				maps: {
@@ -317,10 +308,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13461,
-				groupId: 4360,
+				groupId: 4359,
 				number: 6,
 				stageId: 1429,
 				maps: {
@@ -328,10 +320,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13462,
-				groupId: 4361,
+				groupId: 4359,
 				number: 1,
 				stageId: 1429,
 				maps: {
@@ -339,10 +332,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 			{
 				id: 13463,
-				groupId: 4361,
+				groupId: 4359,
 				number: 2,
 				stageId: 1429,
 				maps: {
@@ -350,6 +344,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 			{
 				id: 13464,
@@ -361,6 +356,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13465,
@@ -372,6 +368,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13466,
@@ -383,6 +380,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13467,
@@ -394,10 +392,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13468,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				stageId: 1430,
 				maps: {
@@ -405,10 +404,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13469,
-				groupId: 4363,
+				groupId: 4362,
 				number: 2,
 				stageId: 1430,
 				maps: {
@@ -416,10 +416,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13470,
-				groupId: 4363,
+				groupId: 4362,
 				number: 3,
 				stageId: 1430,
 				maps: {
@@ -427,10 +428,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13471,
-				groupId: 4363,
+				groupId: 4362,
 				number: 4,
 				stageId: 1430,
 				maps: {
@@ -438,10 +440,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13472,
-				groupId: 4363,
+				groupId: 4362,
 				number: 5,
 				stageId: 1430,
 				maps: {
@@ -449,10 +452,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13473,
-				groupId: 4363,
+				groupId: 4362,
 				number: 6,
 				stageId: 1430,
 				maps: {
@@ -460,10 +464,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13474,
-				groupId: 4364,
+				groupId: 4362,
 				number: 1,
 				stageId: 1430,
 				maps: {
@@ -471,10 +476,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 			{
 				id: 13475,
-				groupId: 4364,
+				groupId: 4362,
 				number: 2,
 				stageId: 1430,
 				maps: {
@@ -482,6 +488,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 			{
 				id: 13476,
@@ -493,6 +500,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13477,
@@ -504,6 +512,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13478,
@@ -515,6 +524,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13479,
@@ -526,10 +536,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "winners",
 			},
 			{
 				id: 13480,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				stageId: 1431,
 				maps: {
@@ -537,10 +548,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13481,
-				groupId: 4366,
+				groupId: 4365,
 				number: 2,
 				stageId: 1431,
 				maps: {
@@ -548,10 +560,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13482,
-				groupId: 4366,
+				groupId: 4365,
 				number: 3,
 				stageId: 1431,
 				maps: {
@@ -559,10 +572,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13483,
-				groupId: 4366,
+				groupId: 4365,
 				number: 4,
 				stageId: 1431,
 				maps: {
@@ -570,10 +584,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13484,
-				groupId: 4366,
+				groupId: 4365,
 				number: 5,
 				stageId: 1431,
 				maps: {
@@ -581,10 +596,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13485,
-				groupId: 4366,
+				groupId: 4365,
 				number: 6,
 				stageId: 1431,
 				maps: {
@@ -592,10 +608,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "losers",
 			},
 			{
 				id: 13486,
-				groupId: 4367,
+				groupId: 4365,
 				number: 1,
 				stageId: 1431,
 				maps: {
@@ -603,10 +620,11 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 			{
 				id: 13487,
-				groupId: 4367,
+				groupId: 4365,
 				number: 2,
 				stageId: 1431,
 				maps: {
@@ -614,6 +632,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 					type: "BEST_OF",
 					pickBan: "COUNTERPICK",
 				},
+				section: "finals",
 			},
 		],
 		match: [
@@ -4758,7 +4777,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37890,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17749,
@@ -4777,7 +4796,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37891,
-				groupId: 4360,
+				groupId: 4359,
 				number: 2,
 				opponent1: {
 					id: 17697,
@@ -4796,7 +4815,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37892,
-				groupId: 4360,
+				groupId: 4359,
 				number: 3,
 				opponent1: {
 					id: 17768,
@@ -4815,7 +4834,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37893,
-				groupId: 4360,
+				groupId: 4359,
 				number: 4,
 				opponent1: {
 					id: 16974,
@@ -4834,7 +4853,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37894,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17280,
@@ -4852,7 +4871,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37895,
-				groupId: 4360,
+				groupId: 4359,
 				number: 2,
 				opponent1: {
 					id: 17208,
@@ -4870,7 +4889,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37896,
-				groupId: 4360,
+				groupId: 4359,
 				number: 3,
 				opponent1: {
 					id: 17457,
@@ -4888,7 +4907,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37897,
-				groupId: 4360,
+				groupId: 4359,
 				number: 4,
 				opponent1: {
 					id: 17713,
@@ -4906,7 +4925,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37898,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17749,
@@ -4923,7 +4942,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37899,
-				groupId: 4360,
+				groupId: 4359,
 				number: 2,
 				opponent1: {
 					id: 17067,
@@ -4940,7 +4959,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37900,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17168,
@@ -4958,7 +4977,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37901,
-				groupId: 4360,
+				groupId: 4359,
 				number: 2,
 				opponent1: {
 					id: 17710,
@@ -4976,7 +4995,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37902,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17749,
@@ -4993,7 +5012,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37903,
-				groupId: 4360,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 16984,
@@ -5011,7 +5030,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37904,
-				groupId: 4361,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: 17561,
@@ -5029,7 +5048,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37905,
-				groupId: 4361,
+				groupId: 4359,
 				number: 1,
 				opponent1: {
 					id: null,
@@ -5315,7 +5334,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37921,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16828,
@@ -5334,7 +5353,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37922,
-				groupId: 4363,
+				groupId: 4362,
 				number: 2,
 				opponent1: {
 					id: 16872,
@@ -5353,7 +5372,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37923,
-				groupId: 4363,
+				groupId: 4362,
 				number: 3,
 				opponent1: {
 					id: 16806,
@@ -5372,7 +5391,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37924,
-				groupId: 4363,
+				groupId: 4362,
 				number: 4,
 				opponent1: {
 					id: 17434,
@@ -5391,7 +5410,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37925,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 17423,
@@ -5409,7 +5428,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37926,
-				groupId: 4363,
+				groupId: 4362,
 				number: 2,
 				opponent1: {
 					id: 17188,
@@ -5427,7 +5446,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37927,
-				groupId: 4363,
+				groupId: 4362,
 				number: 3,
 				opponent1: {
 					id: 16830,
@@ -5445,7 +5464,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37928,
-				groupId: 4363,
+				groupId: 4362,
 				number: 4,
 				opponent1: {
 					id: 16825,
@@ -5463,7 +5482,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37929,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16828,
@@ -5480,7 +5499,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37930,
-				groupId: 4363,
+				groupId: 4362,
 				number: 2,
 				opponent1: {
 					id: 16830,
@@ -5497,7 +5516,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37931,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16803,
@@ -5515,7 +5534,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37932,
-				groupId: 4363,
+				groupId: 4362,
 				number: 2,
 				opponent1: {
 					id: 16887,
@@ -5533,7 +5552,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37933,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16803,
@@ -5550,7 +5569,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37934,
-				groupId: 4363,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16829,
@@ -5568,7 +5587,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37935,
-				groupId: 4364,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16910,
@@ -5586,7 +5605,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37936,
-				groupId: 4364,
+				groupId: 4362,
 				number: 1,
 				opponent1: {
 					id: 16910,
@@ -5874,7 +5893,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37952,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 16821,
@@ -5893,7 +5912,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37953,
-				groupId: 4366,
+				groupId: 4365,
 				number: 2,
 				opponent1: {
 					id: 17609,
@@ -5912,7 +5931,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37954,
-				groupId: 4366,
+				groupId: 4365,
 				number: 3,
 				opponent1: {
 					id: 16805,
@@ -5931,7 +5950,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37955,
-				groupId: 4366,
+				groupId: 4365,
 				number: 4,
 				opponent1: {
 					id: 17138,
@@ -5950,7 +5969,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37956,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17769,
@@ -5968,7 +5987,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37957,
-				groupId: 4366,
+				groupId: 4365,
 				number: 2,
 				opponent1: {
 					id: 17368,
@@ -5986,7 +6005,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37958,
-				groupId: 4366,
+				groupId: 4365,
 				number: 3,
 				opponent1: {
 					id: 16802,
@@ -6004,7 +6023,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37959,
-				groupId: 4366,
+				groupId: 4365,
 				number: 4,
 				opponent1: {
 					id: 17698,
@@ -6022,7 +6041,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37960,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17769,
@@ -6039,7 +6058,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37961,
-				groupId: 4366,
+				groupId: 4365,
 				number: 2,
 				opponent1: {
 					id: 16805,
@@ -6056,7 +6075,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37962,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17354,
@@ -6074,7 +6093,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37963,
-				groupId: 4366,
+				groupId: 4365,
 				number: 2,
 				opponent1: {
 					id: 17529,
@@ -6092,7 +6111,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37964,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17354,
@@ -6109,7 +6128,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37965,
-				groupId: 4366,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17634,
@@ -6127,7 +6146,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37966,
-				groupId: 4367,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17765,
@@ -6145,7 +6164,7 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 			},
 			{
 				id: 37967,
-				groupId: 4367,
+				groupId: 4365,
 				number: 1,
 				opponent1: {
 					id: 17765,
@@ -8594,7 +8613,6 @@ export const LOW_INK_DECEMBER_2024 = (): TournamentData => ({
 				avgSeedingSkillOrdinal: -5.653760133881115,
 			},
 		],
-		tieBreakerMapPool: [],
 		toSetMapPool: [
 			{
 				mode: "CB",

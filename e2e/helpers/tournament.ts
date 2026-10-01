@@ -4,7 +4,7 @@ import { ADMIN_ID } from "~/features/admin/admin-constants";
 import type { TournamentTierNumber } from "~/features/tournament/core/tiering";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import type { Factories } from "./factories";
 
 export const ROSTER_SIZE = 4;
@@ -172,7 +172,9 @@ export async function createTeams(
 	tournamentId: number,
 	seeds: TeamSeed[],
 ) {
-	const teams = [];
+	const teams: Awaited<
+		ReturnType<typeof factories.TournamentTeamFactory.create>
+	>[] = [];
 	for (const [i, seed] of seeds.entries()) {
 		const presetMembers = seed.members ?? [];
 		const rosterSize = seed.rosterSize ?? ROSTER_SIZE;

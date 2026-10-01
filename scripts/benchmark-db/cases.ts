@@ -1,4 +1,4 @@
-import { subDays } from "date-fns";
+import { eachDayOfInterval, subDays } from "date-fns";
 import * as AdminRepository from "~/features/admin/AdminRepository.server";
 import * as ExternalStreamRepository from "~/features/admin/ExternalStreamRepository.server";
 import * as ApiRepository from "~/features/api/ApiRepository.server";
@@ -17,6 +17,7 @@ import * as LeaderboardRepository from "~/features/leaderboards/LeaderboardRepos
 import * as LFGRepository from "~/features/lfg/LFGRepository.server";
 import * as LiveStreamRepository from "~/features/live-streams/LiveStreamRepository.server";
 import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
+import * as Seasons from "~/features/mmr/core/Seasons";
 import * as SkillRepository from "~/features/mmr/SkillRepository.server";
 import * as NotificationRepository from "~/features/notifications/NotificationRepository.server";
 import * as PlusSuggestionRepository from "~/features/plus-suggestions/PlusSuggestionRepository.server";
@@ -50,7 +51,7 @@ import * as UserCardRepository from "~/features/user-card/UserCardRepository.ser
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import * as VodRepository from "~/features/vods/VodRepository.server";
 import { LUTI_NAME_PREFIX } from "~/routines/computeLutiDivs";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { dateToDatabaseTimestamp, dateToYYYYMMDD } from "~/utils/dates";
 import type { Fixtures } from "./fixtures";
 
 const SEARCH_QUERY = { query: "s", limit: 25 };
@@ -152,6 +153,15 @@ export function buildCases(fx: Fixtures): {
 	);
 
 	add(
+		"AvailabilityRepository.findScheduleVisibleUserIds",
+		both(fx.manyUserIds, fx.heavyUser),
+		([userIds, user]) =>
+			AvailabilityRepository.findScheduleVisibleUserIds({
+				userIds,
+				viewerId: user.id,
+			}),
+	);
+	add(
 		"AvailabilityRepository.findAllWeeksByUserIds",
 		both(fx.manyUserIds, fx.availabilityWindow),
 		([userIds, window]) =>
@@ -221,7 +231,7 @@ export function buildCases(fx: Fixtures): {
 		BadgeRepository.findManagedByUserId(userId),
 	);
 	add("BadgeRepository.findByOwnerUserId", fx.badgeOwnerUserId, (userId) =>
-		BadgeRepository.findByOwnerUserId(userId),
+		BadgeRepository.findByOwnerUserId(userId, []),
 	);
 	add("BadgeRepository.findByAuthorUserId", fx.badgeAuthorId, (userId) =>
 		BadgeRepository.findByAuthorUserId(userId),
@@ -265,9 +275,14 @@ export function buildCases(fx: Fixtures): {
 	add("CalendarRepository.findById", fx.heavyCalendarEventId, (eventId) =>
 		CalendarRepository.findById(eventId, {
 			includeMapPool: true,
-			includeTieBreakerMapPool: true,
 			includeBadgePrizes: true,
 		}),
+	);
+	add(
+		"CalendarRepository.findAvatarImgIds",
+		both(fx.heavyCalendarEventId, fx.heavyTournamentId),
+		([eventId, tournamentId]) =>
+			CalendarRepository.findAvatarImgIds({ eventId, tournamentId }),
 	);
 	add(
 		"CalendarRepository.findRecentTournamentsByOrganizerUserId",
@@ -433,12 +448,23 @@ export function buildCases(fx: Fixtures): {
 		LFGRepository.findByAuthorUserId(authorId),
 	);
 
+	add("LiveStreamRepository.findByUserId", fx.heavyUser, (user) =>
+		LiveStreamRepository.findByUserId(user.id),
+	);
 	addStatic("LiveStreamRepository.findXRankStreams", () =>
 		LiveStreamRepository.findXRankStreams(),
 	);
 
 	add("MatchProfileRepository.findSettingsByUserId", fx.heavyUser, (user) =>
 		MatchProfileRepository.findSettingsByUserId(user.id),
+	);
+	add(
+		"MatchProfileRepository.findMapModePreferencesByUserId",
+		fx.heavyUser,
+		(user) => MatchProfileRepository.findMapModePreferencesByUserId(user.id),
+	);
+	add("MatchProfileRepository.findWeaponPoolByUserId", fx.heavyUser, (user) =>
+		MatchProfileRepository.findWeaponPoolByUserId(user.id),
 	);
 
 	add("SkillRepository.findCurrentUserSkills", fx.skillBatch, (skillBatch) =>
@@ -470,6 +496,9 @@ export function buildCases(fx: Fixtures): {
 	);
 	add("SkillRepository.findSeasonProgressionByUserId", fx.sq, (sq) =>
 		SkillRepository.findSeasonProgressionByUserId(sq),
+	);
+	add("SkillRepository.findSeasonPeakOrdinalByUserId", fx.sq, (sq) =>
+		SkillRepository.findSeasonPeakOrdinalByUserId(sq),
 	);
 	add("SkillRepository.findSeasonActiveDaysByUserId", fx.sq, (sq) =>
 		SkillRepository.findSeasonActiveDaysByUserId(sq),
@@ -736,11 +765,24 @@ export function buildCases(fx: Fixtures): {
 	add("SQMatchRepository.findById", fx.heavyGroupMatchId, (matchId) =>
 		SQMatchRepository.findById(matchId),
 	);
+	add("SQMatchRepository.findLiveStateById", fx.heavyGroupMatchId, (matchId) =>
+		SQMatchRepository.findLiveStateById(matchId),
+	);
 	add("SQMatchRepository.countSeasonResultPagesByUserId", fx.sq, (sq) =>
 		SQMatchRepository.countSeasonResultPagesByUserId(sq),
 	);
 	add("SQMatchRepository.findSeasonResultsByUserId", fx.sq, (sq) =>
 		SQMatchRepository.findSeasonResultsByUserId({ ...sq, page: 1 }),
+	);
+	add("SQMatchRepository.findSeasonDaySummariesByUserId", fx.sq, (sq) =>
+		SQMatchRepository.findSeasonDaySummariesByUserId({
+			...sq,
+			// every day of the season, the worst case of a page spanning it all
+			dates: eachDayOfInterval({
+				start: Seasons.nthToDateRange(sq.season).starts,
+				end: Seasons.nthToDateRange(sq.season).ends,
+			}).map(dateToYYYYMMDD),
+		}),
 	);
 	add("SQMatchRepository.findSeasonCanceledMatchesByUserId", fx.sq, (sq) =>
 		SQMatchRepository.findSeasonCanceledMatchesByUserId(sq),
@@ -822,6 +864,9 @@ export function buildCases(fx: Fixtures): {
 	addStatic("SQGroupRepository.findRecentlyFinishedMatches", () =>
 		SQGroupRepository.findRecentlyFinishedMatches(),
 	);
+	addStatic("SQGroupRepository.findCurrentReceivedLikeCounts", () =>
+		SQGroupRepository.findCurrentReceivedLikeCounts(),
+	);
 
 	addStatic("SplatoonRotationRepository.findAll", () =>
 		SplatoonRotationRepository.findAll(),
@@ -853,6 +898,12 @@ export function buildCases(fx: Fixtures): {
 
 	add("XRankPlacementRepository.isPlayerLinkedByUserId", fx.xrank, (xrank) =>
 		XRankPlacementRepository.isPlayerLinkedByUserId(xrank.userId),
+	);
+	add(
+		"XRankPlacementRepository.findTenStarWeaponSplIdsByUserId",
+		fx.xrank,
+		(xrank) =>
+			XRankPlacementRepository.findTenStarWeaponSplIdsByUserId(xrank.userId),
 	);
 	add(
 		"XRankPlacementRepository.findPeakVerifiedXpByUserId",
@@ -975,6 +1026,53 @@ export function buildCases(fx: Fixtures): {
 		fx.heavyTournamentTeamId,
 		(tournamentTeamId) =>
 			TournamentMatchRepository.findByTournamentTeamId(tournamentTeamId),
+	);
+	add(
+		"TournamentMatchRepository.findScheduleProposalsByMatchId",
+		fx.scheduleProposal?.matchId ?? fx.heavyTournamentMatchId,
+		(matchId) =>
+			TournamentMatchRepository.findScheduleProposalsByMatchId(matchId),
+	);
+	add(
+		"TournamentMatchRepository.findLastResultAtsByTournamentId",
+		fx.heaviestBracketTournamentId,
+		(tournamentId) =>
+			TournamentMatchRepository.findLastResultAtsByTournamentId(tournamentId),
+	);
+	add(
+		"TournamentMatchRepository.findScheduledByUserIds",
+		both(fx.manyUserIds, fx.availabilityWindow),
+		([userIds, window]) =>
+			TournamentMatchRepository.findScheduledByUserIds({
+				userIds,
+				startsAt: window.startsAt,
+				endsAt: window.endsAt,
+			}),
+	);
+	add(
+		"TournamentMatchRepository.findScheduledByUserId",
+		both(fx.heavyUser, fx.availabilityWindow),
+		([user, window]) =>
+			TournamentMatchRepository.findScheduledByUserId({
+				userId: user.id,
+				startsAt: window.startsAt,
+				endsAt: window.endsAt,
+			}),
+	);
+	add(
+		"TournamentMatchRepository.findScheduledBetween",
+		fx.availabilityWindow,
+		(window) =>
+			TournamentMatchRepository.findScheduledBetween({
+				startsAt: window.startsAt,
+				endsAt: window.endsAt,
+			}),
+	);
+	add(
+		"TournamentMatchRepository.findScheduleProposalById",
+		fx.scheduleProposal,
+		(proposal) =>
+			TournamentMatchRepository.findScheduleProposalById(proposal.id),
 	);
 
 	add("TournamentOrganizationRepository.findBySlug", fx.heavyOrg, (org) =>
@@ -1200,6 +1298,15 @@ export function buildCases(fx: Fixtures): {
 		(window) => TournamentRepository.findAllBetweenTwoTimestamps(window),
 	);
 	add(
+		"TournamentRepository.findPendingCheckInsStartingBetween",
+		fx.calendarWindow,
+		(window) =>
+			TournamentRepository.findPendingCheckInsStartingBetween({
+				startsAfter: window.startTime,
+				startsBefore: window.endTime,
+			}),
+	);
+	add(
 		"TournamentRepository.findTopThreeResultsByTournamentIds",
 		fx.heavyTournamentId,
 		(tournamentId) =>
@@ -1222,6 +1329,12 @@ export function buildCases(fx: Fixtures): {
 	addStatic("TournamentRepository.findRunningTournamentIds", () =>
 		TournamentRepository.findRunningTournamentIds(),
 	);
+	add(
+		"TournamentRepository.findDivisionTiersByTournamentId",
+		fx.heavyTournamentId,
+		(tournamentId) =>
+			TournamentRepository.findDivisionTiersByTournamentId(tournamentId),
+	);
 
 	add(
 		"TournamentTeamRepository.findAllByChatRoomIds",
@@ -1243,6 +1356,9 @@ export function buildCases(fx: Fixtures): {
 		fx.heavyTournamentTeamId,
 		(tournamentTeamId) =>
 			TournamentTeamRepository.findInviteCodeById(tournamentTeamId),
+	);
+	add("TournamentTeamRepository.isPickupAvatarImgId", fx.imageId, (imageId) =>
+		TournamentTeamRepository.isPickupAvatarImgId(imageId),
 	);
 	add(
 		"TournamentTeamRepository.findRecentlyPlayedMapsByIds",
@@ -1312,35 +1428,29 @@ export function buildCases(fx: Fixtures): {
 	add("UserRepository.findIdByIdentifier", fx.heavyUser, (user) =>
 		UserRepository.findIdByIdentifier(user.identifier),
 	);
+	add("UserRepository.findPageUserByIdentifier", fx.heavyUser, (user) =>
+		UserRepository.findPageUserByIdentifier(user.identifier),
+	);
 	add("UserRepository.findCountriesByUserIds", fx.skillBatch, (skillBatch) =>
 		UserRepository.findCountriesByUserIds(skillBatch.userIds),
 	);
 	add("UserRepository.findPlusTiersByUserIds", fx.skillBatch, (skillBatch) =>
 		UserRepository.findPlusTiersByUserIds(skillBatch.userIds),
 	);
-	add("UserRepository.findBuildFieldsByIdentifier", fx.heavyUser, (user) =>
-		UserRepository.findBuildFieldsByIdentifier(user.identifier),
+	add("UserRepository.findBuildFieldsByUserId", fx.heavyUser, (user) =>
+		UserRepository.findBuildFieldsByUserId(user.id),
 	);
-	add("UserRepository.findLayoutDataByIdentifier", fx.heavyUser, (user) =>
-		UserRepository.findLayoutDataByIdentifier(user.identifier, user.id),
+	add("UserRepository.findLayoutDataById", fx.heavyUser, (user) =>
+		UserRepository.findLayoutDataById(user.id, user.id),
 	);
-	add("UserRepository.findProfileByIdentifier", fx.heavyUser, (user) =>
-		UserRepository.findProfileByIdentifier(user.identifier),
-	);
-	add("UserRepository.findOwnedBadgesByUserId", fx.badgeOwnerUserId, (userId) =>
-		UserRepository.findOwnedBadgesByUserId(userId),
-	);
-	add("UserRepository.findEnabledWidgetsByIdentifier", fx.heavyUser, (user) =>
-		UserRepository.findEnabledWidgetsByIdentifier(user.identifier),
-	);
-	add("UserRepository.findPreferencesByUserId", fx.heavyUser, (user) =>
-		UserRepository.findPreferencesByUserId(user.id),
+	add("UserRepository.findProfileByUserId", fx.heavyUser, (user) =>
+		UserRepository.findProfileByUserId(user.id),
 	);
 	add("UserRepository.findStoredWidgetsByUserId", fx.heavyUser, (user) =>
 		UserRepository.findStoredWidgetsByUserId(user.id),
 	);
 	add("UserRepository.findWidgetsByUserId", fx.heavyUser, (user) =>
-		UserRepository.findWidgetsByUserId(user.identifier),
+		UserRepository.findWidgetsByUserId(user.id),
 	);
 	add("UserRepository.findByCustomUrl", fx.userCustomUrl, (customUrl) =>
 		UserRepository.findByCustomUrl(customUrl),
@@ -1362,6 +1472,12 @@ export function buildCases(fx: Fixtures): {
 	);
 	add("UserRepository.findResultsByUserId", fx.heavyUser, (user) =>
 		UserRepository.findResultsByUserId(user.id, {}),
+	);
+	add("UserRepository.findResultsByUserId.page", fx.heavyUser, (user) =>
+		UserRepository.findResultsByUserId(user.id, { limit: 25, offset: 25 }),
+	);
+	add("UserRepository.findResultsByUserId.widget", fx.heavyUser, (user) =>
+		UserRepository.findResultsByUserId(user.id, { limit: 3 }),
 	);
 	add("UserRepository.countResultsByUserId", fx.heavyUser, (user) =>
 		UserRepository.countResultsByUserId(user.id),
@@ -1391,6 +1507,9 @@ export function buildCases(fx: Fixtures): {
 	add("UserRepository.findPatronStartedAtByUserId", fx.heavyUser, (user) =>
 		UserRepository.findPatronStartedAtByUserId(user.id),
 	);
+	add("UserRepository.findDivByUserId", fx.heavyUser, (user) =>
+		UserRepository.findDivByUserId(user.id),
+	);
 	add("UserRepository.findJoinOrderByUserId", fx.heavyUser, (user) =>
 		UserRepository.findJoinOrderByUserId(user.id),
 	);
@@ -1408,9 +1527,6 @@ export function buildCases(fx: Fixtures): {
 		fx.twitchUsernames,
 		(twitchUsernames) =>
 			UserRepository.findIdsByTwitchUsernames(twitchUsernames),
-	);
-	add("UserRepository.findWeaponPoolByUserId", fx.heavyUser, (user) =>
-		UserRepository.findWeaponPoolByUserId(user.id),
 	);
 
 	add("VodRepository.findByUserId", fx.vod, (vod) =>

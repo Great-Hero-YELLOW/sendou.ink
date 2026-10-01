@@ -12,12 +12,12 @@ import {
 	VenetianMask,
 } from "lucide-react";
 import * as React from "react";
-import { Button, Dialog, DialogTrigger, Popover } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { Form, useFetcher, useLocation, useMatches } from "react-router";
 import * as R from "remeda";
 import { Avatar } from "~/components/Avatar";
 import { LinkButton, SendouButton } from "~/components/elements/Button";
+import { SendouPopover } from "~/components/elements/Popover";
 import { toastQueue } from "~/components/elements/Toast";
 import { FormWithConfirm } from "~/components/FormWithConfirm";
 import { Image, TierImage } from "~/components/Image";
@@ -33,7 +33,6 @@ import { lfgSearchParams } from "~/features/lfg/lfg-search-params";
 import type { XRankPlacementRegion } from "~/features/top-search/top-search-types";
 import { userCardEditPage } from "~/features/user-card/user-card-urls";
 import { MutualFriends } from "~/features/user-page/components/MutualFriends";
-import { ReportUserDialog } from "~/features/user-report/components/ReportUserDialog";
 import { useActionSubmit } from "~/hooks/useActionSubmit";
 import { useLayoutSize } from "~/hooks/useLayoutSize";
 import type { BrandId } from "~/modules/in-game-lists/types";
@@ -56,8 +55,19 @@ import type {
 	UserCardFriendship,
 	UserCardStat,
 } from "../user-card-types";
-import { AddPrivateNoteDialog } from "./AddPrivateNoteDialog";
 import styles from "./UserCard.module.css";
+
+// lazy so the form stack (SendouForm, dnd-kit, search fields) stays out of every page that renders a user card
+const AddPrivateNoteDialog = React.lazy(() =>
+	import("./AddPrivateNoteDialog").then((module) => ({
+		default: module.AddPrivateNoteDialog,
+	})),
+);
+const ReportUserDialog = React.lazy(() =>
+	import("~/features/user-report/components/ReportUserDialog").then(
+		(module) => ({ default: module.ReportUserDialog }),
+	),
+);
 
 const TENTATEK_BRAND_ID: BrandId = "B10";
 
@@ -85,15 +95,39 @@ export function UserCard({
 	withMutualFriends?: boolean;
 	children: React.ReactNode;
 }) {
-	const { t } = useTranslation(["common", "q"]);
 	const lookedUpData = useUserCardData(userId);
 	const data = dataProp ?? lookedUpData;
+
+	if (!data) return <>{children}</>;
+
+	// keyed so friendship state doesn't carry over to another user e.g. when navigating between user pages
+	return (
+		<UserCardPopover
+			key={data.id}
+			data={data}
+			withMutualFriends={withMutualFriends}
+		>
+			{children}
+		</UserCardPopover>
+	);
+}
+
+function UserCardPopover({
+	data,
+	withMutualFriends,
+	children,
+}: {
+	data: UserCardData;
+	withMutualFriends: boolean;
+	children: React.ReactNode;
+}) {
+	const { t } = useTranslation(["common", "q"]);
 
 	// on narrow viewports the card is placed vertically so React Aria can shift it to stay on-screen
 	const placement = useLayoutSize() === "mobile" ? "bottom" : "right";
 
 	const user = useUser();
-	const isOwnCard = user?.id === data?.id;
+	const isOwnCard = user?.id === data.id;
 
 	const [isOpen, setIsOpen] = React.useState(false);
 	// outside the popover so the modals survive it closing when they take focus
@@ -110,7 +144,6 @@ export function UserCard({
 		if (!nextIsOpen) return;
 		if (friendshipLoadedRef.current) return;
 		if (isOwnCard) return;
-		if (typeof data?.id !== "number") return;
 
 		friendshipLoadedRef.current = true;
 		fetcher.load(
@@ -138,40 +171,47 @@ export function UserCard({
 		setIsReportDialogOpen(true);
 	};
 
-	if (!data) return <>{children}</>;
-
 	return (
 		<>
-			<DialogTrigger isOpen={isOpen} onOpenChange={handleOpenChange}>
-				<Button className={styles.trigger}>{children}</Button>
-				<Popover placement={placement} className={styles.popover}>
-					<Dialog className={styles.dialog}>
-						<CardContent
-							data={data}
-							friendship={friendship}
-							isOwnCard={isOwnCard}
-							withMutualFriends={withMutualFriends}
-							onEditNote={openNoteDialog}
-							onDeleteNote={openDeleteConfirm}
-							onReport={user ? openReportDialog : undefined}
-						/>
-					</Dialog>
-				</Popover>
-			</DialogTrigger>
-			{isNoteDialogOpen ? (
-				<AddPrivateNoteDialog
-					userId={data.id}
-					username={data.username}
-					note={data.privateNote}
-					onClose={() => setIsNoteDialogOpen(false)}
+			<SendouPopover
+				isOpen={isOpen}
+				onOpenChange={handleOpenChange}
+				placement={placement}
+				popoverClassName={styles.popover}
+				trigger={
+					<button type="button" className={styles.trigger}>
+						{children}
+					</button>
+				}
+			>
+				<CardContent
+					data={data}
+					friendship={friendship}
+					isOwnCard={isOwnCard}
+					withMutualFriends={withMutualFriends}
+					onEditNote={openNoteDialog}
+					onDeleteNote={openDeleteConfirm}
+					onReport={user ? openReportDialog : undefined}
 				/>
+			</SendouPopover>
+			{isNoteDialogOpen ? (
+				<React.Suspense>
+					<AddPrivateNoteDialog
+						userId={data.id}
+						username={data.username}
+						note={data.privateNote}
+						onClose={() => setIsNoteDialogOpen(false)}
+					/>
+				</React.Suspense>
 			) : null}
 			{isReportDialogOpen ? (
-				<ReportUserDialog
-					userId={data.id}
-					username={data.username}
-					onClose={() => setIsReportDialogOpen(false)}
-				/>
+				<React.Suspense>
+					<ReportUserDialog
+						userId={data.id}
+						username={data.username}
+						onClose={() => setIsReportDialogOpen(false)}
+					/>
+				</React.Suspense>
 			) : null}
 			<FormWithConfirm
 				isOpen={isDeleteConfirmOpen}
@@ -288,7 +328,7 @@ function CardContent({
 							icon={
 								data.privateNote !== null ? <NotebookText /> : <NotebookPen />
 							}
-							onPress={onNoteButtonPress}
+							onClick={onNoteButtonPress}
 							aria-label={t("user:card.editPrivateNote")}
 						/>
 						{onReport ? (
@@ -296,7 +336,7 @@ function CardContent({
 								size="miniscule"
 								shape="circle"
 								icon={<Flag />}
-								onPress={onReport}
+								onClick={onReport}
 								aria-label="Report user"
 								data-testid="report-user-button"
 							/>
@@ -390,7 +430,7 @@ function NoteView({
 					variant="minimal"
 					size="miniscule"
 					icon={<Pencil />}
-					onPress={onEdit}
+					onClick={onEdit}
 				>
 					{t("common:actions.edit")}
 				</SendouButton>
@@ -398,7 +438,7 @@ function NoteView({
 					variant="minimal-destructive"
 					size="miniscule"
 					icon={<Trash2 />}
-					onPress={onDelete}
+					onClick={onDelete}
 				>
 					{t("common:actions.delete")}
 				</SendouButton>
@@ -455,7 +495,7 @@ function FriendRequestButton({
 				icon={<UserPlus />}
 				isDisabled={fetcher.state !== "idle" || fetcher.data === null}
 				aria-label="Accept friend request"
-				onPress={() => {
+				onClick={() => {
 					if (incomingFriendRequestId === null) return;
 					toastQueue.add(
 						{
@@ -493,7 +533,7 @@ function FriendRequestButton({
 			shape="circle"
 			icon={<UserPlus />}
 			aria-label={t("user:card.sendFriendRequest")}
-			onPress={() =>
+			onClick={() =>
 				sendRequest.submit("SEND_REQUEST", { userId: targetUserId })
 			}
 		/>

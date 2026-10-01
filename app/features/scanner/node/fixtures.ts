@@ -34,7 +34,8 @@ interface ExpectedPlayer {
 }
 
 interface ExpectedMinimapTeammate {
-	slot?: "up" | "left" | "right" | "self" | "down";
+	/** the POV player's own card */
+	self?: boolean;
 	name?: string | null;
 	/** informational for the human corrector; tests compare weaponId */
 	weaponLabel?: string | null;
@@ -71,6 +72,7 @@ interface ExpectedScoreboard {
 		| "Objective"
 		| "PlayerStatus"
 		| "StripWeapons"
+		| "Kill"
 		| "none";
 	data?: {
 		lobby?: ScannerLobby;
@@ -98,8 +100,10 @@ interface ExpectedScoreboard {
 		abilities?: AbilityWithUnknown[][];
 		/** Death only: killer's splash-tag name */
 		name?: string;
-		/** Objective only: match-timer seconds ("3:35" = 215); null = unreadable */
+		/** Objective + Kill: match-timer seconds ("3:35" = 215); null = unreadable */
 		time?: number | null;
+		/** Kill only: feed rows bottom (newest) first; null = row shown but name unreadable */
+		names?: (string | null)[];
 		/** Objective only: displayed counter per team, [alpha, bravo] */
 		score?: [number | null, number | null];
 		/** Objective only: penalty pill value per team; null = no pill */
@@ -119,7 +123,7 @@ interface ExpectedScoreboard {
 		weaponLabels?: [(string | null)[], (string | null)[]];
 		/** Minimap only: casted 8-player spectator map screen (not parsed yet) */
 		spectator?: boolean;
-		/** Minimap only: own-team callout cards in slot order */
+		/** Minimap only: own-team callout cards in drawn order */
 		teammates?: ExpectedMinimapTeammate[];
 		/** Minimap only: enemy panel rows, top to bottom */
 		enemies?: ExpectedMinimapEnemy[];

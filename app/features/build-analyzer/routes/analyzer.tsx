@@ -7,7 +7,7 @@ import { Link } from "react-router";
 import * as R from "remeda";
 import { AbilitiesSelector } from "~/components/AbilitiesSelector";
 import { Ability } from "~/components/Ability";
-import Chart from "~/components/Chart";
+import { SendouSelect, SendouSelectItem } from "~/components/elements/Select";
 import { SendouSwitch } from "~/components/elements/Switch";
 import {
 	SendouTab,
@@ -15,7 +15,8 @@ import {
 	SendouTabPanel,
 	SendouTabs,
 } from "~/components/elements/Tabs";
-import { Image } from "~/components/Image";
+import { Image, SpecialWeaponImage, SubWeaponImage } from "~/components/Image";
+import { LineChart, type LineChartSeries } from "~/components/LineChart";
 import { weaponToSelectedWeapon } from "~/components/layout/WeaponSearch";
 import { Main } from "~/components/Main";
 import { Placeholder } from "~/components/Placeholder";
@@ -45,15 +46,13 @@ import {
 	TOXIC_MIST_ID,
 } from "~/modules/in-game-lists/weapon-ids";
 import { nullFilledArray } from "~/utils/arrays";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import {
 	ANALYZER_URL,
 	mainWeaponImageUrl,
 	navIconUrl,
-	specialWeaponImageUrl,
-	subWeaponImageUrl,
 	weaponParamsPage,
 } from "~/utils/urls";
 import { LinkButton, SendouButton } from "../../../components/elements/Button";
@@ -61,8 +60,8 @@ import { SendouPopover } from "../../../components/elements/Popover";
 import { metaTags, ogPageImage } from "../../../utils/remix";
 import {
 	damageTypeToWeaponType,
+	LDE_CLOCK_INTENSITY,
 	MAX_AP,
-	MAX_LDE_INTENSITY,
 	TENACITY_PLAYER_DEFICITS,
 } from "../analyzer-constants";
 import { useAnalyzeBuild } from "../analyzer-hooks";
@@ -84,6 +83,7 @@ import {
 } from "../core/abilityChunksCalc";
 import {
 	lastDitchEffortIntensityToAp,
+	lastDitchEffortIntensityToOpponentPoints,
 	SPECIAL_EFFECTS,
 } from "../core/specialEffects";
 import { buildStats } from "../core/stats";
@@ -167,7 +167,7 @@ function BuildAnalyzerPage() {
 	};
 
 	const mainWeaponCategoryItems = [
-		analyzed.stats.shotSpreadAir && (
+		analyzed.stats.shotSpreadAir ? (
 			<StatCard
 				context={context}
 				key="jumpShotSpread"
@@ -175,8 +175,8 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.jumpShotSpread")}
 				suffix="°"
 			/>
-		),
-		typeof analyzed.stats.shotSpreadGround === "number" && (
+		) : null,
+		typeof analyzed.stats.shotSpreadGround === "number" ? (
 			<StatCard
 				context={context}
 				key="groundShotSpread"
@@ -184,9 +184,9 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.groundShotSpread")}
 				suffix="°"
 			/>
-		),
+		) : null,
 		// Squeezer
-		analyzed.stats.shotAutofireSpreadAir && (
+		analyzed.stats.shotAutofireSpreadAir ? (
 			<StatCard
 				context={context}
 				key="shotAutofireSpreadAir"
@@ -194,8 +194,8 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.shotAutofireSpreadAir")}
 				suffix="°"
 			/>
-		),
-		typeof analyzed.stats.shotAutofireSpreadGround === "number" && (
+		) : null,
+		typeof analyzed.stats.shotAutofireSpreadGround === "number" ? (
 			<StatCard
 				context={context}
 				key="shotAutofireSpreadGround"
@@ -203,7 +203,7 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.shotAutofireSpreadGround")}
 				suffix="°"
 			/>
-		),
+		) : null,
 
 		...INK_CONSUME_TYPES.filter(
 			(type) => analyzed.stats[`mainWeaponInkConsumptionPercentage_${type}`],
@@ -216,7 +216,17 @@ function BuildAnalyzerPage() {
 				suffix="%"
 			/>
 		)),
-		typeof analyzed.stats.mainWeaponWhiteInkSeconds === "number" && (
+		analyzed.stats.mainWeaponRollSeconds ? (
+			<StatCard
+				context={context}
+				key="mainWeaponRollSeconds"
+				stat={statKeyToTuple("mainWeaponRollSeconds")}
+				title={t("analyzer:stat.mainWeaponRollSeconds")}
+				suffix={t("analyzer:suffix.seconds")}
+				popoverInfo={t("analyzer:stat.mainWeaponRollSeconds.explanation")}
+			/>
+		) : null,
+		typeof analyzed.stats.mainWeaponWhiteInkSeconds === "number" ? (
 			<StatCard
 				context={context}
 				key="whiteInkSeconds"
@@ -224,8 +234,28 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.whiteInk")}
 				suffix={t("analyzer:suffix.seconds")}
 			/>
-		),
-		typeof analyzed.weapon.brellaCanopyHp === "number" && (
+		) : null,
+		typeof analyzed.stats.mainWeaponWhiteInkSecondsHorizontalSwing ===
+		"number" ? (
+			<StatCard
+				context={context}
+				key="whiteInkSecondsHorizontalSwing"
+				stat={analyzed.stats.mainWeaponWhiteInkSecondsHorizontalSwing}
+				title={t("analyzer:stat.whiteInk.horizontalSwing")}
+				suffix={t("analyzer:suffix.seconds")}
+			/>
+		) : null,
+		typeof analyzed.stats.mainWeaponWhiteInkSecondsVerticalSwing ===
+		"number" ? (
+			<StatCard
+				context={context}
+				key="whiteInkSecondsVerticalSwing"
+				stat={analyzed.stats.mainWeaponWhiteInkSecondsVerticalSwing}
+				title={t("analyzer:stat.whiteInk.verticalSwing")}
+				suffix={t("analyzer:suffix.seconds")}
+			/>
+		) : null,
+		typeof analyzed.weapon.brellaCanopyHp === "number" ? (
 			<StatCard
 				context={context}
 				key="brellaCanopyHp"
@@ -233,8 +263,8 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.canopyHp")}
 				suffix={t("analyzer:suffix.hp")}
 			/>
-		),
-		typeof analyzed.weapon.fullChargeSeconds === "number" && (
+		) : null,
+		typeof analyzed.weapon.fullChargeSeconds === "number" ? (
 			<StatCard
 				context={context}
 				key="fullChargeSeconds"
@@ -242,8 +272,8 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.fullChargeSeconds")}
 				suffix={t("analyzer:suffix.seconds")}
 			/>
-		),
-		typeof analyzed.weapon.maxChargeHoldSeconds === "number" && (
+		) : null,
+		typeof analyzed.weapon.maxChargeHoldSeconds === "number" ? (
 			<StatCard
 				context={context}
 				key="maxChargeHoldSeconds"
@@ -251,7 +281,7 @@ function BuildAnalyzerPage() {
 				title={t("analyzer:stat.maxChargeHoldSeconds")}
 				suffix={t("analyzer:suffix.seconds")}
 			/>
-		),
+		) : null,
 	].filter(Boolean);
 
 	// a primary slot-only ability (e.g. Ninja Squid) or Ability Doubler alone leaves abilityPoints at 0
@@ -276,16 +306,21 @@ function BuildAnalyzerPage() {
 								}
 							/>
 						</div>
-						<LinkButton
-							to={weaponParamsPage(
-								weaponToSelectedWeapon(mainWeaponId, t).paramsSlug,
-							)}
-							variant="minimal"
-							size="small"
-							icon={<SlidersHorizontal />}
-						>
-							{t("analyzer:rawParameters")}
-						</LinkButton>
+						<div className="stack horizontal justify-between items-center w-full">
+							<LinkButton
+								to={weaponParamsPage(
+									weaponToSelectedWeapon(mainWeaponId, t).paramsSlug,
+								)}
+								variant="minimal"
+								size="small"
+								icon={<SlidersHorizontal />}
+							>
+								{t("analyzer:rawParameters")}
+							</LinkButton>
+							<div className={styles.patch}>
+								{t("analyzer:patch")} {CURRENT_PATCH}
+							</div>
+						</div>
 					</div>
 					<div className="stack md items-center w-full">
 						<div className="w-full">
@@ -313,47 +348,46 @@ function BuildAnalyzerPage() {
 										{t("analyzer:compare")}
 									</SendouTab>
 								</SendouTabList>
-								{[1, 2].map(
-									(buildIndex) =>
-										focusedBuild && (
-											<SendouTabPanel
-												id={`build-${buildIndex}`}
-												key={`build-${buildIndex}`}
-											>
-												<AbilitiesSelector
-													selectedAbilities={focusedBuild}
-													onChange={(newBuild) => {
-														const firstBuildIsEmpty = build
+								{[1, 2].map((buildIndex) =>
+									focusedBuild ? (
+										<SendouTabPanel
+											id={`build-${buildIndex}`}
+											key={`build-${buildIndex}`}
+										>
+											<AbilitiesSelector
+												selectedAbilities={focusedBuild}
+												onChange={(newBuild) => {
+													const firstBuildIsEmpty = build
+														.flat()
+														.every((ability) => ability === "UNKNOWN");
+
+													const buildWasEmptied =
+														!firstBuildIsEmpty &&
+														newBuild
 															.flat()
-															.every((ability) => ability === "UNKNOWN");
+															.every((ability) => ability === "UNKNOWN") &&
+														focused === 1;
 
-														const buildWasEmptied =
-															!firstBuildIsEmpty &&
-															newBuild
-																.flat()
-																.every((ability) => ability === "UNKNOWN") &&
-															focused === 1;
-
-														// otherwise build2 would be duplicated
-														if (buildWasEmptied) {
-															handleChange({
-																newBuild: build2,
-																newBuild2: newBuild,
-																newFocused: 1,
-															});
-															return;
-														}
-
+													// otherwise build2 would be duplicated
+													if (buildWasEmptied) {
 														handleChange({
-															[focused === 1 || firstBuildIsEmpty
-																? "newBuild"
-																: "newBuild2"]: newBuild,
-															newFocused: firstBuildIsEmpty ? 1 : undefined,
+															newBuild: build2,
+															newBuild2: newBuild,
+															newFocused: 1,
 														});
-													}}
-												/>
-											</SendouTabPanel>
-										),
+														return;
+													}
+
+													handleChange({
+														[focused === 1 || firstBuildIsEmpty
+															? "newBuild"
+															: "newBuild2"]: newBuild,
+														newFocused: firstBuildIsEmpty ? 1 : undefined,
+													});
+												}}
+											/>
+										</SendouTabPanel>
+									) : null,
 								)}
 								<SendouTabPanel id="build-compare">
 									<APCompare
@@ -382,16 +416,13 @@ function BuildAnalyzerPage() {
 							}
 							effects={allEffects}
 						/>
-						{showAbilityChunksRequired && (
+						{showAbilityChunksRequired ? (
 							<AbilityChunksRequired build={build} />
-						)}
-					</div>
-					<div className={styles.patch}>
-						{t("analyzer:patch")} {CURRENT_PATCH}
+						) : null}
 					</div>
 				</div>
 				<div className="stack md">
-					{mainWeaponCategoryItems.length > 0 && (
+					{mainWeaponCategoryItems.length > 0 ? (
 						<StatCategory
 							title={t("analyzer:stat.category.main")}
 							summaryRightContent={
@@ -410,17 +441,15 @@ function BuildAnalyzerPage() {
 						>
 							{mainWeaponCategoryItems}
 						</StatCategory>
-					)}
+					) : null}
 
 					<StatCategory
 						title={t("analyzer:stat.category.sub")}
 						summaryRightContent={
 							<div className={styles.weaponInfoBadge}>
-								<Image
-									path={subWeaponImageUrl(analyzed.weapon.subWeaponSplId)}
-									width={20}
-									height={20}
-									alt={t(`weapons:SUB_${analyzed.weapon.subWeaponSplId}`)}
+								<SubWeaponImage
+									subWeaponId={analyzed.weapon.subWeaponSplId}
+									size={20}
 								/>
 								{t(`weapons:SUB_${analyzed.weapon.subWeaponSplId}`)}
 							</div>
@@ -438,82 +467,76 @@ function BuildAnalyzerPage() {
 							title={t("analyzer:stat.whiteInk")}
 							suffix={t("analyzer:suffix.seconds")}
 						/>
-						{analyzed.stats.subVelocity && (
+						{analyzed.stats.subVelocity ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subVelocity")}
 								title={t("analyzer:stat.sub.velocity")}
 							/>
-						)}
-						{analyzed.stats.subFirstPhaseDuration && (
+						) : null}
+						{analyzed.stats.subFirstPhaseDuration ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subFirstPhaseDuration")}
 								title={t("analyzer:stat.sub.firstPhaseDuration")}
 								suffix={t("analyzer:suffix.seconds")}
 							/>
-						)}
-						{analyzed.stats.subSecondPhaseDuration && (
+						) : null}
+						{analyzed.stats.subSecondPhaseDuration ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subSecondPhaseDuration")}
 								title={t("analyzer:stat.sub.secondPhaseDuration")}
 								suffix={t("analyzer:suffix.seconds")}
 							/>
-						)}
-						{analyzed.stats.subMarkingTimeInSeconds && (
+						) : null}
+						{analyzed.stats.subMarkingTimeInSeconds ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subMarkingTimeInSeconds")}
 								title={t("analyzer:stat.sub.markingTimeInSeconds")}
 								suffix={t("analyzer:suffix.seconds")}
 							/>
-						)}
-						{analyzed.stats.subMarkingRadius && (
+						) : null}
+						{analyzed.stats.subMarkingRadius ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subMarkingRadius")}
 								title={t("analyzer:stat.sub.markingRadius")}
 							/>
-						)}
-						{analyzed.stats.subExplosionRadius && (
+						) : null}
+						{analyzed.stats.subExplosionRadius ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subExplosionRadius")}
 								title={t("analyzer:stat.sub.explosionRadius")}
 							/>
-						)}
-						{analyzed.stats.subHp && (
+						) : null}
+						{analyzed.stats.subHp ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subHp")}
 								title={t("analyzer:stat.sub.hp")}
 								suffix={t("analyzer:suffix.hp")}
 							/>
-						)}
-						{analyzed.stats.subQsjBoost && (
+						) : null}
+						{analyzed.stats.subQsjBoost ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("subQsjBoost")}
 								title={t("analyzer:stat.sub.qsjBoost")}
 								suffix={t("analyzer:abilityPoints.short")}
 							/>
-						)}
+						) : null}
 					</StatCategory>
 
 					<StatCategory
 						title={t("analyzer:stat.category.special")}
 						summaryRightContent={
 							<div className={styles.weaponInfoBadge}>
-								<Image
-									path={specialWeaponImageUrl(
-										analyzed.weapon.specialWeaponSplId,
-									)}
-									width={20}
-									height={20}
-									alt={t(
-										`weapons:SPECIAL_${analyzed.weapon.specialWeaponSplId}`,
-									)}
+								<SpecialWeaponImage
+									specialWeaponId={analyzed.weapon.specialWeaponSplId}
+									size={20}
 								/>
 								{t(`weapons:SPECIAL_${analyzed.weapon.specialWeaponSplId}`)}
 							</div>
@@ -567,7 +590,7 @@ function BuildAnalyzerPage() {
 									/>
 								))
 							: null}
-						{analyzed.stats.specialDurationInSeconds && (
+						{analyzed.stats.specialDurationInSeconds ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialDurationInSeconds")}
@@ -585,8 +608,8 @@ function BuildAnalyzerPage() {
 											: undefined
 								}
 							/>
-						)}
-						{analyzed.stats.specialDamageDistance && (
+						) : null}
+						{analyzed.stats.specialDamageDistance ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialDamageDistance")}
@@ -596,8 +619,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialPaintRadius && (
+						) : null}
+						{analyzed.stats.specialPaintRadius ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialPaintRadius")}
@@ -607,8 +630,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialFieldHp && (
+						) : null}
+						{analyzed.stats.specialFieldHp ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialFieldHp")}
@@ -619,8 +642,8 @@ function BuildAnalyzerPage() {
 								})}
 								suffix={t("analyzer:suffix.hp")}
 							/>
-						)}
-						{analyzed.stats.specialDeviceHp && (
+						) : null}
+						{analyzed.stats.specialDeviceHp ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialDeviceHp")}
@@ -631,8 +654,8 @@ function BuildAnalyzerPage() {
 								})}
 								suffix={t("analyzer:suffix.hp")}
 							/>
-						)}
-						{analyzed.stats.specialHookInkConsumptionPercentage && (
+						) : null}
+						{analyzed.stats.specialHookInkConsumptionPercentage ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialHookInkConsumptionPercentage")}
@@ -643,8 +666,8 @@ function BuildAnalyzerPage() {
 								})}
 								suffix="%"
 							/>
-						)}
-						{analyzed.stats.specialInkConsumptionPerSecondPercentage && (
+						) : null}
+						{analyzed.stats.specialInkConsumptionPerSecondPercentage ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple(
@@ -657,8 +680,8 @@ function BuildAnalyzerPage() {
 								})}
 								suffix="%"
 							/>
-						)}
-						{analyzed.stats.specialReticleRadius && (
+						) : null}
+						{analyzed.stats.specialReticleRadius ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialReticleRadius")}
@@ -668,8 +691,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialThrowDistance && (
+						) : null}
+						{analyzed.stats.specialThrowDistance ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialThrowDistance")}
@@ -679,8 +702,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialMoveSpeed && (
+						) : null}
+						{analyzed.stats.specialMoveSpeed ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialMoveSpeed")}
@@ -690,8 +713,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialAutoChargeRate && (
+						) : null}
+						{analyzed.stats.specialAutoChargeRate ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialAutoChargeRate")}
@@ -701,8 +724,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialMaxRadius && (
+						) : null}
+						{analyzed.stats.specialMaxRadius ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialMaxRadius")}
@@ -713,8 +736,8 @@ function BuildAnalyzerPage() {
 								})}
 								popoverInfo={t("analyzer:stat.special.maxRadius.explanation")}
 							/>
-						)}
-						{analyzed.stats.specialRadiusRangeMin && (
+						) : null}
+						{analyzed.stats.specialRadiusRangeMin ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialRadiusRangeMin")}
@@ -724,8 +747,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialRadiusRangeMax && (
+						) : null}
+						{analyzed.stats.specialRadiusRangeMax ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialRadiusRangeMax")}
@@ -735,8 +758,8 @@ function BuildAnalyzerPage() {
 									),
 								})}
 							/>
-						)}
-						{analyzed.stats.specialPowerUpDuration && (
+						) : null}
+						{analyzed.stats.specialPowerUpDuration ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("specialPowerUpDuration")}
@@ -747,7 +770,7 @@ function BuildAnalyzerPage() {
 								})}
 								suffix={t("analyzer:suffix.seconds")}
 							/>
-						)}
+						) : null}
 					</StatCategory>
 					<StatCategory
 						title={t("analyzer:stat.category.subDef")}
@@ -787,7 +810,7 @@ function BuildAnalyzerPage() {
 						/>
 					</StatCategory>
 
-					{analyzed.stats.subWeaponDefenseDamages.length > 0 && (
+					{analyzed.stats.subWeaponDefenseDamages.length > 0 ? (
 						<StatCategory
 							title={t("analyzer:stat.category.subWeaponDefenseDamages")}
 							containerClassName={styles.tableContainer}
@@ -811,12 +834,11 @@ function BuildAnalyzerPage() {
 										? analyzed2.stats.subWeaponDefenseDamages
 										: undefined
 								}
-								multiShots={analyzed.weapon.multiShots}
 							/>
 						</StatCategory>
-					)}
+					) : null}
 
-					{analyzed.stats.damages.length > 0 && (
+					{analyzed.stats.damages.length > 0 ? (
 						<StatCategory
 							title={t("analyzer:stat.category.damage")}
 							containerClassName={styles.tableContainer}
@@ -826,9 +848,9 @@ function BuildAnalyzerPage() {
 								multiShots={analyzed.weapon.multiShots}
 							/>
 						</StatCategory>
-					)}
+					) : null}
 
-					{analyzed.stats.specialWeaponDamages.length > 0 && (
+					{analyzed.stats.specialWeaponDamages.length > 0 ? (
 						<StatCategory
 							title={t("analyzer:stat.category.special.damage", {
 								specialWeapon: t(
@@ -839,9 +861,9 @@ function BuildAnalyzerPage() {
 						>
 							<DamageTable values={analyzed.stats.specialWeaponDamages} />
 						</StatCategory>
-					)}
+					) : null}
 
-					{analyzed.stats.fullInkTankOptions.length > 0 && (
+					{analyzed.stats.fullInkTankOptions.length > 0 ? (
 						<StatCategory
 							title={t("analyzer:stat.category.actionsPerInkTank")}
 							containerClassName={styles.tableContainer}
@@ -863,7 +885,7 @@ function BuildAnalyzerPage() {
 								<PerInkTankGrid weaponSplId={mainWeaponId} />
 							</div>
 						</StatCategory>
-					)}
+					) : null}
 
 					<StatCategory
 						title={t("analyzer:stat.category.movement")}
@@ -890,34 +912,34 @@ function BuildAnalyzerPage() {
 							stat={statKeyToTuple("runSpeed")}
 							title={t("analyzer:stat.runSpeed")}
 						/>
-						{analyzed.stats.shootingRunSpeed && (
+						{analyzed.stats.shootingRunSpeed ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("shootingRunSpeed")}
 								title={t("analyzer:stat.shootingRunSpeed")}
 							/>
-						)}
-						{analyzed.stats.shootingRunSpeedCharging && (
+						) : null}
+						{analyzed.stats.shootingRunSpeedCharging ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("shootingRunSpeedCharging")}
 								title={t("analyzer:stat.shootingRunSpeedCharging")}
 							/>
-						)}
-						{analyzed.stats.shootingRunSpeedFullCharge && (
+						) : null}
+						{analyzed.stats.shootingRunSpeedFullCharge ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("shootingRunSpeedFullCharge")}
 								title={t("analyzer:stat.shootingRunSpeedFullCharge")}
 							/>
-						)}
-						{analyzed.stats.shootingRunSpeedSecondaryMode && (
+						) : null}
+						{analyzed.stats.shootingRunSpeedSecondaryMode ? (
 							<StatCard
 								context={context}
 								stat={statKeyToTuple("shootingRunSpeedSecondaryMode")}
 								title={t("analyzer:stat.shootingRunSpeedSecondaryMode")}
 							/>
-						)}
+						) : null}
 						<StatCard
 							context={context}
 							stat={statKeyToTuple("squidSurgeChargeFrames")}
@@ -925,8 +947,19 @@ function BuildAnalyzerPage() {
 						/>
 						<StatCard
 							context={context}
+							stat={statKeyToTuple("squidRollSpeedRetained")}
+							title={t("analyzer:stat.squidRollSpeedRetained")}
+							suffix="%"
+						/>
+						<StatCard
+							context={context}
 							stat={statKeyToTuple("runSpeedInEnemyInk")}
 							title={t("analyzer:stat.runSpeedInEnemyInk")}
+						/>
+						<StatCard
+							context={context}
+							stat={statKeyToTuple("jumpHeightInEnemyInk")}
+							title={t("analyzer:stat.jumpHeightInEnemyInk")}
 						/>
 						<StatCard
 							context={context}
@@ -989,7 +1022,7 @@ function BuildAnalyzerPage() {
 							}
 						/>
 					</StatCategory>
-					{objectShredderSelected && (
+					{objectShredderSelected ? (
 						<Link
 							className={styles.noticeableLink}
 							to={objectDamageCalculatorPage(mainWeaponId)}
@@ -1002,7 +1035,7 @@ function BuildAnalyzerPage() {
 							/>
 							{t("analyzer:objCalcAd")}
 						</Link>
-					)}
+					) : null}
 					{user && focusedBuild && !buildIsEmpty(focusedBuild) ? (
 						<Link
 							className={styles.noticeableLink}
@@ -1061,6 +1094,7 @@ function StatChartPopover(props: StatChartProps) {
 function StatChart({
 	statKey,
 	modifiedBy,
+	title,
 	valueSuffix,
 	mainWeaponId,
 	subWeaponId,
@@ -1068,47 +1102,42 @@ function StatChart({
 }: StatChartProps) {
 	const { t } = useTranslation(["analyzer"]);
 
-	const distanceLabel = t("analyzer:damage.header.distance");
-	const chartOptions = React.useMemo(() => {
-		const stackableAbility = modifiedBy.find(isStackableAbility)!;
-		const mainOnlyAbility = modifiedBy.find(isMainOnlyAbility);
-
-		return statKey
-			? statKeyGraphOptions({
-					stackableAbility,
-					mainOnlyAbility,
-					statKey,
-					mainWeaponId,
+	const stackableAbility = modifiedBy.find(isStackableAbility)!;
+	const mainOnlyAbility = modifiedBy.find(isMainOnlyAbility);
+	const series = statKey
+		? statKeyGraphSeries({
+				stackableAbility,
+				mainOnlyAbility,
+				statKey,
+				mainWeaponId,
+			})
+		: typeof subWeaponId === "number"
+			? subDefenseGraphSeries({
+					subWeaponId,
+					distanceLabel: t("analyzer:damage.header.distance"),
 				})
-			: typeof subWeaponId === "number"
-				? subDefenseGraphOptions({
-						subWeaponId,
-						distanceLabel,
-					})
-				: [];
-	}, [statKey, modifiedBy, mainWeaponId, subWeaponId, distanceLabel]);
+			: [];
 
 	// prevent crash but this should not happen
-	if (chartOptions.length === 0) {
-		logger.error("no chart options");
+	if (series.length === 0) {
+		logger.error("no chart series");
 		return null;
 	}
 
 	return (
-		<Chart
-			options={chartOptions as any}
-			containerClassName={styles.statChartContainer}
-			headerSuffix={t("analyzer:abilityPoints.short")}
-			valueSuffix={valueSuffix}
-			xAxis="linear"
-			xAbilityLimit={57}
+		<LineChart
+			series={series}
+			xAxis={{ type: "number", suffix: t("analyzer:abilityPoints.short") }}
+			formatValue={(value) => `${value}${valueSuffix ?? ""}`}
 			highlight={highlight}
-			crosshair
+			interactive
+			className={styles.statChart}
+			ariaLabel={title}
 		/>
 	);
 }
 
-function statKeyGraphOptions({
+function statKeyGraphSeries({
 	stackableAbility,
 	mainOnlyAbility,
 	statKey,
@@ -1128,12 +1157,12 @@ function statKeyGraphOptions({
 		}),
 	);
 
-	const result = [
+	const result: LineChartSeries[] = [
 		{
 			label: <Ability ability={stackableAbility} size="TINY" />,
-			data: analyzedBuilds.map((a, i) => ({
-				primary: i,
-				secondary: (a.stats[statKey] as Stat).value,
+			points: analyzedBuilds.map((a, i) => ({
+				x: i,
+				y: (a.stats[statKey] as Stat).value,
 			})),
 		},
 	];
@@ -1156,9 +1185,9 @@ function statKeyGraphOptions({
 					<Ability ability={mainOnlyAbility} size="TINY" />
 				</div>
 			),
-			data: mainOnlyAbilityAnalyzedBuilds.map((a, i) => ({
-				primary: i,
-				secondary: (a.stats[statKey] as Stat).value,
+			points: mainOnlyAbilityAnalyzedBuilds.map((a, i) => ({
+				x: i,
+				y: (a.stats[statKey] as Stat).value,
 			})),
 		});
 	}
@@ -1173,7 +1202,7 @@ const damageToKey = (damage: SubWeaponDamage) => {
 
 	return `${damage.distance!.join(",")},${damage.baseValue}`;
 };
-function subDefenseGraphOptions({
+function subDefenseGraphSeries({
 	subWeaponId,
 	distanceLabel,
 }: {
@@ -1196,16 +1225,16 @@ function subDefenseGraphOptions({
 			.map((d) => damageToKey(d)),
 	);
 
-	const result = [];
+	const result: LineChartSeries[] = [];
 
 	for (const key of distanceKeys) {
 		const distance = key.split(",")[0];
 
 		result.push({
 			label: `${distanceLabel}: ${distance}`,
-			data: analyzedBuilds.map((a, i) => ({
-				primary: i,
-				secondary:
+			points: analyzedBuilds.map((a, i) => ({
+				x: i,
+				y:
 					a.stats.subWeaponDefenseDamages.find(
 						(d) =>
 							(d as SubWeaponDamage).subWeaponId === subWeaponId &&
@@ -1319,14 +1348,20 @@ function EffectsSelector({
 	handleAddEffect: (effect: SpecialEffectType) => void;
 	handleRemoveEffect: (effect: SpecialEffectType) => void;
 }) {
-	const { t } = useTranslation(["weapons", "analyzer"]);
-
+	const { t } = useTranslation(["weapons", "game-misc"]);
 	const effectsToShow = SPECIAL_EFFECTS.filter(
 		(effect) =>
 			!isAbility(effect.type) ||
 			build.flat().includes(effect.type) ||
 			build2.flat().includes(effect.type),
 	).reverse(); // reverse to show Tacticooler first as it always shows
+
+	const effectLabel = (effect: SpecialEffectType) => {
+		if (isAbility(effect)) return t(`game-misc:ABILITY_${effect}`);
+		if (effect === "AURA") return "Aura";
+
+		return t("weapons:SPECIAL_15");
+	};
 
 	return (
 		<div className={styles.effectsSelector}>
@@ -1339,38 +1374,19 @@ function EffectsSelector({
 							) : effect.type === "AURA" ? (
 								<span className="text-xs font-bold">AURA</span>
 							) : (
-								<Image
-									path={specialWeaponImageUrl(15)}
-									alt={t("weapons:SPECIAL_15")}
-									height={32}
-									width={32}
-								/>
+								<SpecialWeaponImage specialWeaponId={15} size={32} />
 							)}
 						</div>
 						<div>
 							{effect.type === "LDE" ? (
-								<select
-									value={ldeIntensity}
-									onChange={(e) =>
-										handleLdeIntensityChange(Number(e.target.value))
-									}
-									className={styles.ldeIntensitySelect}
-								>
-									{new Array(MAX_LDE_INTENSITY + 1).fill(null).map((_, i) => {
-										const percentage = ((i / MAX_LDE_INTENSITY) * 100)
-											.toFixed(2)
-											.replace(".00", "");
-
-										return (
-											<option key={i} value={i}>
-												{percentage}% (+{lastDitchEffortIntensityToAp(i)}{" "}
-												{t("analyzer:abilityPoints.short")})
-											</option>
-										);
-									})}
-								</select>
+								<LdeIntensitySelect
+									ldeIntensity={ldeIntensity}
+									onChange={handleLdeIntensityChange}
+								/>
 							) : (
 								<SendouSwitch
+									size="large"
+									aria-label={effectLabel(effect.type)}
 									isSelected={effects.includes(effect.type)}
 									onChange={(isSelected) =>
 										isSelected
@@ -1384,6 +1400,45 @@ function EffectsSelector({
 				);
 			})}
 		</div>
+	);
+}
+
+function LdeIntensitySelect({
+	ldeIntensity,
+	onChange,
+}: {
+	ldeIntensity: number;
+	onChange: (newLdeIntensity: number) => void;
+}) {
+	const { t } = useTranslation(["analyzer"]);
+
+	const intensityLabel = (intensity: number) => {
+		if (intensity === 0) return t("analyzer:lde.inactive");
+
+		const activation =
+			intensity === LDE_CLOCK_INTENSITY
+				? t("analyzer:lde.secondsLeft")
+				: t("analyzer:lde.points", {
+						points: lastDitchEffortIntensityToOpponentPoints(intensity),
+					});
+		const ap = lastDitchEffortIntensityToAp(intensity);
+
+		return `${activation} (+${ap} ${t("analyzer:abilityPoints.short")})`;
+	};
+
+	return (
+		<SendouSelect
+			selectedKey={ldeIntensity}
+			onSelectionChange={(intensity) => onChange(Number(intensity))}
+			aria-label="Last-Ditch Effort intensity"
+			className={styles.ldeIntensitySelect}
+		>
+			{nullFilledArray(LDE_CLOCK_INTENSITY + 1).map((_, intensity) => (
+				<SendouSelectItem key={intensity} id={intensity}>
+					{intensityLabel(intensity)}
+				</SendouSelectItem>
+			))}
+		</SendouSelect>
 	);
 }
 
@@ -1440,9 +1495,9 @@ function StatCategory({
 				{summaryRightContent}
 			</summary>
 			<div className={containerClassName}>{children}</div>
-			{textBelow && (
+			{textBelow ? (
 				<div className={styles.statCategoryExplanation}>{textBelow}</div>
-			)}
+			) : null}
 		</details>
 	);
 }
@@ -1537,7 +1592,7 @@ function StatCard({
 			<div className={styles.statCardTitleAndValueContainer}>
 				<h2 className={styles.statCardTitle}>
 					{title}{" "}
-					{popoverInfo && (
+					{popoverInfo ? (
 						<SendouPopover
 							trigger={
 								<SendouButton className={styles.statCardPopoverTrigger}>
@@ -1547,7 +1602,7 @@ function StatCard({
 						>
 							{popoverInfo}
 						</SendouPopover>
-					)}
+					) : null}
 				</h2>
 				<div className={styles.statCardValues}>
 					<div className={styles.statCardValue}>
@@ -1681,9 +1736,9 @@ function DamageTable({
 			<thead>
 				<tr>
 					<th>{t("analyzer:damage.header.type")}</th>
-					{showDistanceColumn && (
+					{showDistanceColumn ? (
 						<th>{t("analyzer:damage.header.distance")}</th>
-					)}
+					) : null}
 					{damageIsSubWeaponDamage(firstRow) ? (
 						<th>
 							{comparisonValues
@@ -1691,7 +1746,9 @@ function DamageTable({
 								: t("analyzer:damage.header.baseDamage")}
 						</th>
 					) : null}
-					{showDamageColumn && <th>{t("analyzer:damage.header.damage")}</th>}
+					{showDamageColumn ? (
+						<th>{t("analyzer:damage.header.damage")}</th>
+					) : null}
 					{showPopovers ? <th /> : null}
 				</tr>
 			</thead>
@@ -1699,10 +1756,12 @@ function DamageTable({
 				{values.map((val, i) => {
 					if (val.type.includes("SECONDARY")) return null;
 
-					const damage = (val: AnalyzedBuild["stats"]["damages"][number]) =>
-						multiShots && damageTypeToWeaponType[val.type] === "MAIN"
-							? multiShotValues(val).join(" + ")
-							: val.value;
+					const damage = (
+						damageValue: AnalyzedBuild["stats"]["damages"][number],
+					) =>
+						multiShots && damageTypeToWeaponType[damageValue.type] === "MAIN"
+							? multiShotValues(damageValue).join(" + ")
+							: damageValue.value;
 
 					const typeRowName = damageIsSubWeaponDamage(val)
 						? `weapons:SUB_${val.subWeaponId}`
@@ -1715,12 +1774,7 @@ function DamageTable({
 							<td>
 								<div className="stack horizontal xs items-center">
 									{damageIsSubWeaponDamage(val) ? (
-										<Image
-											alt=""
-											path={subWeaponImageUrl(val.subWeaponId)}
-											width={12}
-											height={12}
-										/>
+										<SubWeaponImage subWeaponId={val.subWeaponId} size={12} />
 									) : null}{" "}
 									{t(typeRowName as any)}{" "}
 									{damageIsSubWeaponDamage(val) && val.type === "SPLASH" ? (
@@ -1728,27 +1782,27 @@ function DamageTable({
 									) : null}
 								</div>
 							</td>
-							{showDistanceColumn && (
+							{showDistanceColumn ? (
 								<td>
 									{typeof val.distance === "number"
 										? val.distance
 										: val.distance?.join("-")}
 								</td>
-							)}
-							{damageIsSubWeaponDamage(val) && <td>{val.baseValue}</td>}
-							{showDamageColumn && (
+							) : null}
+							{damageIsSubWeaponDamage(val) ? <td>{val.baseValue}</td> : null}
+							{showDamageColumn ? (
 								<td>
 									{damage(val)}
 									{comparisonVal ? `/${damage(comparisonVal)}` : null}{" "}
-									{val.shotsToSplat && (
+									{val.shotsToSplat ? (
 										<span className={styles.shotsToSplat}>
 											{t("analyzer:damage.toSplat", {
 												count: val.shotsToSplat,
 											})}
 										</span>
-									)}
+									) : null}
 								</td>
-							)}
+							) : null}
 							{showPopovers ? (
 								<td className={styles.popoverCell}>
 									{renderPopover(val, (val as SubWeaponDamage).subWeaponId) ? (
@@ -1855,11 +1909,11 @@ function ConsumptionTable({
 					})}
 				</tbody>
 			</Table>
-			{subWeaponId === TORPEDO_ID && (
+			{subWeaponId === TORPEDO_ID ? (
 				<div className={styles.consumptionTableExplanation}>
 					{t("analyzer:torpedoExplanation")}
 				</div>
-			)}
+			) : null}
 		</>
 	);
 }

@@ -1,5 +1,5 @@
 .listBox {
-	max-height: 325px;
+	min-height: 0;
 	overflow-y: auto;
 	padding: var(--s-2);
 	outline: none;
@@ -15,16 +15,9 @@
 	color: inherit;
 	text-decoration: none;
 
-	&[data-hovered] {
+	&:hover,
+	&:focus {
 		background-color: var(--color-bg-high);
-	}
-
-	&[data-focused] {
-		background-color: var(--color-bg-high);
-	}
-
-	&[data-selected] {
-		background-color: var(--color-accent-low);
 	}
 }
 

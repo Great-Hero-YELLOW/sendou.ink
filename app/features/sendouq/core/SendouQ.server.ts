@@ -57,10 +57,11 @@ const SECONDS_TILL_STALE =
 
 class SendouQClass {
 	groups;
-	#recentMatches;
-	#isAccurateTiers;
-	#userSkills;
-	#intervals;
+	readonly #recentMatches;
+	readonly #isAccurateTiers;
+	readonly #userSkills;
+	readonly #intervals;
+	readonly #receivedLikeCounts;
 	usersInQueue;
 
 	constructor(
@@ -71,7 +72,9 @@ class SendouQClass {
 			userSkills: calculatedUserSkills,
 			isAccurateTiers,
 		}: Awaited<ReturnType<typeof userSkills>>,
+		receivedLikeCounts: Map<number, number>,
 	) {
+		this.#receivedLikeCounts = receivedLikeCounts;
 		this.#recentMatches = recentMatches;
 		this.#isAccurateTiers = isAccurateTiers;
 		this.#userSkills = calculatedUserSkills;
@@ -126,6 +129,11 @@ class SendouQClass {
 		return this.groups.find((group) =>
 			group.members.some((member) => member.id === userId),
 		);
+	}
+
+	/** Pending likes/challenges the group has received, 0 when none. */
+	likesReceivedCount(groupId: number) {
+		return this.#receivedLikeCounts.get(groupId) ?? 0;
 	}
 
 	/** A group by id without censoring sensitive data. */
@@ -560,7 +568,7 @@ function matchMapPools(match: DBMatch) {
 				.filter((mode) => mode.preference === "AVOID")
 				.map((mode) => mode.mode);
 			const pool = preferences.pool.filter(
-				(pool) => !avoidedModes.includes(pool.mode),
+				(candidate) => !avoidedModes.includes(candidate.mode),
 			);
 			if (pool.length === 0) return [];
 
@@ -580,13 +588,16 @@ export async function refreshSendouQInstance() {
 async function freshSendouQInstance() {
 	const season = Seasons.currentOrPrevious();
 
-	const [groups, recentMatches, skills] = await Promise.all([
-		SQGroupRepository.findCurrentGroups(),
-		SQGroupRepository.findRecentlyFinishedMatches(),
-		userSkills(season!.nth),
-	]);
+	const [groups, recentMatches, skills, receivedLikeCounts] = await Promise.all(
+		[
+			SQGroupRepository.findCurrentGroups(),
+			SQGroupRepository.findRecentlyFinishedMatches(),
+			userSkills(season!.nth),
+			SQGroupRepository.findCurrentReceivedLikeCounts(),
+		],
+	);
 
-	return new SendouQClass(groups, recentMatches, skills);
+	return new SendouQClass(groups, recentMatches, skills, receivedLikeCounts);
 }
 
 /** Throws a redirect when the user loads a page other than the one their SendouQ group status puts them on. */

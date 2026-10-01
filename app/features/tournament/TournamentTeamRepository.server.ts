@@ -3,13 +3,12 @@ import { sql } from "kysely";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
-import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import type { MapPool } from "~/features/map-list-generator/core/map-pool";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { flatZip } from "~/utils/arrays";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
 	jsonArrayFrom,
 	tournamentLogoWithDefault,
@@ -23,6 +22,7 @@ export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 
 	return db
 		.selectFrom("TournamentTeam")
+		.innerJoin("Tournament", "Tournament.id", "TournamentTeam.tournamentId")
 		.innerJoin(
 			"CalendarEvent",
 			"CalendarEvent.tournamentId",
@@ -32,6 +32,7 @@ export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 			"TournamentTeam.chatRoomId",
 			"TournamentTeam.name",
 			"TournamentTeam.tournamentId",
+			"Tournament.isFinalized",
 			"CalendarEvent.name as tournamentName",
 			tournamentLogoWithDefault(eb).as("logoUrl"),
 			jsonArrayFrom(
@@ -794,7 +795,7 @@ export function join({
 				trx,
 			);
 			roomsChangedUserIds.push(
-				...(await deleteTeamChatRoom(previousTeamIdToDelete, trx)),
+				...(await chatRoomMemberIds(previousTeamIdToDelete, trx)),
 			);
 			await trx
 				.deleteFrom("TournamentTeam")
@@ -851,12 +852,7 @@ export function deleteById(tournamentTeamId: number): Promise<number[]> {
 			trx,
 		);
 
-		await trx
-			.deleteFrom("MapPoolMap")
-			.where("MapPoolMap.tournamentTeamId", "=", tournamentTeamId)
-			.execute();
-
-		const roomsChangedUserIds = await deleteTeamChatRoom(tournamentTeamId, trx);
+		const roomsChangedUserIds = await chatRoomMemberIds(tournamentTeamId, trx);
 
 		await trx
 			.deleteFrom("TournamentTeam")
@@ -982,43 +978,48 @@ export function findAllRegistrationsByUserIds({
 }) {
 	if (userIds.length === 0) return Promise.resolve([]);
 
-	return db
-		.selectFrom("TournamentTeamMember")
-		.innerJoin(
-			"TournamentTeam",
-			"TournamentTeam.id",
-			"TournamentTeamMember.tournamentTeamId",
-		)
-		.innerJoin("Tournament", "Tournament.id", "TournamentTeam.tournamentId")
-		.innerJoin("CalendarEvent", "CalendarEvent.tournamentId", "Tournament.id")
-		.innerJoin(
-			"CalendarEventDate",
-			"CalendarEventDate.eventId",
-			"CalendarEvent.id",
-		)
-		.select((eb) => [
-			"TournamentTeamMember.userId",
-			"CalendarEvent.name",
-			"CalendarEvent.organizationId",
-			"CalendarEventDate.startsAt",
-			"Tournament.settings",
-			eb
-				.selectFrom("TournamentTeam as RegisteredTeam")
-				.select(({ fn }) => fn.countAll<number>().as("count"))
-				.whereRef("RegisteredTeam.tournamentId", "=", "Tournament.id")
-				.where("RegisteredTeam.isPlaceholder", "=", 0)
-				.as("teamCount"),
-		])
-		.$narrowType<{ teamCount: NotNull }>()
-		.where("TournamentTeamMember.userId", "in", userIds)
-		.where("TournamentTeam.droppedOut", "=", 0)
-		.where("CalendarEvent.hidden", "=", 0)
-		.where("CalendarEventDate.startsAt", ">=", startsAt)
-		.where("CalendarEventDate.startsAt", "<=", endsAt)
-		.$if(typeof excludeTournamentId === "number", (qb) =>
-			qb.where("Tournament.id", "!=", excludeTournamentId!),
-		)
-		.execute();
+	return (
+		db
+			.selectFrom("CalendarEventDate")
+			// cross join pins the join order: the date window is indexed and far narrower
+			// than the users' registration histories the planner walks otherwise
+			.crossJoin("CalendarEvent")
+			.innerJoin("Tournament", "Tournament.id", "CalendarEvent.tournamentId")
+			.innerJoin(
+				"TournamentTeam",
+				"TournamentTeam.tournamentId",
+				"Tournament.id",
+			)
+			.innerJoin(
+				"TournamentTeamMember",
+				"TournamentTeamMember.tournamentTeamId",
+				"TournamentTeam.id",
+			)
+			.select((eb) => [
+				"TournamentTeamMember.userId",
+				"CalendarEvent.name",
+				"CalendarEvent.organizationId",
+				"CalendarEventDate.startsAt",
+				"Tournament.settings",
+				eb
+					.selectFrom("TournamentTeam as RegisteredTeam")
+					.select(({ fn }) => fn.countAll<number>().as("count"))
+					.whereRef("RegisteredTeam.tournamentId", "=", "Tournament.id")
+					.where("RegisteredTeam.isPlaceholder", "=", 0)
+					.as("teamCount"),
+			])
+			.$narrowType<{ teamCount: NotNull }>()
+			.whereRef("CalendarEvent.id", "=", "CalendarEventDate.eventId")
+			.where("TournamentTeamMember.userId", "in", userIds)
+			.where("TournamentTeam.droppedOut", "=", 0)
+			.where("CalendarEvent.hidden", "=", 0)
+			.where("CalendarEventDate.startsAt", ">=", startsAt)
+			.where("CalendarEventDate.startsAt", "<=", endsAt)
+			.$if(typeof excludeTournamentId === "number", (qb) =>
+				qb.where("Tournament.id", "!=", excludeTournamentId!),
+			)
+			.execute()
+	);
 }
 
 /** Invite code of one team, the secret the tournament layout data does not carry. */
@@ -1030,6 +1031,17 @@ export async function findInviteCodeById(tournamentTeamId: number) {
 		.executeTakeFirst();
 
 	return row?.inviteCode ?? null;
+}
+
+/** Whether some team of some tournament has this image as its pickup logo; organizers copy those when importing teams. */
+export async function isPickupAvatarImgId(imgId: number) {
+	const row = await db
+		.selectFrom("TournamentTeam")
+		.select("TournamentTeam.id")
+		.where("TournamentTeam.avatarImgId", "=", imgId)
+		.executeTakeFirst();
+
+	return Boolean(row);
 }
 
 export function findByInviteCode(inviteCode: string) {
@@ -1090,8 +1102,8 @@ export async function findRecentlyPlayedMapsByIds({
 	return flatZip(teamOneMaps, teamTwoMaps);
 }
 
-/** @returns the members who lost the room, empty when the team had none. */
-async function deleteTeamChatRoom(
+/** @returns the members who lose the room when the team is deleted, empty when the team has none. */
+async function chatRoomMemberIds(
 	tournamentTeamId: number,
 	trx: Transaction<DB>,
 ): Promise<number[]> {
@@ -1108,8 +1120,6 @@ async function deleteTeamChatRoom(
 		.select("TournamentTeamMember.userId")
 		.where("TournamentTeamMember.tournamentTeamId", "=", tournamentTeamId)
 		.execute();
-
-	await ChatRepository.deleteRoomsByIds([team.chatRoomId], trx);
 
 	return members.map((member) => member.userId);
 }

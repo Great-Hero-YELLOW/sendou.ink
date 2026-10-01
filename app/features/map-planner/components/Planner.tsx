@@ -91,7 +91,7 @@ const TLDRAW_OPTIONS: Partial<TldrawOptions> = {
 const MAIN_WEAPON_URL_PATTERN = /main-weapons-outlined\/(\d+)/;
 const SPECIAL_WEAPON_URL_PATTERN = /special-weapons\/(\d+)/;
 
-export default function Planner() {
+export function Planner() {
 	const { t, i18n } = useTranslation(["common"]);
 	const { htmlThemeClass } = useTheme();
 
@@ -287,11 +287,11 @@ export default function Planner() {
 				type: "image",
 				x: point[0],
 				y: point[1],
-				isLocked: isLocked,
+				isLocked,
 				id: shapeId,
 				meta: meta ?? {},
 				props: {
-					assetId: assetId,
+					assetId,
 					w: size[0],
 					h: size[1],
 				},
@@ -522,7 +522,7 @@ function OutlineToggle({
 	return (
 		<SendouButton
 			variant="minimal"
-			onPress={handleClick}
+			onClick={handleClick}
 			icon={<Square />}
 			className={clsx(
 				styles.outlineToggleButton,
@@ -546,7 +546,7 @@ function RangeToggle({
 	return (
 		<SendouButton
 			variant="minimal"
-			onPress={onToggle}
+			onClick={onToggle}
 			icon={<Radius />}
 			className={clsx(
 				styles.outlineToggleButton,
@@ -738,10 +738,10 @@ function StageBackgroundSelector({
 		setParams,
 	] = useSearchParamsTyped(plansSearchParams);
 
-	const handleStageIdChange = (stageId: StageId) => {
+	const handleStageIdChange = (newStageId: StageId) => {
 		setParams({
-			stage: stageId,
-			water: stageId === stagesObj.MAHI_MAHI_RESORT ? waterLevel : "up",
+			stage: newStageId,
+			water: newStageId === stagesObj.MAHI_MAHI_RESORT ? waterLevel : "up",
 		});
 	};
 
@@ -755,10 +755,10 @@ function StageBackgroundSelector({
 			>
 				{stageIds
 					.filter((id) => id <= LAST_STAGE_ID_WITH_IMAGES)
-					.map((stageId) => {
+					.map((optionStageId) => {
 						return (
-							<option value={stageId} key={stageId}>
-								{t(`game-misc:STAGE_${stageId}`)}
+							<option value={optionStageId} key={optionStageId}>
+								{t(`game-misc:STAGE_${optionStageId}`)}
 							</option>
 						);
 					})}
@@ -768,10 +768,10 @@ function StageBackgroundSelector({
 				value={mode}
 				onChange={(e) => setParams({ mode: e.target.value as ModeShort })}
 			>
-				{modesShort.map((mode) => {
+				{modesShort.map((optionMode) => {
 					return (
-						<option key={mode} value={mode}>
-							{t(`game-misc:MODE_LONG_${mode}`)}
+						<option key={optionMode} value={optionMode}>
+							{t(`game-misc:MODE_LONG_${optionMode}`)}
 						</option>
 					);
 				})}
@@ -809,7 +809,7 @@ function StageBackgroundSelector({
 				</select>
 			) : null}
 			<SendouButton
-				onPress={() =>
+				onClick={() =>
 					onAddBackground({ style: backgroundStyle, stageId, mode, waterLevel })
 				}
 				className="w-max"

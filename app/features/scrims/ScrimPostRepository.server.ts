@@ -21,7 +21,7 @@ import {
 	tournamentLogoWithDefault,
 } from "~/utils/kysely.server";
 import { db } from "../../db/sql";
-import invariant from "../../utils/invariant";
+import { invariant } from "../../utils/invariant";
 import type { Unwrapped } from "../../utils/types";
 import type { AssociationVisibility } from "../associations/associations-types";
 import * as Scrim from "./core/Scrim";
@@ -137,16 +137,7 @@ export function insertRequest(args: InsertRequestArgs) {
 }
 
 export function deleteById(scrimPostId: number) {
-	return db.transaction().execute(async (trx) => {
-		const post = await trx
-			.selectFrom("ScrimPost")
-			.select("ScrimPost.chatRoomId")
-			.where("id", "=", scrimPostId)
-			.executeTakeFirst();
-		await ChatRepository.deleteRoomsByIds([post?.chatRoomId ?? null], trx);
-
-		await trx.deleteFrom("ScrimPost").where("id", "=", scrimPostId).execute();
-	});
+	return db.deleteFrom("ScrimPost").where("id", "=", scrimPostId).execute();
 }
 
 const baseFindQuery = db
@@ -190,8 +181,8 @@ const baseFindQuery = db
 			eb
 				.selectFrom("ScrimPostUser")
 				.innerJoin("User", "ScrimPostUser.userId", "User.id")
-				.select((eb) => [
-					...commonUserSelect(eb),
+				.select((userEb) => [
+					...commonUserSelect(userEb),
 					"User.inGameName",
 					"ScrimPostUser.isOwner",
 				])
@@ -223,8 +214,8 @@ const baseFindQuery = db
 						innerEb
 							.selectFrom("ScrimPostRequestUser")
 							.innerJoin("User", "ScrimPostRequestUser.userId", "User.id")
-							.select((eb) => [
-								...commonUserSelect(eb),
+							.select((requestUserEb) => [
+								...commonUserSelect(requestUserEb),
 								"User.inGameName",
 								"ScrimPostRequestUser.isOwner",
 							])
@@ -665,7 +656,7 @@ export async function findPendingOverlapsForUsers({
 
 	for (const post of rows
 		.map(mapDBRowToScrimPost)
-		.filter((post) => !Scrim.isAccepted(post))) {
+		.filter((candidate) => !Scrim.isAccepted(candidate))) {
 		if (post.id === excludePostId) continue;
 
 		const postInvolvesUser = post.users.some((u) => userIdSet.has(u.id));
@@ -715,16 +706,12 @@ export async function findUserScrims(userId: number): Promise<SidebarScrim[]> {
 	const rows = await baseFindQuery
 		.where("ScrimPost.canceledAt", "is", null)
 		.where(bookedStartsAt, ">=", now)
-		.where((eb) =>
-			eb.or([
-				eb.exists(
-					eb
-						.selectFrom("ScrimPostUser")
-						.select("ScrimPostUser.scrimPostId")
-						.whereRef("ScrimPostUser.scrimPostId", "=", "ScrimPost.id")
-						.where("ScrimPostUser.userId", "=", userId),
-				),
-				eb.exists(
+		.where("ScrimPost.id", "in", (eb) =>
+			eb
+				.selectFrom("ScrimPostUser")
+				.select("ScrimPostUser.scrimPostId")
+				.where("ScrimPostUser.userId", "=", userId)
+				.union(
 					eb
 						.selectFrom("ScrimPostRequest")
 						.innerJoin(
@@ -733,10 +720,8 @@ export async function findUserScrims(userId: number): Promise<SidebarScrim[]> {
 							"ScrimPostRequest.id",
 						)
 						.select("ScrimPostRequest.scrimPostId")
-						.whereRef("ScrimPostRequest.scrimPostId", "=", "ScrimPost.id")
 						.where("ScrimPostRequestUser.userId", "=", userId),
 				),
-			]),
 		)
 		.orderBy(bookedStartsAt, "asc")
 		.execute();

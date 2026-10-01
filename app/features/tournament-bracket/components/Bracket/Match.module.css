@@ -65,10 +65,12 @@
 
 .matchTimerWarning {
 	background-color: var(--color-warning);
+	color: var(--color-text-on-light);
 }
 
 .matchTimerError {
 	background-color: var(--color-error);
+	color: var(--color-text-on-status);
 }
 
 .match {
@@ -107,7 +109,7 @@ a.match:hover {
 }
 
 .matchSeed {
-	color: var(--color-text-accent);
+	color: var(--color-fg-accent);
 	margin-inline-end: var(--s-0-5);
 	min-width: 15px;
 	max-width: 15px;

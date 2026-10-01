@@ -40,7 +40,6 @@ import {
 	Trophy,
 	TrophyContextProvider,
 	TrophyGrid,
-	TrophyPlaceholder,
 } from "~/features/trophies/components/Trophy";
 import { TrophyShowcaseModal } from "~/features/trophies/components/TrophyShowcase";
 import { TrophyTournamentHistory } from "~/features/trophies/components/TrophyTournamentHistory";
@@ -424,12 +423,12 @@ function SeriesView({
 						</div>
 					</SendouTabPanel>
 					<SendouTabPanel id="leaderboard">
-						{hasLeaderboard && (
+						{hasLeaderboard ? (
 							<EventLeaderboard
 								leaderboard={series.leaderboard!}
 								ownEntry={series.ownEntry}
 							/>
-						)}
+						) : null}
 					</SendouTabPanel>
 				</SendouTabs>
 			</div>
@@ -490,9 +489,9 @@ function SeriesSelector({
 	return (
 		<div className="stack horizontal md flex-wrap">
 			<SeriesButton>{t("org:events.all")}</SeriesButton>
-			{series.map((series) => (
-				<SeriesButton key={series.id} seriesId={series.id}>
-					{series.name}
+			{series.map((eachSeries) => (
+				<SeriesButton key={eachSeries.id} seriesId={eachSeries.id}>
+					{eachSeries.name}
 				</SeriesButton>
 			))}
 		</div>
@@ -734,27 +733,22 @@ function RewardsTrophyGrid({
 	return (
 		<TrophyContextProvider>
 			<TrophyGrid>
-				{trophies.map((trophy, i) =>
-					i < visibleCount ? (
-						<button
-							key={trophy.id}
-							type="button"
-							className={styles.trophyGridButton}
-							onClick={() => setOpenTrophy(trophy)}
-							aria-label={trophy.name}
-						>
-							<Trophy
-								tile
-								model={trophy.model}
-								tier={trophy.tier}
-								tentativeTier={trophy.tentativeTier}
-								preview
-							/>
-						</button>
-					) : (
-						<TrophyPlaceholder key={trophy.id} />
-					),
-				)}
+				{trophies.map((trophy, i) => (
+					<button
+						key={trophy.id}
+						type="button"
+						onClick={() => setOpenTrophy(trophy)}
+						aria-label={trophy.name}
+					>
+						<Trophy
+							model={trophy.model}
+							tier={trophy.tier}
+							tentativeTier={trophy.tentativeTier}
+							preview
+							deferred={i >= visibleCount}
+						/>
+					</button>
+				))}
 			</TrophyGrid>
 			{openTrophy ? (
 				<TrophyShowcaseModal

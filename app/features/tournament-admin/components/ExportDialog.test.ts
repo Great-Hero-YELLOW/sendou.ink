@@ -4,14 +4,14 @@ import { scopedAndSortedTeams } from "./ExportDialog";
 
 function team(
 	id: number,
-	checkIns: TournamentTeamFull["checkIns"],
+	teamCheckIns: TournamentTeamFull["checkIns"],
 ): TournamentTeamFull {
 	return {
 		id,
 		name: `Team ${id}`,
 		seed: id,
 		createdAt: id,
-		checkIns,
+		checkIns: teamCheckIns,
 	} as unknown as TournamentTeamFull;
 }
 
@@ -41,8 +41,7 @@ describe("scopedAndSortedTeams() check-in filtering", () => {
 				teams: [checkedInAtEventLevel],
 				status: "checkedIn",
 				sort: "seed",
-				bracketIdx: 0,
-				bracketRequiresOwnCheckIn: false,
+				checkInBracketIdxs: null,
 				bracketParticipantIds,
 			});
 
@@ -54,8 +53,7 @@ describe("scopedAndSortedTeams() check-in filtering", () => {
 				teams: [checkedInAtEventLevel],
 				status: "notCheckedIn",
 				sort: "seed",
-				bracketIdx: 0,
-				bracketRequiresOwnCheckIn: false,
+				checkInBracketIdxs: null,
 				bracketParticipantIds,
 			});
 
@@ -80,8 +78,7 @@ describe("scopedAndSortedTeams() check-in filtering", () => {
 				teams: [checkedIntoBracket, onlyEventLevel],
 				status: "checkedIn",
 				sort: "seed",
-				bracketIdx: 2,
-				bracketRequiresOwnCheckIn: true,
+				checkInBracketIdxs: [2],
 				bracketParticipantIds,
 			});
 
@@ -93,8 +90,7 @@ describe("scopedAndSortedTeams() check-in filtering", () => {
 				teams: [checkedIntoBracket, onlyEventLevel],
 				status: "notCheckedIn",
 				sort: "seed",
-				bracketIdx: 2,
-				bracketRequiresOwnCheckIn: true,
+				checkInBracketIdxs: [2],
 				bracketParticipantIds,
 			});
 
@@ -108,8 +104,7 @@ describe("scopedAndSortedTeams() check-in filtering", () => {
 				teams: [checkedIntoBracket, onlyEventLevel, notInBracket],
 				status: "notCheckedIn",
 				sort: "seed",
-				bracketIdx: 2,
-				bracketRequiresOwnCheckIn: true,
+				checkInBracketIdxs: [2],
 				// notInBracket is intentionally absent from the bracket's pool
 				bracketParticipantIds,
 			});

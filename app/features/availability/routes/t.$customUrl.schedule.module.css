@@ -6,6 +6,20 @@
 	gap: var(--s-2);
 }
 
+/* narrow: the actions take a line of their own, so they split to the edges of it */
+.headerActions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--s-2);
+	flex-grow: 1;
+
+	@container (width >= 640px) {
+		flex-grow: 0;
+	}
+}
+
 .heading {
 	font-size: var(--font-md);
 	color: var(--color-text);
@@ -67,55 +81,11 @@
 }
 
 .noteFlag {
-	color: var(--color-text-accent);
-}
-
-.summary {
-	display: flex;
-	flex-direction: column;
-	gap: var(--s-1);
-	font-size: var(--font-xs);
-}
-
-.summaryRow {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: baseline;
-	gap: var(--s-1-5);
-}
-
-.summaryLabel {
-	font-weight: var(--weight-semi);
-}
-
-.tierDot {
-	display: inline-block;
-	vertical-align: middle;
-	align-self: center;
-	flex-shrink: 0;
-	width: 0.6rem;
-	height: 0.6rem;
-	border-radius: 50%;
-	background-color: var(--color-success-low);
-	border: 1px solid var(--color-success);
-
-	&.tierDotFull {
-		background-color: var(--color-success);
-	}
+	color: var(--color-fg-accent);
 }
 
 .dayDot {
 	margin-inline-end: var(--s-1);
-}
-
-.windowList {
-	display: inline-flex;
-	flex-wrap: wrap;
-	gap: var(--s-1) var(--s-2);
-}
-
-.window {
-	white-space: nowrap;
 }
 
 .notes {

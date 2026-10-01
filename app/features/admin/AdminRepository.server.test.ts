@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, test } from "vitest";
+import * as ApiTokenFactory from "~/db/seed/factories/ApiTokenFactory";
+import * as BadgeFactory from "~/db/seed/factories/BadgeFactory";
 import * as BuildFactory from "~/db/seed/factories/BuildFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentOrganizationFactory from "~/db/seed/factories/TournamentOrganizationFactory";
+import * as TournamentStreamerFactory from "~/db/seed/factories/TournamentStreamerFactory";
 import * as TrophyFactory from "~/db/seed/factories/TrophyFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
 import { db } from "~/db/sql";
+import * as ApiRepository from "~/features/api/ApiRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { databaseTimestampNow } from "~/utils/dates";
 import * as AdminRepository from "./AdminRepository.server";
@@ -141,6 +145,59 @@ describe("migrate", () => {
 		expect(
 			await db.selectFrom("PendingTrophyApproval").select("userId").execute(),
 		).toEqual([{ userId: oldUserId }]);
+	});
+
+	test("re-points badge and streamer data to the remaining user", async () => {
+		const badge = await BadgeFactory.create(
+			{ authorId: newUserId },
+			{ ownerIds: [newUserId], managerIds: [newUserId] },
+		);
+		const tournament = await TournamentFactory.create({ authorId: oldUserId });
+		await TournamentStreamerFactory.create({
+			tournamentId: tournament.id,
+			userId: newUserId,
+		});
+
+		expect(await AdminRepository.migrate({ newUserId, oldUserId })).toBe(null);
+
+		expect(
+			await db
+				.selectFrom("Badge")
+				.select("authorId")
+				.where("id", "=", badge.id)
+				.executeTakeFirstOrThrow(),
+		).toEqual({ authorId: oldUserId });
+		expect(
+			await db.selectFrom("BadgeManager").select("userId").execute(),
+		).toEqual([{ userId: oldUserId }]);
+		expect(
+			await db
+				.selectFrom("TournamentBadgeOwner")
+				.select(["userId", "count"])
+				.execute(),
+		).toEqual([{ userId: oldUserId, count: 1 }]);
+		expect(
+			await db.selectFrom("TournamentStreamer").select("userId").execute(),
+		).toEqual([{ userId: oldUserId }]);
+	});
+
+	test("merges badge grants and drops duplicate manager rows when both accounts have the same badge", async () => {
+		await BadgeFactory.create(null, {
+			ownerIds: [oldUserId, newUserId, newUserId],
+			managerIds: [oldUserId, newUserId],
+		});
+
+		expect(await AdminRepository.migrate({ newUserId, oldUserId })).toBe(null);
+
+		expect(
+			await db.selectFrom("BadgeManager").select("userId").execute(),
+		).toEqual([{ userId: oldUserId }]);
+		expect(
+			await db
+				.selectFrom("TournamentBadgeOwner")
+				.select(["userId", "count"])
+				.execute(),
+		).toEqual([{ userId: oldUserId, count: 3 }]);
 	});
 });
 
@@ -321,6 +378,29 @@ describe("banUser", () => {
 		expect(modInfo?.banLogs).toHaveLength(2);
 		expect(modInfo?.banLogs[0].bannedReason).toBe("First ban");
 		expect(modInfo?.banLogs[1].bannedReason).toBe("Updated ban reason");
+	});
+
+	test("revokes the banned user's API tokens", async () => {
+		await ApiTokenFactory.create({ userId: users.id(1), type: "read" });
+		await ApiTokenFactory.create({ userId: users.id(1), type: "write" });
+		await ApiTokenFactory.create({ userId: users.id(2), type: "read" });
+
+		await AdminRepository.banUser({
+			userId: users.id(1),
+			banned: 1,
+			bannedReason: "Test ban",
+			bannedByUserId: users.id(2),
+		});
+
+		expect(
+			await ApiRepository.findTokenByUserId(users.id(1), "read"),
+		).toBeUndefined();
+		expect(
+			await ApiRepository.findTokenByUserId(users.id(1), "write"),
+		).toBeUndefined();
+		expect(
+			await ApiRepository.findTokenByUserId(users.id(2), "read"),
+		).toBeDefined();
 	});
 });
 

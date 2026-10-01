@@ -1,4 +1,4 @@
-import { sub } from "date-fns";
+import { isAfter, sub, subDays } from "date-fns";
 import { type Params, redirect } from "react-router";
 import { ServerConfig } from "~/config.server";
 import {
@@ -6,8 +6,10 @@ import {
 	getUser,
 	requireUser,
 } from "~/features/auth/core/user.server";
+import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import { clearCombinedStreamsCache } from "~/features/core/streams/streams.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
+import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import * as BracketRepository from "~/features/tournament-bracket/BracketRepository.server";
 import { getTentativeTier } from "~/features/tournament-organization/core/tentativeTiers.server";
 import { LRUCache } from "~/modules/cache";
@@ -53,6 +55,8 @@ export async function tournamentData(tournamentId: number) {
 		participatedUsers:
 			await TournamentRepository.findParticipatedUserIdsById(tournamentId),
 		streams: await fetchTournamentStreams(tournamentId),
+		divisionTiers:
+			await TournamentRepository.findDivisionTiersByTournamentId(tournamentId),
 		ctx: {
 			...ctx,
 			tentativeTier,
@@ -154,6 +158,42 @@ export function requireTournamentVisible({
 	throw new Response(null, { status: 404 });
 }
 
+type TournamentFriendCodeCtx = Pick<
+	TournamentData["ctx"],
+	"permissions" | "settings" | "startsAt"
+>;
+
+/** Organizers see the participants' friend codes only for a while after the start. Leagues run for many weeks, so theirs stay visible for longer. */
+export function canSeeTournamentFriendCodes({
+	ctx,
+	user,
+}: {
+	ctx: TournamentFriendCodeCtx;
+	user: OptionalIdObject;
+}) {
+	const friendCodeVisibilityDays = ctx.settings.isLeague ? 120 : 30;
+	const tournamentStartedRecently = isAfter(
+		databaseTimestampToDate(ctx.startsAt),
+		subDays(new Date(), friendCodeVisibilityDays),
+	);
+
+	return tournamentStartedRecently && hasPermission(ctx, "ORGANIZE", user);
+}
+
+/** Pickup avatars and map pools of teams are only revealed to organizers (and the team itself) before the start. */
+export function isTournamentTeamInfoRevealed({
+	tournament,
+	user,
+}: {
+	tournament: Pick<TournamentData, "ctx" | "data">;
+	user: OptionalIdObject;
+}) {
+	return (
+		tournament.data.stage.length > 0 ||
+		hasPermission(tournament.ctx, "ORGANIZE", user)
+	);
+}
+
 /** Guards a single `_action` branch; whole-route guards use {@link tournamentFromParams} with `for: "organizer"`. */
 export function requireTournamentOrganizer(
 	tournament: Tournament,
@@ -237,6 +277,21 @@ export async function tournamentFromDB(tournamentId: number) {
 	return tournament;
 }
 
+/**
+ * Prompts the users' clients to refetch their header status after a change to the tournament.
+ * Fills the (just cleared) cache and syncs the registry from that one rebuild so the refetch
+ * reads post-change state and the revalidation that follows the action finds a warm cache.
+ */
+export async function notifyTournamentStatusChanged(
+	tournamentId: number,
+	userIds: number[],
+) {
+	if (userIds.length === 0) return;
+
+	syncTournamentToRegistry(await tournamentSharedCached(tournamentId));
+	ChatSystemMessage.notifyStatusChanged(userIds);
+}
+
 const TOURNAMENT_DATA_CACHE_MAX_ENTRIES = 250;
 const TOURNAMENT_DATA_CACHE_TTL_MS = IN_MILLISECONDS.HALF_HOUR;
 
@@ -272,6 +327,13 @@ export async function tournamentSharedCached(tournamentId: number) {
 
 	if (!entry.tournament) {
 		entry.tournament = new Tournament(notFoundIfNullish(await entry.data));
+	}
+
+	if (
+		!RunningTournaments.has(tournamentId) &&
+		hasImminentBracket(entry.tournament)
+	) {
+		syncTournamentToRegistry(entry.tournament);
 	}
 
 	return entry.tournament;
@@ -367,9 +429,7 @@ export async function tournamentTeamsFullCached({
 }) {
 	const ctx = notFoundIfNullish(await tournamentDataCached(tournamentId));
 
-	// pickup avatars and map pools are only revealed to organizers before the start
-	const revealInfo =
-		ctx.data.stage.length > 0 || hasPermission(ctx.ctx, "ORGANIZE", user);
+	const revealInfo = isTournamentTeamInfoRevealed({ tournament: ctx, user });
 
 	if (ServerConfig.disableCache) {
 		return censoredTeams({
@@ -474,15 +534,39 @@ function mostRecentStartTime(tournament: Tournament) {
 		.filter((b) => b.startTime)
 		.map((b) => databaseTimestampToDate(b.startTime!));
 
-	const allStartTimes = [tournament.ctx.startsAt, ...bracketStartTimes];
+	// a bracket actually starting keeps the tournament live even when it was
+	// never scheduled, or the schedule has long slipped
+	const actualBracketStartTimes = tournament.brackets
+		.filter((bracket) => !bracket.preview && bracket.createdAt)
+		.map((bracket) => databaseTimestampToDate(bracket.createdAt!));
+
+	const allStartTimes = [
+		tournament.ctx.startsAt,
+		...bracketStartTimes,
+		...actualBracketStartTimes,
+	];
 
 	return allStartTimes
 		.filter((t) => t <= new Date())
 		.sort((a, b) => b.getTime() - a.getTime())[0];
 }
 
+/** A scheduled bracket the tournament is about to resume with, e.g. day 2 of a two day event once its check-in opens. */
+function hasImminentBracket(tournament: Tournament) {
+	const opensAt = new Date(Date.now() + TOURNAMENT.REGULAR_CHECK_IN_WINDOW_MS);
+
+	return tournament.ctx.settings.bracketProgression.some((bracket) => {
+		if (!bracket.startTime) return false;
+
+		const startTime = databaseTimestampToDate(bracket.startTime);
+
+		return startTime > new Date() && startTime <= opensAt;
+	});
+}
+
 function isTournamentLive(tournament: Tournament) {
 	if (!tournament.hasStarted || tournament.everyBracketOver) return false;
+	if (hasImminentBracket(tournament)) return true;
 
 	const cutoff = sub(new Date(), { hours: RUNNING_TOURNAMENT_MAX_AGE_HOURS });
 	const latestStartTime = mostRecentStartTime(tournament);

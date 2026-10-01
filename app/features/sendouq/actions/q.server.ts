@@ -1,6 +1,7 @@
 import type { ActionFunction } from "react-router";
 import { redirect } from "react-router";
 import * as AdminRepository from "~/features/admin/AdminRepository.server";
+import { refreshApiTokensCache } from "~/features/api-public/api-public-utils.server";
 import { requireUser } from "~/features/auth/core/user.server";
 import { refreshBannedCache } from "~/features/ban/core/banned.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
@@ -64,6 +65,8 @@ export const action: ActionFunction = async ({ request, url }) => {
 
 				await refreshSendouQInstance();
 
+				ChatSystemMessage.notifyStatusChanged([user.id]);
+
 				// joining directly creates an ACTIVE group that enters the pool (a PREPARING one isn't in it)
 				if (data.direct === "true") {
 					ChatSystemMessage.send({ channel: SENDOUQ_LOOKING_CHANNEL });
@@ -99,6 +102,12 @@ export const action: ActionFunction = async ({ request, url }) => {
 				}
 
 				await refreshSendouQInstance();
+
+				ChatSystemMessage.notifyStatusChanged(
+					SendouQ.findUncensoredGroupById(groupInvitedTo.id)?.members.map(
+						(member) => member.id,
+					) ?? [user.id],
+				);
 
 				if (groupInvitedTo.status === "PREPARING") {
 					// a preparing group isn't in the pool, so only its members (on the preparing page)
@@ -144,6 +153,7 @@ export const action: ActionFunction = async ({ request, url }) => {
 					});
 
 					await refreshBannedCache();
+					await refreshApiTokensCache();
 
 					throw redirect(SUSPENDED_PAGE);
 				}

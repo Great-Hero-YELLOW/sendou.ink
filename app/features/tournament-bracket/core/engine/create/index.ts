@@ -21,7 +21,10 @@ export function create(input: CreateBracketInput): BracketData {
 	const data = createResolved({
 		type: input.type,
 		seeding: input.seeding,
-		settings: resolveStageSettings(input),
+		settings: {
+			...resolveStageSettings(input),
+			...(input.isRealtime ? { isRealtime: true } : {}),
+		},
 		abDivisions: input.abDivisions,
 		number: input.number,
 	});
@@ -50,7 +53,7 @@ export function createResolved(input: ResolvedCreateBracketInput): BracketData {
 			createDoubleElimination(creator);
 			break;
 		default:
-			throw Error("Unknown stage type.");
+			throw new Error("Unknown stage type.");
 	}
 
 	return creator.data;
@@ -65,7 +68,8 @@ function attachRoundMaps(
 
 	const resolveRound = (roundId: number) => {
 		const round = roundsById.get(roundId);
-		if (!round) throw Error(`No round found for map list round id ${roundId}`);
+		if (!round)
+			throw new Error(`No round found for map list round id ${roundId}`);
 		return round;
 	};
 
@@ -75,39 +79,40 @@ function attachRoundMaps(
 			data.round.map((round) => round.number),
 		).size;
 		if (mapsInput.length !== distinctRoundNumberCount) {
-			throw Error("Invalid map list count");
+			throw new Error("Invalid map list count");
 		}
 
-		const mapsByRoundNumber = new Map(
-			mapsInput.map((input) => [
-				resolveRound(input.roundId).number,
-				toRoundMaps(input),
-			]),
+		const inputByRoundNumber = new Map(
+			mapsInput.map((input) => [resolveRound(input.roundId).number, input]),
 		);
 
 		for (const round of data.round) {
-			const maps = mapsByRoundNumber.get(round.number);
-			if (!maps) throw Error(`No maps found for round number ${round.number}`);
-			round.maps = { ...maps };
+			const input = inputByRoundNumber.get(round.number);
+			if (!input)
+				throw new Error(`No maps found for round number ${round.number}`);
+			round.maps = toRoundMaps(input);
+			round.isPlayableAt = input.isPlayableAt ?? null;
 		}
 
 		return;
 	}
 
 	if (mapsInput.length !== data.round.length) {
-		throw Error("Invalid map list count");
+		throw new Error("Invalid map list count");
 	}
 
 	for (const input of mapsInput) {
-		resolveRound(input.roundId).maps = toRoundMaps(input);
+		const round = resolveRound(input.roundId);
+		round.maps = toRoundMaps(input);
+		round.isPlayableAt = input.isPlayableAt ?? null;
 	}
 
 	for (const round of data.round) {
-		if (!round.maps) throw Error(`Round id ${round.id} is missing maps`);
+		if (!round.maps) throw new Error(`Round id ${round.id} is missing maps`);
 	}
 }
 
 function toRoundMaps(input: RoundMapsInput): TournamentRoundMaps {
-	const { roundId, groupId, ...maps } = input;
+	const { roundId, section, isPlayableAt, ...maps } = input;
 	return maps;
 }

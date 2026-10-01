@@ -8,15 +8,17 @@ import {
 	Unlink,
 } from "lucide-react";
 import * as React from "react";
-import { useFilter } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { type FetcherWithComponents, Link, useFetcher } from "react-router";
+import { SendouDatePicker } from "~/components/elements/DatePicker";
 import { SendouDialog } from "~/components/elements/Dialog";
 import {
 	SendouSelect,
 	SendouSelectItem,
 	SendouSelectItemSection,
+	searchContains,
 } from "~/components/elements/Select";
+import { SendouSwitch } from "~/components/elements/Switch";
 import { ModeImage, StageImage } from "~/components/Image";
 import { InfoPopover } from "~/components/InfoPopover";
 import { Input } from "~/components/Input";
@@ -28,12 +30,16 @@ import { calendarEditPage } from "~/features/calendar/calendar-urls";
 import { useTournamentPreparedMaps } from "~/features/tournament/routes/to.$id";
 import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import { useTournament } from "~/features/tournament/tournament-context";
-import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
+import type {
+	BracketData,
+	RoundData,
+} from "~/features/tournament-bracket/core/engine/types";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
+import * as LeagueScheduling from "~/features/tournament-match/core/LeagueScheduling";
 import { modesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { nullFilledArray } from "~/utils/arrays";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { assertUnreachable } from "~/utils/types";
 import { SendouButton } from "../../../components/elements/Button";
 import { logger } from "../../../utils/logger";
@@ -45,6 +51,7 @@ import type { Tournament } from "../core/Tournament";
 import {
 	type BracketMapCounts,
 	generateTournamentRoundMaplist,
+	roundSetKey,
 	type TournamentRoundMapList,
 } from "../core/toMapList";
 import { bracketSchema } from "../tournament-bracket-schemas";
@@ -62,7 +69,7 @@ export function BracketMapListDialog({
 	bracketIdx: number;
 	isPreparing?: boolean;
 }) {
-	const { t } = useTranslation(["common"]);
+	const { t } = useTranslation(["common", "tournament"]);
 	const fetcher = useFetcher();
 	const tournament = useTournament();
 	const untrimmedPreparedMaps = useBracketPreparedMaps(bracketIdx);
@@ -127,9 +134,11 @@ export function BracketMapListDialog({
 
 			// infer default from whether finals and third place match have different maps
 			const finalsMaps = preparedMaps.maps
-				.filter((map) => map.groupId === 0)
+				.filter((map) => map.section === "winners")
 				.sort((a, b) => b.roundId - a.roundId)[0];
-			const thirdPlaceMaps = preparedMaps.maps.find((map) => map.groupId === 1);
+			const thirdPlaceMaps = preparedMaps.maps.find(
+				(map) => map.section === "finals",
+			);
 
 			if (!finalsMaps?.list || !thirdPlaceMaps?.list) {
 				logger.error(
@@ -172,7 +181,8 @@ export function BracketMapListDialog({
 		return generateTournamentRoundMaplist({
 			mapCounts: defaultRoundBestOfs,
 			roundsWithPickBan: new Set(),
-			pool: tournament.ctx.toSetMapPool,
+			pool: tournament.mapPool.dbList,
+			teamsPickMaps: tournament.teamsPrePickMaps,
 			rounds,
 			type: bracket.type,
 			pickBanStyle: null,
@@ -180,6 +190,20 @@ export function BracketMapListDialog({
 			countType,
 		});
 	});
+	// leagues: when each round's sets become playable, entered next to its maps
+	const [playableAts, setPlayableAts] = React.useState<
+		Map<number, number | null>
+	>(
+		() =>
+			new Map(
+				preparedMaps?.maps.map((map) => [
+					map.roundId,
+					map.isPlayableAt ?? null,
+				]) ?? [],
+			),
+	);
+	const [isRealtime, setIsRealtime] = React.useState(false);
+	const hasPlayableAts = tournament.isLeague && !isRealtime;
 	const [pickBanStyle, setPickBanStyle] = React.useState(
 		Array.from(maps.values()).find((round) => round.pickBan)?.pickBan ??
 			"COUNTERPICK",
@@ -219,14 +243,17 @@ export function BracketMapListDialog({
 		}
 
 		if (bracket.type === "single_elimination") {
-			const rounds = getRounds({ type: "single", bracketData });
+			const singleElimRounds = getRounds({ type: "single", bracketData });
 
-			const hasThirdPlaceMatch = rounds.some((round) => round.groupId === 1);
+			const hasThirdPlaceMatch = singleElimRounds.some(
+				(round) => round.section === "finals",
+			);
 
-			if (!thirdPlaceMatchLinked || !hasThirdPlaceMatch) return rounds;
+			if (!thirdPlaceMatchLinked || !hasThirdPlaceMatch)
+				return singleElimRounds;
 
-			return rounds
-				.filter((round) => round.groupId !== 1)
+			return singleElimRounds
+				.filter((round) => round.section !== "finals")
 				.map((round) =>
 					round.name === "Finals"
 						? {
@@ -243,13 +270,13 @@ export function BracketMapListDialog({
 	const mapCountsWithGlobalCount = (newCount: number) => {
 		const newMap = new Map(defaultRoundBestOfs);
 
-		for (const [groupId, value] of newMap.entries()) {
-			const newGroupMap: typeof value = new Map(value);
+		for (const [roundSet, value] of newMap.entries()) {
+			const newRoundSetMap: typeof value = new Map(value);
 			for (const [roundNumber, roundValue] of value.entries()) {
-				newGroupMap.set(roundNumber, { ...roundValue, count: newCount });
+				newRoundSetMap.set(roundNumber, { ...roundValue, count: newCount });
 			}
 
-			newMap.set(groupId, newGroupMap);
+			newMap.set(roundSet, newRoundSetMap);
 		}
 
 		return newMap;
@@ -272,9 +299,9 @@ export function BracketMapListDialog({
 	};
 
 	const validateNoDecreasingCount = () => {
-		for (const groupCounts of mapCounts.values()) {
+		for (const roundSetCounts of mapCounts.values()) {
 			let roundPreviousValue = 0;
-			for (const [, roundValue] of Array.from(groupCounts.entries()).sort(
+			for (const [, roundValue] of Array.from(roundSetCounts.entries()).sort(
 				(a, b) => a[0] - b[0],
 			)) {
 				if (roundPreviousValue > roundValue.count) {
@@ -285,10 +312,17 @@ export function BracketMapListDialog({
 			}
 		}
 
-		// grands need at least as many maps as winners final (different groups)
+		// grands need at least as many maps as winners final (different sections)
 		if (bracket.type === "double_elimination") {
-			const grandsCounts = Array.from(mapCounts.get(2)?.values() ?? []);
-			const winnersCounts = Array.from(mapCounts.get(0)?.values() ?? []);
+			const sectionCounts = (section: RoundData["section"]) =>
+				rounds
+					.filter((round) => round.section === section)
+					.flatMap(
+						(round) =>
+							mapCounts.get(roundSetKey(round))?.get(round.number) ?? [],
+					);
+			const grandsCounts = sectionCounts("finals");
+			const winnersCounts = sectionCounts("winners");
 			const maxWinnersCount = Math.max(...winnersCounts.map((c) => c.count));
 
 			if (grandsCounts.some(({ count }) => count < maxWinnersCount)) {
@@ -332,6 +366,15 @@ export function BracketMapListDialog({
 			bracket.type === "double_elimination") &&
 		!eliminationTeamCount;
 
+	const roundMapsInput = Array.from(maps.entries()).map(([key, value]) => ({
+		...value,
+		roundId: key,
+		section: rounds.find((r) => r.id === key)?.section ?? null,
+		type: countType,
+		customFlow: value.pickBan === "CUSTOM" ? customFlow : undefined,
+		isPlayableAt: hasPlayableAts ? (playableAts.get(key) ?? null) : undefined,
+	}));
+
 	return (
 		<SendouDialog
 			heading={`Maplist selection (${bracket.name})`}
@@ -348,16 +391,13 @@ export function BracketMapListDialog({
 				/>
 				<input
 					type="hidden"
+					name="isRealtime"
+					value={isRealtime ? "on" : "off"}
+				/>
+				<input
+					type="hidden"
 					name="maps"
-					value={JSON.stringify(
-						Array.from(maps.entries()).map(([key, value]) => ({
-							...value,
-							roundId: key,
-							groupId: rounds.find((r) => r.id === key)?.groupId,
-							type: countType,
-							customFlow: value.pickBan === "CUSTOM" ? customFlow : undefined,
-						})),
-					)}
+					value={JSON.stringify(roundMapsInput)}
 				/>
 				{isPreparing &&
 				(bracket.type === "single_elimination" ||
@@ -421,7 +461,8 @@ export function BracketMapListDialog({
 												generateTournamentRoundMaplist({
 													mapCounts:
 														bracket.defaultRoundBestOfs(newBracketData),
-													pool: tournament.ctx.toSetMapPool,
+													pool: tournament.mapPool.dbList,
+													teamsPickMaps: tournament.teamsPrePickMaps,
 													rounds: newBracketData.round,
 													type: bracket.type,
 													roundsWithPickBan,
@@ -478,7 +519,8 @@ export function BracketMapListDialog({
 												setMaps(
 													generateTournamentRoundMaplist({
 														mapCounts,
-														pool: tournament.ctx.toSetMapPool,
+														pool: tournament.mapPool.dbList,
+														teamsPickMaps: tournament.teamsPrePickMaps,
 														rounds,
 														type: bracket.type,
 														roundsWithPickBan: newRoundsWithPickBan,
@@ -497,8 +539,7 @@ export function BracketMapListDialog({
 										onSetCountType={setCountType}
 									/>
 								) : null}
-								{tournament.ctx.mapPickingStyle === "TO" &&
-								tournament.modesIncluded.length > 1 &&
+								{tournament.modesIncluded.length > 1 &&
 								!needsToPickEliminationTeamCount ? (
 									<PatternInputs
 										patterns={patterns}
@@ -506,18 +547,25 @@ export function BracketMapListDialog({
 										onPatternsChange={setPatterns}
 									/>
 								) : null}
+								{tournament.isLeague && !isPreparing ? (
+									<RealtimeSwitch
+										isRealtime={isRealtime}
+										onChange={setIsRealtime}
+									/>
+								) : null}
 							</div>
-							{tournament.ctx.toSetMapPool.length > 0 &&
+							{tournament.mapPool.length > 0 &&
 							!needsToPickEliminationTeamCount ? (
 								<SendouButton
 									size="small"
 									icon={<RefreshCcw />}
 									variant="outlined"
-									onPress={() =>
+									onClick={() =>
 										setMaps(
 											generateTournamentRoundMaplist({
 												mapCounts,
-												pool: tournament.ctx.toSetMapPool,
+												pool: tournament.mapPool.dbList,
+												teamsPickMaps: tournament.teamsPrePickMaps,
 												rounds,
 												type: bracket.type,
 												roundsWithPickBan,
@@ -528,7 +576,9 @@ export function BracketMapListDialog({
 										)
 									}
 								>
-									Reroll all maps
+									{tournament.teamsPrePickMaps
+										? t("tournament:mapList.rerollModeOrder")
+										: t("tournament:mapList.rerollAllMaps")}
 								</SendouButton>
 							) : null}
 						</div>
@@ -566,6 +616,17 @@ export function BracketMapListDialog({
 												key={round.id}
 												name={round.name}
 												maps={roundMaps}
+												playableAt={
+													hasPlayableAts
+														? {
+																value: playableAts.get(round.id) ?? null,
+																onChange: (value) =>
+																	setPlayableAts(
+																		new Map(playableAts).set(round.id, value),
+																	),
+															}
+														: undefined
+												}
 												onHoverMap={setHoveredMap}
 												unlink={
 													showUnlinkButton
@@ -585,7 +646,8 @@ export function BracketMapListDialog({
 														setMaps(
 															generateTournamentRoundMaplist({
 																mapCounts: newMapCounts,
-																pool: tournament.ctx.toSetMapPool,
+																pool: tournament.mapPool.dbList,
+																teamsPickMaps: tournament.teamsPrePickMaps,
 																rounds,
 																type: bracket.type,
 																roundsWithPickBan,
@@ -606,29 +668,30 @@ export function BracketMapListDialog({
 														"Expected round to be defined",
 													);
 
-													const groupInfo = newMapCounts.get(
-														bracketRound.groupId,
+													const roundSetInfo = newMapCounts.get(
+														roundSetKey(bracketRound),
 													);
 													invariant(
-														groupInfo,
-														"Expected group info to be defined",
+														roundSetInfo,
+														"Expected round set info to be defined",
 													);
-													const oldMapInfo = newMapCounts
-														.get(bracketRound.groupId)
-														?.get(bracketRound.number);
+													const oldMapInfo = roundSetInfo.get(
+														bracketRound.number,
+													);
 													invariant(
 														oldMapInfo,
 														"Expected map info to be defined",
 													);
 
-													groupInfo.set(bracketRound.number, {
+													roundSetInfo.set(bracketRound.number, {
 														...oldMapInfo,
 														count: newCount,
 													});
 
 													const newMap = generateTournamentRoundMaplist({
 														mapCounts: newMapCounts,
-														pool: tournament.ctx.toSetMapPool,
+														pool: tournament.mapPool.dbList,
+														teamsPickMaps: tournament.teamsPrePickMaps,
 														rounds,
 														type: bracket.type,
 														roundsWithPickBan,
@@ -648,7 +711,8 @@ export function BracketMapListDialog({
 														setMaps(
 															generateTournamentRoundMaplist({
 																mapCounts,
-																pool: tournament.ctx.toSetMapPool,
+																pool: tournament.mapPool.dbList,
+																teamsPickMaps: tournament.teamsPrePickMaps,
 																rounds,
 																type: bracket.type,
 																roundsWithPickBan: newRoundsWithPickBan,
@@ -671,7 +735,8 @@ export function BracketMapListDialog({
 
 													const newMap = generateTournamentRoundMaplist({
 														mapCounts,
-														pool: tournament.ctx.toSetMapPool,
+														pool: tournament.mapPool.dbList,
+														teamsPickMaps: tournament.teamsPrePickMaps,
 														rounds,
 														type: bracket.type,
 														roundsWithPickBan: newRoundsWithPickBan,
@@ -695,6 +760,13 @@ export function BracketMapListDialog({
 									<div className="mt-4 text-warning text-center">
 										Invalid selection: tournament progression decreases in map
 										count
+									</div>
+								) : !LeagueScheduling.playableAtsAreAscending(
+										roundMapsInput,
+									) ? (
+									<div className="mt-4 text-warning text-center">
+										Invalid selection: a round is playable before the round
+										preceding it
 									</div>
 								) : !validateCustomFlow() ? (
 									<div className="mt-4 text-warning text-center">
@@ -747,30 +819,27 @@ function inferMapCounts({
 	tournamentRoundMapList: TournamentRoundMapList;
 }) {
 	const result: BracketMapCounts = new Map();
+	const defaultBestOfs = bracket.defaultRoundBestOfs(data);
 
-	for (const [groupId, value] of bracket.defaultRoundBestOfs(data).entries()) {
-		for (const roundNumber of value.keys()) {
-			const roundId = data.round.find(
-				(round) => round.groupId === groupId && round.number === roundNumber,
-			)?.id;
-			invariant(typeof roundId === "number", "Expected roundId to be defined");
+	for (const round of data.round) {
+		const key = roundSetKey(round);
+		if (!defaultBestOfs.get(key)?.has(round.number)) continue;
 
-			const count = tournamentRoundMapList.get(roundId)?.count;
+		const count = tournamentRoundMapList.get(round.id)?.count;
 
-			// skip rounds in RR and Swiss that don't have maps (only one group has maps)
-			if (typeof count !== "number") {
-				continue;
-			}
-
-			result.set(
-				groupId,
-				new Map(result.get(groupId)).set(roundNumber, {
-					count,
-					// "best of" / "play all" is per bracket for now, might be per round in the future
-					type: "BEST_OF",
-				}),
-			);
+		// skip rounds in RR and Swiss that don't have maps (only one group has maps)
+		if (typeof count !== "number") {
+			continue;
 		}
+
+		result.set(
+			key,
+			new Map(result.get(key)).set(round.number, {
+				count,
+				// "best of" / "play all" is per bracket for now, might be per round in the future
+				type: "BEST_OF",
+			}),
+		);
 	}
 
 	invariant(result.size > 0, "Expected result to be defined");
@@ -873,6 +942,33 @@ function EliminationTeamCountSelect({
 	);
 }
 
+function RealtimeSwitch({
+	isRealtime,
+	onChange,
+}: {
+	isRealtime: boolean;
+	onChange: (isRealtime: boolean) => void;
+}) {
+	const { t } = useTranslation(["tournament"]);
+
+	return (
+		<div>
+			<div className="stack horizontal xs items-center">
+				<Label htmlFor="is-realtime">{t("tournament:mapList.realtime")}</Label>
+				<InfoPopover tiny className={styles.infoPopover}>
+					{t("tournament:mapList.realtimeInfo")}
+				</InfoPopover>
+			</div>
+			<SendouSwitch
+				id="is-realtime"
+				isSelected={isRealtime}
+				onChange={onChange}
+				data-testid="realtime-switch"
+			/>
+		</div>
+	);
+}
+
 function GlobalCountTypeSelect({
 	defaultValue,
 	onSetCountType,
@@ -953,6 +1049,7 @@ const serializedMapMode = (
 function RoundMapList({
 	name,
 	maps,
+	playableAt,
 	onHoverMap,
 	onCountChange,
 	onPickBanChange,
@@ -963,6 +1060,11 @@ function RoundMapList({
 }: {
 	name: string;
 	maps: Omit<TournamentRoundMaps, "type">;
+	/** Leagues: when the round's sets become playable. */
+	playableAt?: {
+		value: number | null;
+		onChange: (value: number | null) => void;
+	};
 	onHoverMap: (map: string | null) => void;
 	onCountChange: (count: number) => void;
 	onPickBanChange: (hasPickBan: boolean) => void;
@@ -971,14 +1073,31 @@ function RoundMapList({
 	link?: () => void;
 	hoveredMap: string | null;
 }) {
-	const tournament = useTournament();
-
+	const { t } = useTranslation(["forms"]);
 	const minCount = TOURNAMENT.AVAILABLE_BEST_OF[0];
 	const maxCount = TOURNAMENT.AVAILABLE_BEST_OF.at(-1)!;
 
 	return (
 		<div>
 			<h3>{name}</h3>
+			{playableAt ? (
+				<div className={styles.playableAt}>
+					<SendouDatePicker
+						label={t("forms:labels.roundPlayableFrom")}
+						granularity="day"
+						value={
+							playableAt.value !== null
+								? LeagueScheduling.playableDate(playableAt.value)
+								: null
+						}
+						onChange={(value) =>
+							playableAt.onChange(
+								value ? LeagueScheduling.playableAtFromDate(value) : null,
+							)
+						}
+					/>
+				</div>
+			) : null}
 			<div className={styles.roundControls}>
 				<button
 					type="button"
@@ -1041,7 +1160,6 @@ function RoundMapList({
 								key={i}
 								number={i + 1}
 								isCounterpicks={false}
-								isTiebreaker={false}
 								isCustomFlow
 							/>
 						))
@@ -1058,10 +1176,10 @@ function RoundMapList({
 										number={i + 1}
 										onHoverMap={onHoverMap}
 										hoveredMap={hoveredMap}
-										onMapChange={(map) => {
+										onMapChange={(newMap) => {
 											onRoundMapListChange({
 												...maps,
-												list: maps.list?.map((m, j) => (i === j ? map : m)),
+												list: maps.list?.map((m, j) => (i === j ? newMap : m)),
 											});
 										}}
 									/>
@@ -1069,20 +1187,34 @@ function RoundMapList({
 							}
 
 							const isTeamsPick = !maps.list && i === 0;
-							const isLast =
-								i ===
-								(maps.pickBan === "BAN_2" ? maps.count + 2 : maps.count) - 1;
+							const isCounterpicks =
+								!isTeamsPick && maps.pickBan === "COUNTERPICK";
+							const mode = maps.modes?.[i];
+
+							if (mode) {
+								return (
+									<ModeListRow
+										key={i}
+										mode={mode}
+										number={i + 1}
+										isCounterpicks={isCounterpicks}
+										onModeChange={(newMode) => {
+											onRoundMapListChange({
+												...maps,
+												modes: maps.modes?.map((m, j) =>
+													i === j ? newMode : m,
+												),
+											});
+										}}
+									/>
+								);
+							}
 
 							return (
 								<MysteryRow
 									key={i}
 									number={i + 1}
-									isCounterpicks={
-										!isTeamsPick && maps.pickBan === "COUNTERPICK"
-									}
-									isTiebreaker={
-										tournament.ctx.mapPickingStyle === "AUTO_ALL" && isLast
-									}
+									isCounterpicks={isCounterpicks}
 								/>
 							);
 						})}
@@ -1105,7 +1237,6 @@ function MapListRow({
 	onMapChange: (map: NonNullable<TournamentRoundMaps["list"]>[number]) => void;
 }) {
 	const { t } = useTranslation(["common", "game-misc"]);
-	const { contains } = useFilter({ sensitivity: "base" });
 	const tournament = useTournament();
 
 	const items = modesShort.flatMap((mode) => {
@@ -1153,7 +1284,7 @@ function MapListRow({
 					placeholder: t("common:forms.stageSearch.search.placeholder"),
 				}}
 				filter={(textValue, inputValue) =>
-					mapSearchFilter(textValue, inputValue, contains)
+					mapSearchFilter(textValue, inputValue, searchContains)
 				}
 				className={styles.mapRowSelect}
 				popoverClassName={styles.mapRowSelectPopover}
@@ -1224,32 +1355,81 @@ export function mapSearchFilter(
 	return contains(stageName, restQuery);
 }
 
+/** A team picked slot: the mode is fixed here, the map comes from the teams' picks at match time. */
+function ModeListRow({
+	mode,
+	number,
+	isCounterpicks,
+	onModeChange,
+}: {
+	mode: ModeShort;
+	number: number;
+	isCounterpicks: boolean;
+	onModeChange: (mode: ModeShort) => void;
+}) {
+	const { t } = useTranslation(["game-misc", "tournament"]);
+	const tournament = useTournament();
+
+	const items = tournament.modesIncluded.map((m) => ({
+		id: m,
+		name: t(`game-misc:MODE_LONG_${m}`),
+	}));
+
+	return (
+		<li className={styles.mapListRow}>
+			<span className="text-sm text-lighter font-semi-bold">{number}.</span>
+			<SendouSelect
+				aria-label="Mode"
+				items={items}
+				selectedKey={mode}
+				onSelectionChange={(key) => {
+					if (key === null) return;
+					onModeChange(String(key) as ModeShort);
+				}}
+				className={styles.mapRowSelect}
+			>
+				{(item) => (
+					<SendouSelectItem key={item.id} id={item.id} textValue={item.name}>
+						<div className={styles.mapSelectItem}>
+							<ModeImage mode={item.id} size={20} title={item.name} />
+							<div className={styles.stagePlaceholder}>?</div>
+							<span className={clsx({ "text-accent": isCounterpicks })}>
+								{isCounterpicks
+									? t("tournament:pickInfo.counterpick")
+									: t("tournament:mapList.teamsPick")}
+							</span>
+						</div>
+					</SendouSelectItem>
+				)}
+			</SendouSelect>
+		</li>
+	);
+}
+
 function MysteryRow({
 	number,
 	isCounterpicks,
-	isTiebreaker,
 	isCustomFlow,
 }: {
 	number: number;
 	isCounterpicks: boolean;
-	isTiebreaker: boolean;
 	isCustomFlow?: boolean;
 }) {
+	const { t } = useTranslation(["tournament"]);
+
 	return (
 		<li className={styles.mapListRow}>
 			<div
 				className={clsx("stack horizontal items-center xs text-lighter", {
-					"text-accent-high": isCounterpicks,
+					"text-accent": isCounterpicks,
 				})}
 			>
 				<span className="text-lg">{number}.</span>
 				{isCustomFlow
-					? "Custom flow"
+					? t("tournament:mapList.customFlow")
 					: isCounterpicks
-						? "Counterpick"
-						: isTiebreaker
-							? "Tiebreaker"
-							: "Team's pick"}
+						? t("tournament:pickInfo.counterpick")
+						: t("tournament:mapList.teamsPick")}
 			</div>
 		</li>
 	);
@@ -1265,8 +1445,8 @@ function PatternInputs({
 	onPatternsChange: (patterns: Map<number, string>) => void;
 }) {
 	const uniqueCounts = new Set<number>();
-	for (const groupCounts of mapCounts.values()) {
-		for (const { count } of groupCounts.values()) {
+	for (const roundSetCounts of mapCounts.values()) {
+		for (const { count } of roundSetCounts.values()) {
 			uniqueCounts.add(count);
 		}
 	}

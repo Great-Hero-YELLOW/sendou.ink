@@ -9,20 +9,22 @@ import { sql } from "kysely";
 import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
-import type { TournamentSettings } from "~/db/tables-json";
+import type { TeamPickSettings, TournamentSettings } from "~/db/tables-json";
 import { EXCLUDED_TAGS } from "~/features/calendar/calendar-constants";
-import * as ChatRepository from "~/features/chat/ChatRepository.server";
+import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import * as TeamPick from "~/features/tournament/core/TeamPick";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
 import * as Series from "~/features/tournament-organization/core/Series";
 import { getTentativeTier } from "~/features/tournament-organization/core/tentativeTiers.server";
 import * as TournamentOrganizationRepository from "~/features/tournament-organization/TournamentOrganizationRepository.server";
+import { rankedModesShort } from "~/modules/in-game-lists/modes";
 import {
 	databaseTimestampNow,
 	databaseTimestampToDate,
 	databaseTimestampToJavascriptTimestamp,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
@@ -38,7 +40,7 @@ import {
 	normalizedTeamCount,
 	tournamentIsRanked,
 } from "../tournament/tournament-utils";
-import type { CalendarEvent } from "./calendar-types";
+import type { CalendarEvent, CalendarEventTag } from "./calendar-types";
 import { calendarEventSorter } from "./calendar-utils";
 
 const RECENT_TOURNAMENTS_SHOWN = 10;
@@ -65,19 +67,6 @@ const withMapPool = (eb: ExpressionBuilder<DB, "CalendarEvent">) => {
 			.select(["MapPoolMap.stageId", "MapPoolMap.mode"])
 			.whereRef("MapPoolMap.calendarEventId", "=", "CalendarEvent.id"),
 	).as("mapPool");
-};
-
-const withTieBreakerMapPool = (eb: ExpressionBuilder<DB, "CalendarEvent">) => {
-	return jsonArrayFrom(
-		eb
-			.selectFrom("MapPoolMap")
-			.select(["MapPoolMap.stageId", "MapPoolMap.mode"])
-			.whereRef(
-				"MapPoolMap.tieBreakerCalendarEventId",
-				"=",
-				"CalendarEvent.id",
-			),
-	).as("tieBreakerMapPool");
 };
 
 const withBadgePrizes = (eb: ExpressionBuilder<DB, "CalendarEvent">) => {
@@ -220,7 +209,10 @@ function findAllBetweenTwoTimestampsMapped(
 }> {
 	const mapped: Array<CalendarEvent & { startsAt: number }> = rows.map(
 		(row) => {
-			const tags = row.tags ?? [];
+			// a virtual tag: leagues are told apart by their setting, not by anything the organizer picks
+			const tags: Array<CalendarEventTag> = row.tournamentSettings?.isLeague
+				? ["LEAGUE", ...(row.tags ?? [])]
+				: (row.tags ?? []);
 
 			const isPastEvent =
 				databaseTimestampToDate(row.startsAt) < sub(new Date(), { days: 1 });
@@ -255,7 +247,10 @@ function findAllBetweenTwoTimestampsMapped(
 					: tags.includes("SR")
 						? ["SR"]
 						: row.mapPickingStyle
-							? modesIncluded(row.mapPickingStyle, row.toSetMapPool)
+							? modesIncluded(
+									row.tournamentSettings?.teamPick,
+									row.toSetMapPool,
+								)
 							: null,
 				badges: row.badges,
 				trophy: row.trophy,
@@ -290,12 +285,10 @@ export async function findById(
 	id: number,
 	{
 		includeMapPool = false,
-		includeTieBreakerMapPool = false,
 		includeBadgePrizes = false,
 		includeTrophy = false,
 	}: {
 		includeMapPool?: boolean;
-		includeTieBreakerMapPool?: boolean;
 		includeBadgePrizes?: boolean;
 		includeTrophy?: boolean;
 	} = {},
@@ -303,7 +296,6 @@ export async function findById(
 	const [firstRow, ...rest] = await db
 		.selectFrom("CalendarEvent")
 		.$if(includeMapPool, (qb) => qb.select(withMapPool))
-		.$if(includeTieBreakerMapPool, (qb) => qb.select(withTieBreakerMapPool))
 		.$if(includeBadgePrizes, (qb) => qb.select(withBadgePrizes))
 		.$if(includeTrophy, (qb) => qb.select(withTrophy))
 		.innerJoin(
@@ -357,6 +349,33 @@ export async function findById(
 				: [],
 		},
 	};
+}
+
+/** Logo image ids of the given event and of the given tournament's event: what the new event form may keep when editing or copying. */
+export async function findAvatarImgIds({
+	eventId,
+	tournamentId,
+}: {
+	eventId?: number;
+	tournamentId?: number;
+}) {
+	if (!eventId && !tournamentId) return [];
+
+	const rows = await db
+		.selectFrom("CalendarEvent")
+		.select("CalendarEvent.avatarImgId")
+		.where((eb) =>
+			eb.or([
+				...(eventId ? [eb("CalendarEvent.id", "=", eventId)] : []),
+				...(tournamentId
+					? [eb("CalendarEvent.tournamentId", "=", tournamentId)]
+					: []),
+			]),
+		)
+		.where("CalendarEvent.avatarImgId", "is not", null)
+		.execute();
+
+	return rows.flatMap((row) => (row.avatarImgId ? [row.avatarImgId] : []));
 }
 
 /**
@@ -461,8 +480,8 @@ export async function findResultsByEventId(eventId: number) {
 				eb
 					.selectFrom("CalendarEventResultPlayer")
 					.leftJoin("User", "User.id", "CalendarEventResultPlayer.userId")
-					.select((eb) => [
-						...commonUserSelect(eb),
+					.select((playerEb) => [
+						...commonUserSelect(playerEb),
 						"CalendarEventResultPlayer.name",
 					])
 					.whereRef(
@@ -512,9 +531,12 @@ type CreateArgs = Pick<
 	startTimes: Array<Tables["CalendarEventDate"]["startsAt"]>;
 	badges: Array<Tables["CalendarEventBadge"]["badgeId"]>;
 	trophyId?: Tables["CalendarEvent"]["trophyId"];
+	/** The organizer's map pool: the maps of a "TO" tournament or the custom pool of a team picked one. */
 	mapPoolMaps?: Array<Pick<Tables["MapPoolMap"], "mode" | "stageId">>;
 	isFullTournament: boolean;
 	mapPickingStyle: Tables["Tournament"]["mapPickingStyle"];
+	/** Defaults to every ranked mode from the SendouQ pool for an "AUTO" tournament. */
+	teamPick?: TeamPickSettings;
 	bracketProgression: TournamentSettings["bracketProgression"] | null;
 	minMembersPerTeam?: number;
 	maxMembersPerTeam?: number;
@@ -524,6 +546,7 @@ type CreateArgs = Pick<
 	requireSendouQParticipation?: boolean;
 	isRanked?: boolean;
 	isTest?: boolean;
+	isLeague?: boolean;
 	isDraft?: boolean;
 	isInvitational?: boolean;
 	enableNoScreenToggle?: boolean;
@@ -558,6 +581,7 @@ export async function insert(args: CreateArgs) {
 				thirdPlaceMatch: args.thirdPlaceMatch,
 				isRanked: args.isRanked,
 				isTest: args.isTest,
+				isLeague: args.isLeague,
 				isDraft: args.isDraft,
 				isInvitational: args.isInvitational,
 				enableNoScreenToggle: args.enableNoScreenToggle,
@@ -575,6 +599,7 @@ export async function insert(args: CreateArgs) {
 								roundCount: args.swissRoundCount,
 							}
 						: undefined,
+				teamPick: teamPickSettings(args),
 			};
 
 			tournamentId = (
@@ -630,17 +655,7 @@ export async function insert(args: CreateArgs) {
 		await insertDates({ eventId, startTimes: args.startTimes }, trx);
 		await insertBadges({ eventId, badges: args.badges }, trx);
 
-		await upsertMapPool(
-			{
-				eventId,
-				mapPoolMaps: args.mapPoolMaps ?? [],
-				column:
-					args.isFullTournament && args.mapPickingStyle !== "TO"
-						? "tieBreakerCalendarEventId"
-						: "calendarEventId",
-			},
-			trx,
-		);
+		await upsertMapPool({ eventId, mapPoolMaps: args.mapPoolMaps ?? [] }, trx);
 
 		return { eventId, tournamentId };
 	});
@@ -663,10 +678,7 @@ async function insertSubmittedImage(
 	return result.id;
 }
 
-type UpdateArgs = Omit<
-	CreateArgs,
-	"createTournament" | "mapPickingStyle" | "isFullTournament"
-> & {
+type UpdateArgs = Omit<CreateArgs, "createTournament" | "isFullTournament"> & {
 	eventId: number;
 };
 export async function update(args: UpdateArgs) {
@@ -694,9 +706,9 @@ export async function update(args: UpdateArgs) {
 			.returning("tournamentId")
 			.executeTakeFirstOrThrow();
 
-		const mapPickingStyle = tournamentId
-			? await updateTournamentTables(args, trx, tournamentId)
-			: null;
+		if (tournamentId) {
+			await updateTournamentTables(args, trx, tournamentId);
+		}
 
 		if (tournamentId) {
 			const { settings: existingSettings } = await trx
@@ -728,16 +740,10 @@ export async function update(args: UpdateArgs) {
 			.execute();
 		await insertBadges({ eventId: args.eventId, badges: args.badges }, trx);
 
-		if (!tournamentId || mapPickingStyle === "TO") {
-			await upsertMapPool(
-				{
-					eventId: args.eventId,
-					mapPoolMaps: args.mapPoolMaps ?? [],
-					column: "calendarEventId",
-				},
-				trx,
-			);
-		}
+		await upsertMapPool(
+			{ eventId: args.eventId, mapPoolMaps: args.mapPoolMaps ?? [] },
+			trx,
+		);
 	});
 }
 
@@ -748,13 +754,14 @@ async function updateTournamentTables(
 ) {
 	invariant(args.bracketProgression, "Expected bracketProgression");
 
-	const existingSettings = (
+	const { settings: existingSettings, mapPickingStyle: existingStyle } =
 		await trx
 			.selectFrom("Tournament")
-			.select("settings")
+			.select(["settings", "mapPickingStyle"])
 			.where("id", "=", tournamentId)
-			.executeTakeFirstOrThrow()
-	).settings;
+			.executeTakeFirstOrThrow();
+
+	const teamPick = teamPickSettings({ ...args, isFullTournament: true });
 
 	const settings: Tables["Tournament"]["settings"] = {
 		bracketProgression: args.bracketProgression,
@@ -762,6 +769,7 @@ async function updateTournamentTables(
 		thirdPlaceMatch: args.thirdPlaceMatch,
 		isRanked: args.isRanked,
 		isTest: existingSettings.isTest, // this one is not editable after creation
+		isLeague: args.isLeague,
 		isDraft: args.isDraft,
 		isInvitational: args.isInvitational,
 		enableNoScreenToggle: args.enableNoScreenToggle,
@@ -779,23 +787,41 @@ async function updateTournamentTables(
 						roundCount: args.swissRoundCount,
 					}
 				: undefined,
+		teamPick,
 	};
 
 	const changedFormat = Progression.changedBracketProgressionFormat(
 		existingSettings.bracketProgression,
 		args.bracketProgression,
 	);
+	const changedMapPickingStyle =
+		existingStyle !== args.mapPickingStyle ||
+		!R.isDeepEqual(existingSettings.teamPick ?? null, teamPick ?? null);
 
-	const { mapPickingStyle } = await trx
+	await trx
 		.updateTable("Tournament")
 		.set({
+			mapPickingStyle: args.mapPickingStyle,
 			settings: JSON.stringify(settings),
 			rules: args.rules,
-			preparedMaps: changedFormat ? null : undefined,
+			preparedMaps: changedFormat || changedMapPickingStyle ? null : undefined,
 		})
 		.where("id", "=", tournamentId)
-		.returning("mapPickingStyle")
-		.executeTakeFirstOrThrow();
+		.execute();
+
+	const existingMapPool = await trx
+		.selectFrom("MapPoolMap")
+		.select(["mode", "stageId"])
+		.where("calendarEventId", "=", args.eventId)
+		.execute();
+	const changedMapPool =
+		MapPool.serialize(existingMapPool) !==
+		MapPool.serialize(args.mapPoolMaps ?? []);
+
+	// the teams' picks were made against the old settings, so they pick again
+	if (changedMapPickingStyle || changedMapPool) {
+		await resetTeamMapPicks({ tournamentId, args }, trx);
+	}
 
 	if (
 		changedFormat ||
@@ -810,8 +836,57 @@ async function updateTournamentTables(
 			.where("tournamentId", "=", tournamentId)
 			.execute();
 	}
+}
 
-	return mapPickingStyle;
+/**
+ * Deletes every team's map picks. Teams that had picked are also checked out when picks are still
+ * a check-in requirement, as otherwise they would enter the bracket without a pool.
+ */
+async function resetTeamMapPicks(
+	{
+		tournamentId,
+		args,
+	}: { tournamentId: number; args: Pick<UpdateArgs, "mapPickingStyle"> },
+	trx: Transaction<DB>,
+) {
+	// before the picks go, as the teams to check out are the ones that have them
+	if (args.mapPickingStyle !== "TO") {
+		await trx
+			.deleteFrom("TournamentTeamCheckIn")
+			.where("bracketIdx", "is", null)
+			.where("tournamentTeamId", "in", (eb) =>
+				eb
+					.selectFrom("MapPoolMap")
+					.innerJoin(
+						"TournamentTeam",
+						"TournamentTeam.id",
+						"MapPoolMap.tournamentTeamId",
+					)
+					.select("TournamentTeam.id")
+					.where("TournamentTeam.tournamentId", "=", tournamentId),
+			)
+			.execute();
+	}
+
+	await trx
+		.deleteFrom("MapPoolMap")
+		.where("tournamentTeamId", "in", (eb) =>
+			eb
+				.selectFrom("TournamentTeam")
+				.select("id")
+				.where("tournamentId", "=", tournamentId),
+		)
+		.execute();
+}
+
+function teamPickSettings(
+	args: Pick<CreateArgs, "mapPickingStyle" | "teamPick" | "isFullTournament">,
+) {
+	if (!args.isFullTournament || args.mapPickingStyle !== "AUTO") {
+		return undefined;
+	}
+
+	return args.teamPick ?? TeamPick.defaultSettings([...rankedModesShort]);
 }
 
 function insertDates(
@@ -897,22 +972,15 @@ async function upsertMapPool(
 	{
 		eventId,
 		mapPoolMaps,
-		column,
 	}: {
 		eventId: number;
 		mapPoolMaps: NonNullable<CreateArgs["mapPoolMaps"]>;
-		column: "tieBreakerCalendarEventId" | "calendarEventId";
 	},
 	trx: Transaction<DB>,
 ) {
 	await trx
 		.deleteFrom("MapPoolMap")
-		.where((eb) =>
-			eb.or([
-				eb("calendarEventId", "=", eventId),
-				eb("tieBreakerCalendarEventId", "=", eventId),
-			]),
-		)
+		.where("calendarEventId", "=", eventId)
 		.execute();
 
 	await trx
@@ -921,48 +989,13 @@ async function upsertMapPool(
 			mapPoolMaps.map((mapPoolMap) => ({
 				stageId: mapPoolMap.stageId,
 				mode: mapPoolMap.mode,
-				[column]: eventId,
+				calendarEventId: eventId,
 			})),
 		)
 		.execute();
 }
 
-export function deleteById({
-	eventId,
-	tournamentId,
-}: {
-	eventId: number;
-	tournamentId: number | null;
-}) {
-	return db.transaction().execute(async (trx) => {
-		await trx.deleteFrom("CalendarEvent").where("id", "=", eventId).execute();
-		if (tournamentId) {
-			const teamChatRooms = await trx
-				.selectFrom("TournamentTeam")
-				.select("TournamentTeam.chatRoomId")
-				.where("TournamentTeam.tournamentId", "=", tournamentId)
-				.where("TournamentTeam.chatRoomId", "is not", null)
-				.execute();
-			const matchChatRooms = await trx
-				.selectFrom("TournamentMatch")
-				.innerJoin(
-					"TournamentStage",
-					"TournamentStage.id",
-					"TournamentMatch.stageId",
-				)
-				.select("TournamentMatch.chatRoomId")
-				.where("TournamentStage.tournamentId", "=", tournamentId)
-				.where("TournamentMatch.chatRoomId", "is not", null)
-				.execute();
-			await ChatRepository.deleteRoomsByIds(
-				[...teamChatRooms, ...matchChatRooms].map((room) => room.chatRoomId),
-				trx,
-			);
-
-			await trx
-				.deleteFrom("Tournament")
-				.where("id", "=", tournamentId)
-				.execute();
-		}
-	});
+/** Deletes the event, and its tournament if it has one. */
+export function deleteById(eventId: number) {
+	return db.deleteFrom("CalendarEvent").where("id", "=", eventId).execute();
 }

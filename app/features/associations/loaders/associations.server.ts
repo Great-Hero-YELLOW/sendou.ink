@@ -18,7 +18,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 	const associationsWithInviteCodes = await Promise.all(
 		associations.map(async (association) => ({
 			...association,
-			inviteCode: association.permissions.MANAGE.includes(user.id)
+			inviteCode: association.permissions.MANAGE_INVITE_LINK.includes(user.id)
 				? await AssociationRepository.findInviteCodeById(association.id)
 				: undefined,
 		})),
@@ -38,20 +38,17 @@ async function associationToJoin(
 
 	if (!inviteCode) return null;
 
-	const associationToJoin = await AssociationRepository.findByInviteCode(
-		inviteCode,
-		{
-			withMembers: true,
-		},
-	);
-	if (!associationToJoin) return null;
+	const association = await AssociationRepository.findByInviteCode(inviteCode, {
+		withMembers: true,
+	});
+	if (!association) return null;
 
-	if (associationToJoin.members!.some((member) => member.id === userId)) {
+	if (association.members!.some((member) => member.id === userId)) {
 		return null;
 	}
 
 	return {
-		association: associationToJoin,
+		association,
 		inviteCode,
 	};
 }

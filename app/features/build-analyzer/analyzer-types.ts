@@ -68,12 +68,18 @@ export interface BaseWeaponStats {
 	DamageParam_ValueMinCharge?: number;
 	BlastParam_SplashDamage?: number;
 	BlastParam_DistanceDamage?: Array<DistanceDamage>;
+	/** S-BLAST's blast when the shot is fired mid-jump */
+	BlastJumpParam_DistanceDamage?: Array<DistanceDamage>;
 	/** Brella shield HP */
 	CanopyHP?: number;
 	/** Amount of frames white ink (=no ink recovery during this time) takes */
 	InkRecoverStop?: number;
+	InkRecoverStop_WeaponVerticalSwingParam?: number;
+	InkRecoverStop_WeaponWideSwingParam?: number;
 	/** How much ink one shot consumes? InkConsume = 0.5 means 2 shots per full tank */
 	InkConsume?: number;
+	/** Squeezer rapid fire (secondary mode) consumption per shot */
+	InkConsumeVariable?: number;
 	/** How much ink one slosh of slosher consumes? */
 	InkConsumeSlosher?: number;
 	/** How much ink one fully charged shot consumes? */
@@ -96,6 +102,8 @@ export interface BaseWeaponStats {
 	InkConsume_WeaponShelterShotgunParam?: number;
 	/** How much ink a dualie dodge roll consumes? */
 	InkConsume_SideStepParam?: number;
+	/** How much ink rolling with a roller or brush consumes per frame at full rolling speed? */
+	InkConsumeMaxPerFrame_WeaponRollParam?: number;
 	/** How much ink a fully charged Splatana shot consumes? */
 	InkConsumeFullCharge_ChargeParam?: number;
 
@@ -175,6 +183,7 @@ export type SpecialWeaponParams = SpecialWeaponParamsObject[SpecialWeaponId] & {
 	WaveDamage?: number;
 	ExhaleBlastParamMaxChargeDistanceDamage?: Array<DistanceDamage>;
 	ExhaleBlastParamMinChargeDistanceDamage?: Array<DistanceDamage>;
+	InhaleDamage?: number;
 	SwingDamage?: Array<DistanceDamage>;
 	ThrowDamage?: Array<DistanceDamage>;
 	ThrowDirectDamage?: number;
@@ -240,6 +249,7 @@ export const INK_CONSUME_TYPES = [
 	"SLOSH",
 	"VERTICAL_SWING",
 	"HORIZONTAL_SWING",
+	"SECONDARY_MODE",
 	"TAP_SHOT",
 	"FULL_CHARGE",
 	"SPLATLING_CHARGE",
@@ -291,8 +301,12 @@ export interface AnalyzedBuild {
 		/** Seconds for Tenacity to fill the special gauge, keyed by how many players the team is down. */
 		tenacitySecondsToSpecial?: Record<TenacityPlayerDeficit, number>;
 		mainWeaponWhiteInkSeconds?: number;
+		mainWeaponWhiteInkSecondsHorizontalSwing?: number;
+		mainWeaponWhiteInkSecondsVerticalSwing?: number;
 		subWeaponWhiteInkSeconds: number;
 		subWeaponInkConsumptionPercentage: Stat;
+		/** Seconds a full ink tank lasts rolling at full speed (rollers and brushes) */
+		mainWeaponRollSeconds?: Stat;
 		fullInkTankOptions: Array<FullInkTankOption & { id: string }>;
 		damages: Array<Damage & { id: string }>;
 		specialWeaponDamages: Array<Damage & { id: string }>;
@@ -307,6 +321,7 @@ export interface AnalyzedBuild {
 		swimSpeed: Stat;
 		swimSpeedHoldingRainmaker: Stat;
 		runSpeedInEnemyInk: Stat;
+		jumpHeightInEnemyInk: Stat;
 		framesBeforeTakingDamageInEnemyInk: Stat;
 		damageTakenInEnemyInkPerSecond: Stat;
 		enemyInkDamageLimit: Stat;
@@ -319,6 +334,7 @@ export interface AnalyzedBuild {
 		shotAutofireSpreadAir?: Stat;
 		shotAutofireSpreadGround?: number;
 		squidSurgeChargeFrames: Stat;
+		squidRollSpeedRetained: Stat;
 
 		subDefPointSensorMarkedTimeInSeconds: Stat;
 		subDefInkMineMarkedTimeInSeconds: Stat;

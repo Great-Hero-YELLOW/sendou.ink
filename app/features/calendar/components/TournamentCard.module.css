@@ -31,7 +31,7 @@
 }
 
 .cardRanked {
-	box-shadow: inset 0 -3px 0 var(--color-accent);
+	box-shadow: inset 0 -3px 0 var(--color-fg-accent);
 }
 
 .imgContainer {
@@ -165,17 +165,4 @@
 .badgePill {
 	padding: 0 var(--s-1);
 	height: var(--selector-size);
-}
-
-.trophyPreview {
-	background-color: var(--color-bg-high);
-	border-radius: var(--radius-box);
-}
-
-.trophyPreviewFallback {
-	width: 19rem;
-	max-width: 100%;
-	aspect-ratio: 1 / 1;
-	border-radius: var(--radius-box);
-	background-color: var(--color-bg-high);
 }

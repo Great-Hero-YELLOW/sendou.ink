@@ -5,7 +5,12 @@ import {
 	inGameNameIsValid,
 	normalizeInGameName,
 } from "~/features/user-page/in-game-name";
-import type { MainWeaponId, StageId } from "~/modules/in-game-lists/types";
+import type {
+	MainWeaponId,
+	SpecialWeaponId,
+	StageId,
+	SubWeaponId,
+} from "~/modules/in-game-lists/types";
 import { canonicalWeaponSplId } from "~/modules/in-game-lists/weapon-ids";
 import type { AnySyncSchema, DayMonthYear } from "~/utils/schema";
 import {
@@ -16,7 +21,9 @@ import {
 	preprocess,
 	safeNullableStringSchema,
 	safeStringSchema,
+	specialWeaponId,
 	stageId,
+	subWeaponId,
 	timeString,
 	weaponSplId,
 } from "~/utils/schema";
@@ -153,16 +160,6 @@ type TextFieldArgs = WithTypedTranslationKeys<
 export function textFieldOptional(
 	args: TextFieldArgs,
 ): v.GenericSchema<string | null, string | null> {
-	// validated as a plain string, so unlike other optional text fields it has no null fallback and its key stays required
-	if (args.validate === "url") {
-		return registerTextField(
-			v.pipe(v.string(), v.url()),
-			args,
-			false,
-			false,
-		) as never;
-	}
-
 	return registerTextField(
 		safeNullableStringSchema({ min: args.minLength, max: args.maxLength }),
 		args,
@@ -172,12 +169,12 @@ export function textFieldOptional(
 }
 
 export function textField(args: TextFieldArgs): v.GenericSchema<string> {
-	const schema =
-		args.validate === "url"
-			? v.pipe(v.string(), v.url())
-			: safeStringSchema({ min: args.minLength, max: args.maxLength });
-
-	return registerTextField(schema, args, true, false) as never;
+	return registerTextField(
+		safeStringSchema({ min: args.minLength, max: args.maxLength }),
+		args,
+		true,
+		false,
+	) as never;
 }
 
 function registerTextField<T extends v.GenericSchema<any, string | null>>(
@@ -206,6 +203,16 @@ function textFieldRefined<T extends v.GenericSchema<any, string | null>>(
 	>,
 ): v.GenericSchema<any, string | null> {
 	let result: v.GenericSchema<any, string | null> = schema;
+
+	if (args.validate === "url") {
+		result = v.pipe(
+			result,
+			v.check(
+				(val) => val === null || isHttpUrl(val),
+				"forms:errors.invalidUrl",
+			),
+		);
+	}
 
 	if (args.regExp) {
 		result = v.pipe(
@@ -237,6 +244,15 @@ function textFieldRefined<T extends v.GenericSchema<any, string | null>>(
 	}
 
 	return result;
+}
+
+/** Only http(s) is allowed so that e.g. a `javascript:` URL can never end up in a rendered link. */
+function isHttpUrl(value: string) {
+	try {
+		return ["http:", "https:"].includes(new URL(value).protocol);
+	} catch {
+		return false;
+	}
 }
 
 export function inGameName(
@@ -549,7 +565,10 @@ export function radioGroup<V extends string>(
 			Omit<FormFieldInputGroup<"radio-group", V>, "type" | "initialValue">,
 			V
 		>
-	>,
+	> & {
+		/** Value selected when the form has no default value for the field. Defaults to the first item. */
+		initialValue?: V;
+	},
 ): v.GenericSchema<ItemValue<V>, ItemValue<V>> {
 	return register(itemsSchema(args.items), {
 		...args,
@@ -557,7 +576,7 @@ export function radioGroup<V extends string>(
 		bottomText: prefixKey(args.bottomText),
 		items: prefixItems(args.items),
 		type: "radio-group",
-		initialValue: args.items[0].value,
+		initialValue: args.initialValue ?? args.items[0].value,
 	});
 }
 
@@ -820,12 +839,18 @@ type TimeRangeArgs = WithTypedTranslationKeys<
 	endLabel?: FormsTranslationKey;
 };
 
+const timeRangeEndpoint = v.pipe(
+	v.string(),
+	v.nonEmpty("forms:errors.timeRangeIncomplete"),
+	v.check((value) => v.is(timeString, value), "forms:errors.invalidTime"),
+);
+
 export function timeRangeOptional(args: TimeRangeArgs) {
 	return register(
 		v.nullable(
 			v.object({
-				start: timeString,
-				end: timeString,
+				start: timeRangeEndpoint,
+				end: timeRangeEndpoint,
 			}),
 		),
 		{
@@ -978,7 +1003,7 @@ type WeaponSelectArgs = WithTypedTranslationKeys<
 export function weaponSelect(
 	args: WeaponSelectArgs,
 ): v.GenericSchema<MainWeaponId> {
-	return register(weaponSplId, weaponSelectMetadata(args, true)) as never;
+	return register(weaponSplId, weaponSelectMetadata(args)) as never;
 }
 
 export function weaponSelectOptional(
@@ -986,16 +1011,41 @@ export function weaponSelectOptional(
 ): v.OptionalSchema<v.GenericSchema<MainWeaponId>, undefined> {
 	return register(
 		v.optional(weaponSplId),
-		weaponSelectMetadata(args, false),
+		weaponSelectMetadata(args, "weapon-select", false),
 	) as never;
 }
 
-function weaponSelectMetadata(args: WeaponSelectArgs, required: boolean) {
+export function subWeaponSelect(
+	args: WeaponSelectArgs,
+): v.GenericSchema<SubWeaponId> {
+	return register(
+		subWeaponId,
+		weaponSelectMetadata(args, "sub-weapon-select"),
+	) as never;
+}
+
+export function specialWeaponSelect(
+	args: WeaponSelectArgs,
+): v.GenericSchema<SpecialWeaponId> {
+	return register(
+		specialWeaponId,
+		weaponSelectMetadata(args, "special-weapon-select"),
+	) as never;
+}
+
+function weaponSelectMetadata(
+	args: WeaponSelectArgs,
+	type:
+		| "weapon-select"
+		| "sub-weapon-select"
+		| "special-weapon-select" = "weapon-select",
+	required = true,
+) {
 	return {
 		...args,
 		label: prefixKey(args.label),
 		bottomText: prefixKey(args.bottomText),
-		type: "weapon-select" as const,
+		type,
 		initialValue: null,
 		required,
 	};

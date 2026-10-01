@@ -26,7 +26,9 @@ import {
 	type SortState,
 } from "~/components/SortableTableHeader";
 import { Table } from "~/components/Table";
+import { DroppedOutPopover } from "~/features/tournament/components/DroppedOutPopover";
 import { useTournament } from "~/features/tournament/tournament-context";
+import * as CheckIn from "~/features/tournament-bracket/core/CheckIn";
 import type {
 	BracketMeta,
 	Tournament,
@@ -78,7 +80,7 @@ export default function TournamentAdminTeamsPage() {
 						size="small"
 						variant="outlined"
 						icon={<Download />}
-						onPress={() => setExportOpen(true)}
+						onClick={() => setExportOpen(true)}
 					>
 						Export
 					</SendouButton>
@@ -168,7 +170,7 @@ function AddSubButton() {
 				size="small"
 				variant="outlined"
 				icon={<Plus />}
-				onPress={() => setDialogOpen(true)}
+				onClick={() => setDialogOpen(true)}
 			>
 				Add sub
 			</SendouButton>
@@ -210,11 +212,7 @@ function TeamRow({
 	const logoSrc = team.logoUrl;
 
 	return (
-		<tr
-			className={clsx({ [styles.droppedOut]: team.droppedOut })}
-			data-testid="team-row"
-			data-team-id={team.id}
-		>
+		<tr data-testid="team-row" data-team-id={team.id}>
 			<td>
 				<div className="stack horizontal sm items-center">
 					<Avatar size="xxs" url={logoSrc} identiconInput={team.name} />
@@ -228,6 +226,7 @@ function TeamRow({
 					>
 						{team.name}
 					</Link>
+					{team.droppedOut ? <DroppedOutPopover /> : null}
 				</div>
 			</td>
 			{!tournament.ctx.isFinalized ? (
@@ -377,7 +376,13 @@ function TeamRowMenu({
 					? bracketsRequiringCheckIn.map((bracket) => {
 							if (!bracket.preview) return null;
 
-							const bracketCheckedIn = isBracketCheckedIn(team, bracket.idx);
+							const bracketCheckedIn = CheckIn.isCheckedInToBrackets(
+								team.checkIns,
+								CheckIn.sharedBracketIdxs(
+									bracket.idx,
+									tournament.ctx.settings.bracketProgression,
+								),
+							);
 
 							return bracketCheckedIn ? (
 								<SendouMenuItem
@@ -477,12 +482,6 @@ function isTournamentCheckedIn(team: TournamentTeamFull) {
 	);
 }
 
-function isBracketCheckedIn(team: TournamentTeamFull, bracketIdx: number) {
-	return team.checkIns.some(
-		(checkIn) => checkIn.bracketIdx === bracketIdx && !checkIn.isCheckOut,
-	);
-}
-
 /** Does this bracket have its own opt-in check-in (besides the event check-in)? */
 function isCheckInBracket(bracket: BracketMeta) {
 	return bracket.requiresCheckIn;
@@ -512,7 +511,13 @@ function checkInScopes(tournament: Tournament, team: TournamentTeamFull) {
 		{ label: "Event", checkedIn: isTournamentCheckedIn(team) },
 		...checkInBracketsForTeam(tournament, team).map((bracket) => ({
 			label: bracket.name,
-			checkedIn: isBracketCheckedIn(team, bracket.idx),
+			checkedIn: CheckIn.isCheckedInToBrackets(
+				team.checkIns,
+				CheckIn.sharedBracketIdxs(
+					bracket.idx,
+					tournament.ctx.settings.bracketProgression,
+				),
+			),
 		})),
 	];
 }

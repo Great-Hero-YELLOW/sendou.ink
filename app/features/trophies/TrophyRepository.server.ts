@@ -125,7 +125,7 @@ const withCreator = (eb: ExpressionBuilder<DB, "Trophy">) => {
 	return jsonObjectFrom(
 		eb
 			.selectFrom("User")
-			.select((eb) => commonUserSelect(eb))
+			.select((userEb) => commonUserSelect(userEb))
 			.whereRef("User.id", "=", "Trophy.creatorId"),
 	).as("creator");
 };
@@ -134,7 +134,7 @@ const withManager = (eb: ExpressionBuilder<DB, "Trophy">) => {
 	return jsonObjectFrom(
 		eb
 			.selectFrom("User")
-			.select((eb) => commonUserSelect(eb))
+			.select((userEb) => commonUserSelect(userEb))
 			.whereRef("User.id", "=", "Trophy.managerId"),
 	).as("manager");
 };
@@ -153,9 +153,9 @@ const withOwners = (eb: ExpressionBuilder<DB, "Trophy">) => {
 		eb
 			.selectFrom("TrophyOwner")
 			.innerJoin("User", "TrophyOwner.userId", "User.id")
-			.select((eb) => [
-				eb.fn.count<number>("TrophyOwner.trophyId").as("count"),
-				...commonUserSelect(eb),
+			.select((ownerEb) => [
+				ownerEb.fn.count<number>("TrophyOwner.trophyId").as("count"),
+				...commonUserSelect(ownerEb),
 			])
 			.whereRef("TrophyOwner.trophyId", "=", "Trophy.id")
 			.groupBy("User.id")
@@ -168,7 +168,10 @@ const withSpecialOwners = (eb: ExpressionBuilder<DB, "Trophy">) => {
 		eb
 			.selectFrom("SpecialTrophyOwner")
 			.innerJoin("User", "SpecialTrophyOwner.userId", "User.id")
-			.select((eb) => [eb.val(1).as("count"), ...commonUserSelect(eb)])
+			.select((ownerEb) => [
+				ownerEb.val(1).as("count"),
+				...commonUserSelect(ownerEb),
+			])
 			.whereRef("SpecialTrophyOwner.trophyId", "=", "Trophy.id")
 			.orderBy("User.id", "asc"),
 	).as("specialOwners");
@@ -491,7 +494,7 @@ export async function existsByName(args: {
 export async function findManagedBy(userId: number) {
 	return db
 		.selectFrom("Trophy")
-		.select(["id", "name", "model", "organizationId", "managerId"])
+		.select(["id", "name", "model", "organizationId", "managerId", "creatorId"])
 		.where("managerId", "=", userId)
 		.execute();
 }
@@ -499,7 +502,7 @@ export async function findManagedBy(userId: number) {
 export async function findAllForEditing() {
 	return db
 		.selectFrom("Trophy")
-		.select(["id", "name", "model", "organizationId", "managerId"])
+		.select(["id", "name", "model", "organizationId", "managerId", "creatorId"])
 		.where("code", "is", null)
 		.execute();
 }
@@ -613,6 +616,7 @@ export async function createPending(args: {
 	submitterUserId: number;
 	targetTrophyId?: number;
 	managerId?: number;
+	creatorId?: number;
 }) {
 	return db
 		.insertInto("PendingTrophy")
@@ -628,6 +632,7 @@ export async function createPending(args: {
 			declinedByUserId: null,
 			targetTrophyId: args.targetTrophyId ?? null,
 			managerId: args.managerId ?? null,
+			creatorId: args.creatorId ?? null,
 		})
 		.returning("id")
 		.executeTakeFirstOrThrow();
@@ -657,6 +662,7 @@ const withTarget = (eb: ExpressionBuilder<DB, "PendingTrophy">) => {
 		eb
 			.selectFrom("Trophy")
 			.leftJoin("User", "User.id", "Trophy.managerId")
+			.leftJoin("User as Creator", "Creator.id", "Trophy.creatorId")
 			.leftJoin(
 				"TournamentOrganization",
 				"TournamentOrganization.id",
@@ -668,7 +674,9 @@ const withTarget = (eb: ExpressionBuilder<DB, "PendingTrophy">) => {
 				"Trophy.model",
 				"Trophy.organizationId",
 				"Trophy.managerId",
+				"Trophy.creatorId",
 				"User.username as managerUsername",
+				"Creator.username as creatorUsername",
 				"TournamentOrganization.name as organizationName",
 				"TournamentOrganization.slug as organizationSlug",
 			])
@@ -683,6 +691,15 @@ const withTargetManager = (eb: ExpressionBuilder<DB, "PendingTrophy">) => {
 			.select(["User.id", "User.username", "User.discordId"])
 			.whereRef("User.id", "=", "PendingTrophy.managerId"),
 	).as("manager");
+};
+
+const withPendingCreator = (eb: ExpressionBuilder<DB, "PendingTrophy">) => {
+	return jsonObjectFrom(
+		eb
+			.selectFrom("User")
+			.select(["User.id", "User.username", "User.discordId"])
+			.whereRef("User.id", "=", "PendingTrophy.creatorId"),
+	).as("creator");
 };
 
 function pendingBaseQuery() {
@@ -717,6 +734,7 @@ function pendingBaseQuery() {
 			"PendingTrophy.acceptedAt",
 			"PendingTrophy.targetTrophyId",
 			"PendingTrophy.managerId",
+			"PendingTrophy.creatorId",
 			"Submitter.username as submitterUsername",
 			"Submitter.discordId as submitterDiscordId",
 			"Decliner.username as declinedByUsername",
@@ -725,6 +743,7 @@ function pendingBaseQuery() {
 			withApprovals(eb),
 			withTarget(eb),
 			withTargetManager(eb),
+			withPendingCreator(eb),
 		]);
 }
 
@@ -839,6 +858,7 @@ export async function addApproval(args: {
 				"submitterUserId",
 				"targetTrophyId",
 				"managerId",
+				"creatorId",
 			])
 			.where("id", "=", args.pendingTrophyId)
 			.where("declinedAt", "is", null)
@@ -861,6 +881,9 @@ export async function addApproval(args: {
 					model: pending.model,
 					organizationId: pending.organizationId,
 					managerId: pending.managerId ?? pending.submitterUserId,
+					...(pending.creatorId !== null
+						? { creatorId: pending.creatorId }
+						: {}),
 				})
 				.where("id", "=", pending.targetTrophyId)
 				.execute();
@@ -873,7 +896,7 @@ export async function addApproval(args: {
 				name: pending.name,
 				model: pending.model,
 				organizationId: pending.organizationId,
-				creatorId: pending.submitterUserId,
+				creatorId: pending.creatorId ?? pending.submitterUserId,
 				managerId: pending.managerId ?? pending.submitterUserId,
 			})
 			.returning("id")

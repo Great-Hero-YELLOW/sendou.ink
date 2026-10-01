@@ -26,7 +26,7 @@ import type {
 	StageId,
 } from "~/modules/in-game-lists/types";
 import { databaseTimestampToJavascriptTimestamp } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { wrappedAction, wrappedLoader } from "~/utils/Test";
 import { action } from "../actions/scanner-ingest.server";
 import type {
@@ -140,7 +140,7 @@ export async function sendouqWorld(
 		},
 		scanned: (
 			map: { mode: ModeShort; stageId: StageId; index: number },
-			options?: ScannedOptions,
+			scannedOptions?: ScannedOptions,
 		) =>
 			scannedGame(
 				{
@@ -150,7 +150,7 @@ export async function sendouqWorld(
 					winnerNames: ALPHA_NAMES,
 					loserNames: BRAVO_NAMES,
 				},
-				options,
+				scannedOptions,
 			),
 	};
 }
@@ -317,6 +317,7 @@ export function scannedGame(
 		cast,
 		objective: null,
 		playerStatus: null,
+		kills: null,
 		teams: seenFrom === "loser" ? [losers, winners] : [winners, losers],
 		winner: seenFrom === "loser" ? 1 : 0,
 		pov: cast ? null : { team: 0, index: 0 },

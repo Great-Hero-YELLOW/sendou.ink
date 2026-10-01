@@ -1,13 +1,13 @@
 import type { Namespace, TFunction } from "i18next";
 import type { Params, UIMatch } from "react-router";
-import { data, redirect } from "react-router";
+import { redirect } from "react-router";
 import * as v from "valibot";
 import type { navItems } from "~/components/layout/nav-items";
 import { ServerConfig } from "~/config.server";
 import type { Ok, Result } from "~/utils/result";
 import type { AnySchema, AnySyncSchema } from "~/utils/schema";
 import { logger } from "./logger";
-import { currentRequestPathname } from "./request-context.server";
+import { currentRequestPath } from "./request-context.server";
 
 export function notFoundIfNullish<T>(value: T | null | undefined): T {
 	if (value === null || value === undefined) {
@@ -137,12 +137,23 @@ export function formDataToObject(formData: FormData) {
 const LOHI_TOKEN_HEADER_NAME = "Lohi-Token";
 
 /** Some endpoints can only be accessed with an auth token. Used by Lohi bot and cron jobs. */
+/** A `returnTo` form value narrowed to a same-site path, so that redirecting to it can not leave the site. */
+export function safeReturnTo(value: FormDataEntryValue | null) {
+	if (typeof value !== "string") return null;
+	// a second slash or backslash makes it a protocol-relative URL to another host
+	if (!/^\/(?![\\/])/.test(value)) return null;
+
+	return value;
+}
+
 export function canAccessLohiEndpoint(request: Request) {
 	return request.headers.get(LOHI_TOKEN_HEADER_NAME) === ServerConfig.lohiToken;
 }
 
 export function errorToastRedirect(message: string) {
-	return redirect(`${currentRequestPathname() ?? ""}?__error=${message}`);
+	return redirect(
+		urlWithToastParam(currentRequestPath() ?? "", "__error", message),
+	);
 }
 
 /** Asserts condition is truthy. Throws a redirect triggering an error toast with given message otherwise.  */
@@ -170,7 +181,9 @@ export function errorToast(message: string) {
 }
 
 export function successToast(message: string) {
-	return redirect(`${currentRequestPathname() ?? ""}?__success=${message}`);
+	return redirect(
+		urlWithToastParam(currentRequestPath() ?? "", "__success", message),
+	);
 }
 
 export function successToastWithRedirect({
@@ -180,7 +193,31 @@ export function successToastWithRedirect({
 	message: string;
 	url: string;
 }) {
-	return redirect(`${url}?__success=${message}`);
+	return redirect(urlWithToastParam(url, "__success", message));
+}
+
+function urlWithToastParam(
+	url: string,
+	param: "__error" | "__success",
+	message: string,
+) {
+	const [pathnameAndSearch, hash] = splitOnce(url, "#");
+	const [pathname, search] = splitOnce(pathnameAndSearch, "?");
+
+	const searchParams = new URLSearchParams(search);
+	searchParams.delete("__error");
+	searchParams.delete("__success");
+	searchParams.set(param, message);
+
+	return `${pathname}?${searchParams}${hash ? `#${hash}` : ""}`;
+}
+
+function splitOnce(value: string, separator: string) {
+	const index = value.indexOf(separator);
+
+	return index === -1
+		? ([value, undefined] as const)
+		: ([value.slice(0, index), value.slice(index + 1)] as const);
 }
 
 export type Breadcrumb =
@@ -213,10 +250,3 @@ export type SendouRouteHandle = {
 	 */
 	mainBreakout?: boolean;
 };
-
-/** Per-user loader response cached with `private` Cache-Control (no CDN), useful for link hover prefetch. */
-export function privatelyCachedJson<T>(dataValue: T) {
-	return data(dataValue, {
-		headers: { "Cache-Control": "private, max-age=5" },
-	});
-}

@@ -1,13 +1,18 @@
 import type { TFunction } from "i18next";
 import * as React from "react";
-import type { Key } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import {
+	type SelectKey,
 	SendouSelect,
 	SendouSelectItem,
 	SendouSelectItemSection,
 } from "~/components/elements/Select";
-import { Image, WeaponImage } from "~/components/Image";
+import {
+	Image,
+	SpecialWeaponImage,
+	SubWeaponImage,
+	WeaponImage,
+} from "~/components/Image";
 import type { AnyWeapon } from "~/features/build-analyzer/analyzer-types";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { filterWeapon } from "~/modules/in-game-lists/utils";
@@ -20,11 +25,7 @@ import {
 	TRIZOOKA_ID,
 	weaponCategories,
 } from "~/modules/in-game-lists/weapon-ids";
-import {
-	specialWeaponImageUrl,
-	subWeaponImageUrl,
-	weaponCategoryUrl,
-} from "~/utils/urls";
+import { weaponCategoryUrl } from "~/utils/urls";
 
 import styles from "./WeaponSelect.module.css";
 
@@ -69,14 +70,7 @@ export function WeaponSelect<
 	placeholder,
 }: WeaponSelectProps<Clearable, IncludeSubSpecial>) {
 	const { t } = useTranslation(["common"]);
-	const selectedWeaponId: MainWeaponId | null =
-		typeof value === "number"
-			? (value as MainWeaponId)
-			: value && typeof value === "object" && value.type === "MAIN"
-				? (value.id as MainWeaponId)
-				: null;
 	const isControlled = value !== undefined;
-	const [isOpen, setIsOpen] = React.useState(false);
 	const [lastUncontrolledKey, setLastUncontrolledKey] = React.useState<
 		string | null
 	>(() => keyify(initialValue) ?? null);
@@ -84,13 +78,11 @@ export function WeaponSelect<
 	const { items, filterValue, setFilterValue } = useWeaponItems({
 		includeSubSpecial,
 		quickSelectWeaponsIds,
-		selectedWeaponId,
-		isOpen,
 		selectedKey,
 	});
 	const filter = useWeaponFilter();
 
-	const handleOnChange = (key: Key | null) => {
+	const handleOnChange = (key: SelectKey | null) => {
 		if (!isControlled) {
 			setLastUncontrolledKey(key === null ? null : String(key));
 		}
@@ -120,10 +112,9 @@ export function WeaponSelect<
 			}}
 			searchInputValue={filterValue}
 			onSearchInputChange={setFilterValue}
-			onOpenChange={setIsOpen}
 			selectedKey={isControlled ? keyify(value) : undefined}
 			defaultSelectedKey={
-				isControlled ? undefined : (keyify(initialValue) as Key)
+				isControlled ? undefined : (keyify(initialValue) as SelectKey)
 			}
 			onSelectionChange={handleOnChange}
 			clearable={clearable}
@@ -134,23 +125,28 @@ export function WeaponSelect<
 			{({ key, items: weapons, name, idx }) => (
 				<SendouSelectItemSection
 					heading={name}
-					headingImgPath={
-						key === "quick-select"
-							? undefined
-							: name === "subs"
-								? subWeaponImageUrl(SPLAT_BOMB_ID)
-								: name === "specials"
-									? specialWeaponImageUrl(TRIZOOKA_ID)
-									: weaponCategoryUrl(name)
+					headingImg={
+						key === "quick-select" ? undefined : name === "subs" ? (
+							<SubWeaponImage subWeaponId={SPLAT_BOMB_ID} size={28} alt="" />
+						) : name === "specials" ? (
+							<SpecialWeaponImage
+								specialWeaponId={TRIZOOKA_ID}
+								size={28}
+								alt=""
+							/>
+						) : (
+							<Image path={weaponCategoryUrl(name)} size={28} alt="" />
+						)
 					}
 					className={idx === 0 ? "pt-0-5" : undefined}
 					key={key}
 				>
-					{weapons.map(({ weapon, name }) => (
+					{weapons.map(({ weapon, name: weaponName }) => (
 						<SendouSelectItem
 							key={weapon.anyWeaponId}
 							id={weapon.anyWeaponId}
-							textValue={name}
+							textValue={weaponName}
+							className={styles.option}
 							isDisabled={
 								includeSubSpecial
 									? false
@@ -166,25 +162,23 @@ export function WeaponSelect<
 										className={styles.weaponImg}
 									/>
 								) : weapon.type === "SUB" ? (
-									<Image
-										path={subWeaponImageUrl(weapon.id)}
+									<SubWeaponImage
+										subWeaponId={weapon.id}
 										size={24}
-										alt=""
 										className={styles.weaponImg}
 									/>
 								) : (
-									<Image
-										path={specialWeaponImageUrl(weapon.id)}
+									<SpecialWeaponImage
+										specialWeaponId={weapon.id}
 										size={24}
-										alt=""
 										className={styles.weaponImg}
 									/>
 								)}
 								<span
 									className={styles.weaponLabel}
-									data-testid={`weapon-select-option-${name}`}
+									data-testid={`weapon-select-option-${weaponName}`}
 								>
-									{name}
+									{weaponName}
 								</span>
 							</div>
 						</SendouSelectItem>
@@ -239,37 +233,26 @@ function buildWeaponNameToWeaponMap(t: TFunction<["weapons"]>) {
 function useWeaponItems({
 	includeSubSpecial,
 	quickSelectWeaponsIds,
-	selectedWeaponId,
-	isOpen,
 	selectedKey,
 }: {
 	includeSubSpecial: boolean | undefined;
 	quickSelectWeaponsIds?: Array<MainWeaponId>;
-	selectedWeaponId?: MainWeaponId | null;
-	isOpen: boolean;
 	selectedKey: string | null | undefined;
 }) {
 	const items = useAllWeaponCategories(includeSubSpecial);
 	const [filterValue, setFilterValue] = React.useState("");
 	const { t } = useTranslation(["common"]);
 
-	// react-aria renders every item into a hidden collection even while closed,
-	// when only the selected item (the trigger's value) is needed
-	if (!isOpen) {
-		return {
-			items: collapseToSelectedItem(items, selectedKey),
-			filterValue,
-			setFilterValue,
-		};
-	}
-
 	const showQuickSelectWeapons =
 		filterValue === "" && quickSelectWeaponsIds?.length;
 
 	if (showQuickSelectWeapons) {
 		const weaponIdsToInclude = new Set(quickSelectWeaponsIds);
-		if (typeof selectedWeaponId === "number") {
-			weaponIdsToInclude.add(selectedWeaponId);
+		// the selected weapon stays in the list so the trigger can show it
+		if (selectedKey?.startsWith("MAIN_")) {
+			weaponIdsToInclude.add(
+				Number(selectedKey.slice("MAIN_".length)) as MainWeaponId,
+			);
 		}
 
 		const quickSelectCategory = {
@@ -394,30 +377,4 @@ function keyify(value?: MainWeaponId | AnyWeapon | null) {
 	if (!value) return value;
 
 	return `${value.type}_${value.id}`;
-}
-
-function collapseToSelectedItem<
-	Category extends { items: Array<{ weapon: { anyWeaponId: string } }> },
->(categories: Category[], selectedKey: string | null | undefined): Category[] {
-	// react-stately refuses to open a select with an empty collection, so one item is always kept
-	const fallbackItems = () => {
-		const firstCategory = categories[0];
-		if (!firstCategory) return [];
-		return [
-			{ ...firstCategory, items: firstCategory.items.slice(0, 1) } as Category,
-		];
-	};
-
-	if (!selectedKey) return fallbackItems();
-
-	for (const category of categories) {
-		const selectedItem = category.items.find(
-			(item) => item.weapon.anyWeaponId === selectedKey,
-		);
-		if (selectedItem) {
-			return [{ ...category, items: [selectedItem] } as Category];
-		}
-	}
-
-	return fallbackItems();
 }

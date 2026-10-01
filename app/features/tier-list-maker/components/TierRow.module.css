@@ -5,6 +5,12 @@
 	min-height: 68px;
 }
 
+.containerReordering {
+	position: relative;
+	z-index: 1;
+	opacity: 0.75;
+}
+
 .tierLabel {
 	grid-column: 1;
 	display: flex;
@@ -26,34 +32,33 @@
 }
 
 .tierName {
-	color: var(--color-text-inverse);
 	line-height: 1.2;
 	max-width: 90px;
 	overflow-wrap: break-word;
 	word-wrap: break-word;
 }
 
-:global(html.light) .tierName {
-	color: var(--color-text);
-}
-
 .popupContent {
 	display: flex;
 	flex-direction: column;
-	gap: var(--s-6);
+	gap: var(--s-4);
 	padding: var(--s-2);
 }
 
+.deleteButton {
+	height: auto;
+}
+
 .nameInput {
-	width: 250px;
-	text-align: center;
+	width: 100%;
 }
 
 .targetZone {
+	--tier-list-item-gap: var(--s-1-5);
 	grid-column: 2;
 	display: flex;
 	flex-wrap: wrap;
-	gap: var(--s-1-5);
+	gap: var(--tier-list-item-gap);
 	padding: var(--s-2);
 	background: var(--color-bg-high);
 	border-radius: var(--radius-field) 0 0 var(--radius-field);
@@ -94,14 +99,8 @@
 	justify-content: center;
 }
 
-.arrowControls {
+.dragHandle {
 	grid-column: 3;
-	display: grid;
-	grid-template-rows: 1fr 1fr;
-	gap: var(--s-1);
-}
-
-.arrowButton {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -110,44 +109,30 @@
 	padding: var(--s-1);
 	background: var(--color-bg-high);
 	border: none;
-	cursor: pointer;
-	transition: opacity 0.2s;
+	border-radius: 0 var(--radius-field) var(--radius-field) 0;
+	color: var(--color-text-high);
+	cursor: grab;
+	touch-action: none;
+	transition: color 0.2s;
 
-	&:hover:not(:disabled) {
-		opacity: 0.8;
+	&:hover {
+		color: var(--color-text);
 	}
 
-	&:disabled {
-		opacity: 0.3;
-		cursor: not-allowed;
+	&:active {
+		cursor: grabbing;
 	}
 }
 
-.arrowButtonUpper {
-	border-radius: 0 var(--radius-field) 0 0;
-}
-
-.arrowButtonLower {
-	border-radius: 0 0 var(--radius-field) 0;
-}
-
-.arrowIcon {
+.dragHandleIcon {
 	width: 20px;
 	height: 20px;
-	color: var(--color-text);
 }
 
-.colorPickerContainer {
-	display: flex;
-	flex-direction: column;
-	gap: var(--s-3);
-	align-items: center;
-}
-
-.presetColorsGrid {
+.colorGrid {
 	display: grid;
-	grid-template-columns: repeat(5, 1fr);
-	gap: var(--s-2);
+	grid-template-columns: repeat(6, 1fr);
+	gap: var(--s-3);
 }
 
 .colorButton {
@@ -170,10 +155,39 @@
 	box-shadow: 0 0 0 2px var(--color-bg);
 }
 
-.customColorLabel {
-	width: 100%;
+.customColorButton {
+	position: relative;
 	display: flex;
-	flex-direction: column;
 	align-items: center;
+	justify-content: center;
+	background-color: var(--color-bg-higher);
+	color: var(--color-text);
+
+	&:focus-within {
+		outline: var(--border-style-high);
+		outline-offset: 2px;
+	}
+}
+
+.customColorButtonOnLight {
+	color: var(--color-text-on-light);
+}
+
+.customColorButtonOnDark {
+	color: var(--color-text-on-dark);
+}
+
+.customColorIcon {
+	width: 20px;
+	height: 20px;
+	pointer-events: none;
+}
+
+.customColorInput {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	opacity: 0;
 	cursor: pointer;
 }

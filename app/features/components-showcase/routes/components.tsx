@@ -1,7 +1,6 @@
-import { parseDate } from "@internationalized/date";
-import clsx from "clsx";
 import { Check, Plus, RotateCcw, Search, SquarePen, Trash } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router";
 import { Ability } from "~/components/Ability";
 import { Alert } from "~/components/Alert";
 import { Avatar } from "~/components/Avatar";
@@ -41,6 +40,10 @@ import {
 import { InfoPopover } from "~/components/InfoPopover";
 import { Input } from "~/components/Input";
 import { Label } from "~/components/Label";
+import {
+	LFGPostGraphic,
+	type LFGPostGraphicPost,
+} from "~/components/LFGPostGraphic";
 import { Main } from "~/components/Main";
 import { Pagination } from "~/components/Pagination";
 import { Placement } from "~/components/Placement";
@@ -61,9 +64,12 @@ import {
 	ChangelogGraphic,
 	type ChangelogGraphicEntry,
 } from "~/features/changelog/components/ChangelogGraphic";
+import { calculateDamageCombos } from "~/features/comp-analyzer/core/damage-combinations";
+import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
+import type { GlobalStatus } from "~/features/global-status/global-status-types";
+import { CompGraphic } from "~/features/img-export/components/CompGraphic";
 import {
 	SeasonSummaryGraphic,
-	type SeasonSummaryGraphicActivity,
 	type SeasonSummaryGraphicBestSet,
 	type SeasonSummaryGraphicStats,
 } from "~/features/img-export/components/SeasonSummaryGraphic";
@@ -75,6 +81,7 @@ import {
 	TournamentRunGraphic,
 	type TournamentRunGraphicMatch,
 } from "~/features/img-export/components/TournamentRunGraphic";
+import type { SeasonActivity } from "~/features/mmr/components/SeasonActivityCalendar";
 import {
 	Trophy,
 	TrophyContextProvider,
@@ -85,12 +92,27 @@ import type { CustomFieldRenderProps } from "~/form/FormField";
 import { SendouForm } from "~/form/SendouForm";
 import type { MainWeaponId, StageId } from "~/modules/in-game-lists/types";
 import type { SendouRouteHandle } from "~/utils/remix.server";
+import {
+	SENDOUQ_LOOKING_PAGE,
+	SENDOUQ_PREPARING_PAGE,
+	sendouQMatchPage,
+	tournamentPage,
+} from "~/utils/urls";
 import styles from "../components-showcase.module.css";
 import { EXAMPLE_TROPHY_MODEL } from "../example-trophy-model";
 import { formFieldsShowcaseSchema } from "../form-examples-schema";
 
 export const handle: SendouRouteHandle = {
-	i18n: ["user", "q", "calendar", "tournament", "schedule"],
+	i18n: [
+		"user",
+		"q",
+		"calendar",
+		"tournament",
+		"schedule",
+		"builds",
+		"lfg",
+		"analyzer",
+	],
 };
 
 export const SECTIONS = [
@@ -134,6 +156,16 @@ export const SECTIONS = [
 		component: SeasonSummaryGraphicSection,
 	},
 	{
+		title: "LFG Post Graphic",
+		id: "lfg-post-graphic",
+		component: LFGPostGraphicSection,
+	},
+	{
+		title: "Comp Graphic",
+		id: "comp-graphic",
+		component: CompGraphicSection,
+	},
+	{
 		title: "Changelog Graphic",
 		id: "changelog-graphic",
 		component: ChangelogGraphicSection,
@@ -159,6 +191,11 @@ export const SECTIONS = [
 	{ title: "Game Selects", id: "game-selects", component: GameSelectSection },
 	{ title: "Form Fields", id: "form-fields", component: FormFieldsSection },
 	{ title: "Schedule", id: "schedule", component: ScheduleSection },
+	{
+		title: "Global Status Indicator",
+		id: "global-status-indicator",
+		component: GlobalStatusIndicatorSection,
+	},
 	{ title: "Miscellaneous", id: "miscellaneous", component: MiscSection },
 ] as const;
 
@@ -166,6 +203,7 @@ export default function ComponentsShowcasePage() {
 	return (
 		<Main className="stack lg">
 			<h1>Components</h1>
+			<Link to="/components/colors">Color tokens →</Link>
 			{SECTIONS.map(({ id, component: Component }) => (
 				<Component key={id} id={id} />
 			))}
@@ -248,6 +286,10 @@ function ButtonsSection({ id }: { id: string }) {
 					<SendouButton variant="minimal-destructive">
 						Minimal Destructive
 					</SendouButton>
+				</ComponentRow>
+
+				<ComponentRow label="Ghost">
+					<SendouButton variant="ghost">Ghost Button</SendouButton>
 				</ComponentRow>
 
 				<Divider smallText>Sizes</Divider>
@@ -538,7 +580,6 @@ function SelectSection({ id }: { id: string }) {
 					<SendouSelect
 						items={SELECT_ITEMS}
 						label="Select with description"
-						description="This is a helpful description"
 						placeholder="Select..."
 					>
 						{(item) => (
@@ -601,8 +642,20 @@ function SwitchSection({ id }: { id: string }) {
 			<SectionTitle id={id}>Switch</SectionTitle>
 
 			<div className="stack md">
+				<ComponentRow label="Large">
+					<SendouSwitch size="large" isSelected={isOn} onChange={setIsOn}>
+						Toggle me
+					</SendouSwitch>
+				</ComponentRow>
+
 				<ComponentRow label="Medium (default)">
 					<SendouSwitch isSelected={isOn} onChange={setIsOn}>
+						Toggle me
+					</SendouSwitch>
+				</ComponentRow>
+
+				<ComponentRow label="Small">
+					<SendouSwitch size="small" isSelected={isOn} onChange={setIsOn}>
 						Toggle me
 					</SendouSwitch>
 				</ComponentRow>
@@ -1235,7 +1288,7 @@ function DialogSection({ id }: { id: string }) {
 
 				<ComponentRow label="Controlled">
 					<div className="stack horizontal sm">
-						<SendouButton onPress={() => setIsOpen(true)}>
+						<SendouButton onClick={() => setIsOpen(true)}>
 							Open Controlled Dialog
 						</SendouButton>
 						<SendouDialog
@@ -1245,7 +1298,7 @@ function DialogSection({ id }: { id: string }) {
 							showCloseButton
 						>
 							<p>This dialog is controlled via state.</p>
-							<SendouButton onPress={() => setIsOpen(false)}>
+							<SendouButton onClick={() => setIsOpen(false)}>
 								Close
 							</SendouButton>
 						</SendouDialog>
@@ -1405,7 +1458,7 @@ function FilterBarSection({ id }: { id: string }) {
 					mode !== null || stage !== null ? (
 						<SendouButton
 							icon={<RotateCcw />}
-							onPress={() => {
+							onClick={() => {
 								setMode(null);
 								setStage(null);
 							}}
@@ -1428,7 +1481,7 @@ function ToastSection({ id }: { id: string }) {
 				<ComponentRow label="Success Toast">
 					<SendouButton
 						variant="success"
-						onPress={() =>
+						onClick={() =>
 							toastQueue.add({
 								message: "Operation completed successfully!",
 								variant: "success",
@@ -1442,7 +1495,7 @@ function ToastSection({ id }: { id: string }) {
 				<ComponentRow label="Error Toast">
 					<SendouButton
 						variant="destructive"
-						onPress={() =>
+						onClick={() =>
 							toastQueue.add({
 								message: "Something went wrong. Please try again.",
 								variant: "error",
@@ -1455,7 +1508,7 @@ function ToastSection({ id }: { id: string }) {
 
 				<ComponentRow label="Info Toast">
 					<SendouButton
-						onPress={() =>
+						onClick={() =>
 							toastQueue.add({
 								message: "Here is some information for you.",
 								variant: "info",
@@ -2004,7 +2057,7 @@ function TournamentRunGraphicSection({ id }: { id: string }) {
 }
 
 const SEASON_SUMMARY_DAYS: Array<
-	[date: string, sp: number, activity: SeasonSummaryGraphicActivity]
+	[date: string, sp: number, activity: SeasonActivity]
 > = [
 	["2026-03-02", 1875.2, "sq"],
 	["2026-03-03", 1922.7, "sq"],
@@ -2132,6 +2185,7 @@ const SEASON_SUMMARY_STATS: SeasonSummaryGraphicStats = {
 		{ player: { name: "Yeti" }, discordId: "153113232128507904", setsCount: 4 },
 	],
 	bestStage: { stageId: 14, winratePercentage: 78 },
+	peakSp: Math.max(...SEASON_SUMMARY_DAYS.map(([, sp]) => sp)),
 	spProgression: SEASON_SUMMARY_DAYS.map(([date, sp]) => ({ date, sp })),
 	activeDays: SEASON_SUMMARY_DAYS.map(([date, , activity]) => ({
 		date,
@@ -2173,6 +2227,110 @@ function SeasonSummaryGraphicSection({ id }: { id: string }) {
 							ends: new Date("2026-05-17T20:59:59.999Z"),
 						}}
 						stats={SEASON_SUMMARY_STATS}
+					/>
+				</ComponentRow>
+			</div>
+		</Section>
+	);
+}
+
+const LFG_GRAPHIC_AUTHOR: LFGPostGraphicPost["author"] = {
+	username: "Sendou",
+	discordId: "79237403620945920",
+	discordAvatar: null,
+	customAvatarUrl: `${RESULTS_GRAPHIC_IMG_ROOT}/dBYwiLjlhVBwW-oyyNJkC-1721997877357.webp`,
+	country: "FI",
+	weaponPool: [
+		{ weaponSplId: 40, isFavorite: 1, isTenStar: 1 },
+		{ weaponSplId: 2070, isFavorite: 1, isTenStar: 0 },
+		{ weaponSplId: 8010, isFavorite: 0, isTenStar: 0 },
+		{ weaponSplId: 5030, isFavorite: 0, isTenStar: 0 },
+	],
+};
+
+const LFG_GRAPHIC_USER_POST: LFGPostGraphicPost = {
+	id: 1234,
+	type: "PLAYER_FOR_TEAM",
+	text: "Looking for a competitive team aiming for top 8 in LUTI Div 1 next season. Available most evenings EU time, can also do late-night NA scrims on weekends.\n\nMain slayer with Splattershot Jr. as a flex pick. Comfortable calling if needed. DM me on Discord or reply here!",
+	updatedAt: 1781974800,
+	timezone: "Europe/Helsinki",
+	languages: ["en", "de"],
+	author: LFG_GRAPHIC_AUTHOR,
+	team: null,
+};
+
+const LFG_GRAPHIC_TEAM_POST: LFGPostGraphicPost = {
+	id: 1235,
+	type: "TEAM_FOR_PLAYER",
+	text: "Besto Friendo is looking for a 4th! We're a Div 2 team playing 3-4 scrims a week plus weekend tournaments. Ideal pick-up would be a backline or a flexible support player.",
+	updatedAt: 1781974800,
+	timezone: "America/New_York",
+	languages: ["en"],
+	author: LFG_GRAPHIC_AUTHOR,
+	team: {
+		name: "Besto Friendo",
+		avatarUrl: `${RESULTS_GRAPHIC_IMG_ROOT}/fZrToLQrkqV3UZkdgwp0Q-1722263644749.webp`,
+		members: [
+			{ ...LFG_GRAPHIC_AUTHOR, id: 1, username: "Yeti", country: null },
+			{
+				...LFG_GRAPHIC_AUTHOR,
+				id: 2,
+				username: "まるお",
+				country: "JP",
+				weaponPool: [],
+			},
+			{
+				...LFG_GRAPHIC_AUTHOR,
+				id: 3,
+				username: "Grey",
+				country: "FR",
+				weaponPool: [
+					{ weaponSplId: 1120, isFavorite: 0, isTenStar: 0 },
+					{ weaponSplId: 2010, isFavorite: 0, isTenStar: 0 },
+				],
+			},
+		],
+	},
+};
+
+function LFGPostGraphicSection({ id }: { id: string }) {
+	return (
+		<Section>
+			<SectionTitle id={id}>LFG Post Graphic</SectionTitle>
+
+			<div className="stack md">
+				<ComponentRow label="Player post">
+					<LFGPostGraphic post={LFG_GRAPHIC_USER_POST} />
+				</ComponentRow>
+
+				<ComponentRow label="Team post">
+					<LFGPostGraphic post={LFG_GRAPHIC_TEAM_POST} />
+				</ComponentRow>
+			</div>
+		</Section>
+	);
+}
+
+const COMP_GRAPHIC_WEAPON_IDS: MainWeaponId[] = [40, 220, 2070, 5010];
+
+function CompGraphicSection({ id }: { id: string }) {
+	return (
+		<Section>
+			<SectionTitle id={id}>Comp Graphic</SectionTitle>
+
+			<div className="stack md">
+				<ComponentRow label="With title">
+					<CompGraphic
+						weaponIds={COMP_GRAPHIC_WEAPON_IDS}
+						combos={calculateDamageCombos(COMP_GRAPHIC_WEAPON_IDS)}
+						title="Low Ink comp"
+					/>
+				</ComponentRow>
+
+				<ComponentRow label="Without title">
+					<CompGraphic
+						weaponIds={COMP_GRAPHIC_WEAPON_IDS}
+						combos={calculateDamageCombos(COMP_GRAPHIC_WEAPON_IDS)}
 					/>
 				</ComponentRow>
 			</div>
@@ -2361,9 +2519,9 @@ function SubNavSection({ id }: { id: string }) {
 }
 
 function DatePickerSection({ id }: { id: string }) {
-	const [calendarValue, setCalendarValue] = useState(parseDate("2024-12-27"));
-	const [datePickerValue, setDatePickerValue] = useState(
-		parseDate("2024-12-27"),
+	const [calendarValue, setCalendarValue] = useState(new Date(2024, 11, 27));
+	const [datePickerValue, setDatePickerValue] = useState<Date | null>(
+		new Date(2024, 11, 27),
 	);
 
 	const handleCalendarChange = (value: typeof calendarValue | null) => {
@@ -2388,6 +2546,7 @@ function DatePickerSection({ id }: { id: string }) {
 
 				<ComponentRow label="DatePicker">
 					<SendouDatePicker
+						granularity="day"
 						label="Select Date"
 						value={datePickerValue}
 						onChange={handleDatePickerChange}
@@ -2396,6 +2555,7 @@ function DatePickerSection({ id }: { id: string }) {
 
 				<ComponentRow label="DatePicker with Bottom Text">
 					<SendouDatePicker
+						granularity="day"
 						label="Event Date"
 						value={datePickerValue}
 						onChange={handleDatePickerChange}
@@ -2405,6 +2565,7 @@ function DatePickerSection({ id }: { id: string }) {
 
 				<ComponentRow label="DatePicker Required">
 					<SendouDatePicker
+						granularity="day"
 						label="Required Date"
 						value={datePickerValue}
 						onChange={handleDatePickerChange}
@@ -2721,20 +2882,11 @@ function TrophySection({ id }: { id: string }) {
 			<TrophyContextProvider>
 				<div className="stack md">
 					<ComponentRow label="Interactive (drag to rotate)">
-						<Trophy
-							tile
-							model={EXAMPLE_TROPHY_MODEL}
-							className={styles.trophyExample}
-						/>
+						<Trophy model={EXAMPLE_TROPHY_MODEL} />
 					</ComponentRow>
 
 					<ComponentRow label="Preview (static)">
-						<Trophy
-							tile
-							model={EXAMPLE_TROPHY_MODEL}
-							className={styles.trophyExample}
-							preview
-						/>
+						<Trophy model={EXAMPLE_TROPHY_MODEL} preview />
 					</ComponentRow>
 
 					<ComponentRow label="With Tier">
@@ -2742,9 +2894,7 @@ function TrophySection({ id }: { id: string }) {
 							{([1, 4, 9] as const).map((tier) => (
 								<Trophy
 									key={tier}
-									tile
 									model={EXAMPLE_TROPHY_MODEL}
-									className={styles.trophyExample}
 									tier={tier}
 									preview
 								/>
@@ -2753,42 +2903,7 @@ function TrophySection({ id }: { id: string }) {
 					</ComponentRow>
 
 					<ComponentRow label="Tentative Tier">
-						<Trophy
-							tile
-							model={EXAMPLE_TROPHY_MODEL}
-							className={styles.trophyExample}
-							tentativeTier={2}
-							preview
-						/>
-					</ComponentRow>
-
-					<ComponentRow label="Different Sizes">
-						<div className="stack horizontal sm items-end flex-wrap">
-							<Trophy
-								tile
-								model={EXAMPLE_TROPHY_MODEL}
-								className={clsx(
-									styles.trophyExample,
-									styles.trophyExampleSmall,
-								)}
-								preview
-							/>
-							<Trophy
-								tile
-								model={EXAMPLE_TROPHY_MODEL}
-								className={styles.trophyExample}
-								preview
-							/>
-							<Trophy
-								tile
-								model={EXAMPLE_TROPHY_MODEL}
-								className={clsx(
-									styles.trophyExample,
-									styles.trophyExampleLarge,
-								)}
-								preview
-							/>
-						</div>
+						<Trophy model={EXAMPLE_TROPHY_MODEL} tentativeTier={2} preview />
 					</ComponentRow>
 				</div>
 			</TrophyContextProvider>
@@ -3065,13 +3180,13 @@ function ScheduleSection({ id }: { id: string }) {
 						<SendouButton
 							variant="outlined"
 							size="small"
-							onPress={() => setWeek(SCHEDULE_EXAMPLE_WEEK)}
+							onClick={() => setWeek(SCHEDULE_EXAMPLE_WEEK)}
 						>
 							Reset
 						</SendouButton>
 						<SendouButton
 							size="small"
-							onPress={() =>
+							onClick={() =>
 								toastQueue.add({
 									message: `Saved week with ${rangeCount} time ranges`,
 									variant: "success",
@@ -3091,6 +3206,135 @@ function ScheduleSection({ id }: { id: string }) {
 							commitments={SCHEDULE_EXAMPLE_COMMITMENTS}
 						/>
 					</div>
+				</ComponentRow>
+			</div>
+		</Section>
+	);
+}
+
+// Paddling Pool 51's logo from the dev seed; only resolves in dev
+const SEED_TOURNAMENT_LOGO_URL =
+	"http://127.0.0.1:9000/sendou/paddling-pool.png";
+
+const GLOBAL_STATUS_EXAMPLES: Array<{
+	id: string;
+	name: string;
+	status: GlobalStatus;
+}> = [
+	{
+		id: "sq-preparing",
+		name: "SendouQ: Preparing",
+		status: { state: "SQ_PREPARING", url: SENDOUQ_PREPARING_PAGE },
+	},
+	{
+		id: "sq-queued-likes-seen",
+		name: "SendouQ: In queue (likes seen)",
+		status: {
+			state: "SQ_QUEUED",
+			url: SENDOUQ_LOOKING_PAGE,
+			count: 3,
+			groupSize: { members: 2, max: 4 },
+		},
+	},
+	{
+		id: "sq-queued-new-likes",
+		name: "SendouQ: In queue (new likes)",
+		status: {
+			state: "SQ_QUEUED",
+			url: SENDOUQ_LOOKING_PAGE,
+			count: 5,
+			countNeedsAction: true,
+			groupSize: { members: 2, max: 4 },
+		},
+	},
+	{
+		id: "sq-expired",
+		name: "SendouQ: Group inactive",
+		status: { state: "SQ_EXPIRED", url: SENDOUQ_LOOKING_PAGE },
+	},
+	{
+		id: "sq-ready-check",
+		name: "SendouQ: Ready check",
+		status: { state: "SQ_READY_CHECK", url: SENDOUQ_LOOKING_PAGE },
+	},
+	{
+		id: "sq-match",
+		name: "SendouQ: In match",
+		status: { state: "SQ_MATCH", url: sendouQMatchPage(123) },
+	},
+	{
+		id: "to-checkin",
+		name: "Tournament: Check in",
+		status: {
+			state: "TO_CHECKIN",
+			url: tournamentPage(1),
+			logoUrl: SEED_TOURNAMENT_LOGO_URL,
+		},
+	},
+	{
+		id: "to-match",
+		name: "Tournament: In match",
+		status: {
+			state: "TO_MATCH",
+			url: tournamentPage(1),
+			logoUrl: SEED_TOURNAMENT_LOGO_URL,
+		},
+	},
+	{
+		id: "to-waiting-for-match",
+		name: "Tournament: Waiting for match",
+		status: {
+			state: "TO_WAITING_FOR_MATCH",
+			url: tournamentPage(1),
+			logoUrl: SEED_TOURNAMENT_LOGO_URL,
+		},
+	},
+	{
+		id: "to-waiting-for-cast",
+		name: "Tournament: Waiting for cast",
+		status: {
+			state: "TO_WAITING_FOR_CAST",
+			url: tournamentPage(1),
+			logoUrl: SEED_TOURNAMENT_LOGO_URL,
+		},
+	},
+];
+
+const GLOBAL_STATUS_SELECT_ITEMS = [
+	{ id: "none", name: "None" },
+	...GLOBAL_STATUS_EXAMPLES.map(({ id, name }) => ({ id, name })),
+];
+
+function GlobalStatusIndicatorSection({ id }: { id: string }) {
+	const { status, setStatus } = useGlobalStatus();
+
+	const selectedId =
+		GLOBAL_STATUS_EXAMPLES.find((example) => example.status === status)?.id ??
+		"none";
+
+	return (
+		<Section>
+			<SectionTitle id={id}>Global Status Indicator</SectionTitle>
+
+			<div className="stack md">
+				<ComponentRow label="Status (shown next to the search & add new buttons in the header)">
+					<SendouSelect
+						items={GLOBAL_STATUS_SELECT_ITEMS}
+						label="Status"
+						selectedKey={selectedId}
+						onSelectionChange={(key) =>
+							setStatus(
+								GLOBAL_STATUS_EXAMPLES.find((example) => example.id === key)
+									?.status ?? null,
+							)
+						}
+					>
+						{(item) => (
+							<SendouSelectItem key={item.id} id={item.id}>
+								{item.name}
+							</SendouSelectItem>
+						)}
+					</SendouSelect>
 				</ComponentRow>
 			</div>
 		</Section>

@@ -3,7 +3,7 @@ import { differenceInMinutes } from "date-fns";
 import { LocaleTime } from "~/components/LocaleTime";
 import type { TournamentRoundMaps } from "~/db/tables-json";
 import { useTournament } from "~/features/tournament/tournament-context";
-import { resolveLeagueRoundStartDate } from "~/features/tournament/tournament-utils";
+import { leagueRoundPlayableAt } from "~/features/tournament/tournament-utils";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
 import type { Unpacked } from "~/utils/types";
@@ -131,14 +131,16 @@ function RoundTimer({
 
 	const displayText = elapsedMinutes >= 60 ? "1h+" : `${elapsedMinutes}m`;
 
-	const statusColor =
-		worstStatus === "error"
-			? "var(--color-error)"
-			: worstStatus === "warning"
-				? "var(--color-warning)"
-				: "var(--color-text)";
-
-	return <div style={{ color: statusColor }}>{displayText}</div>;
+	return (
+		<div
+			className={clsx(styles.roundTimer, {
+				[styles.roundTimerWarning]: worstStatus === "warning",
+				[styles.roundTimerError]: worstStatus === "error",
+			})}
+		>
+			{displayText}
+		</div>
+	);
 }
 
 function useLeagueRoundStartDate(bracketIdx: number, roundId: number) {
@@ -146,7 +148,7 @@ function useLeagueRoundStartDate(bracketIdx: number, roundId: number) {
 
 	if (!tournament.isLeague) return null;
 
-	return resolveLeagueRoundStartDate(
+	return leagueRoundPlayableAt(
 		tournament,
 		tournament.bracketByIdx(bracketIdx) ?? undefined,
 		roundId,

@@ -1,4 +1,4 @@
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { isSetOverByScore, matchEndedEarly } from "../status";
 import type { BracketData, EngineResult, MatchData, Side } from "../types";
 import { reportResult } from "./report-result";
@@ -102,14 +102,14 @@ export function reopenMatch(
 }
 
 function findMatch(data: BracketData, matchId: number): MatchData {
-	const match = data.match.find((match) => match.id === matchId);
+	const match = data.match.find((candidate) => candidate.id === matchId);
 	invariant(match, "Match not found");
 	return match;
 }
 
 function findMatchWithMaps(data: BracketData, matchId: number) {
 	const match = findMatch(data, matchId);
-	const round = data.round.find((round) => round.id === match.roundId);
+	const round = data.round.find((candidate) => candidate.id === match.roundId);
 	invariant(round?.maps, "Round of the match has no maps");
 
 	return { match, maps: round.maps };
@@ -123,5 +123,5 @@ function sideOfTeam(match: MatchData, teamId: number): 0 | 1 {
 	if (match.opponent1?.id === teamId) return 0;
 	if (match.opponent2?.id === teamId) return 1;
 
-	throw Error(`Team id ${teamId} is not in the match`);
+	throw new Error(`Team id ${teamId} is not in the match`);
 }

@@ -9,13 +9,13 @@ import { NON_PLAYER_TEAM_ROLES } from "~/features/team/team-constants";
 import { subsOfResult } from "~/features/team/team-utils";
 import { databaseTimestampNow } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
 	jsonArrayFrom,
+	matchProfileWeapons,
 	tournamentLogoOrNull,
-	userProfileWeapons,
 } from "~/utils/kysely.server";
 import { toDBBoolean } from "~/utils/sql";
 import { mySlugify } from "~/utils/urls";
@@ -168,7 +168,7 @@ export async function findByCustomUrl(
 						"TeamMemberWithSecondary.isMainTeam",
 						"User.country",
 						"User.patronTier",
-						userProfileWeapons(innerEb).as("weapons"),
+						matchProfileWeapons(innerEb).as("weapons"),
 					])
 					.whereRef("TeamMemberWithSecondary.teamId", "=", "Team.id")
 					.orderBy("TeamMemberWithSecondary.order", "asc"),
@@ -220,8 +220,8 @@ export function findResultPlacementsById(teamId: number) {
 /** Tournament results of the team. */
 export async function findResultsById(teamId: number) {
 	const rows = await db
-		.with("results", (db) =>
-			db
+		.with("results", (cte) =>
+			cte
 				.selectFrom("TournamentTeam")
 				.innerJoin(
 					"TournamentResult",
@@ -293,7 +293,7 @@ export async function findResultsById(teamId: number) {
 					)
 					.innerJoin("User", "User.id", "TournamentResult.userId")
 					.whereRef("results2.tournamentId", "=", "results.tournamentId")
-					.select((eb) => commonUserSelect(eb)),
+					.select((participantEb) => commonUserSelect(participantEb)),
 			).as("participants"),
 		])
 		.orderBy("CalendarEventDate.startsAt", "desc")
@@ -340,7 +340,11 @@ export async function findAllByMemberUserId(
 				eb
 					.selectFrom("TeamMemberWithSecondary as m2")
 					.innerJoin("User", "User.id", "m2.userId")
-					.select((eb) => [...commonUserSelect(eb), "m2.role", "m2.roleType"])
+					.select((memberEb) => [
+						...commonUserSelect(memberEb),
+						"m2.role",
+						"m2.roleType",
+					])
 					.whereRef("TeamMemberWithSecondary.teamId", "=", "m2.teamId")
 					.orderBy("m2.order", "asc"),
 			).as("members"),

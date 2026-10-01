@@ -9,6 +9,7 @@ import {
 	MatchBannerContainer,
 	MatchBannerInfoBadge,
 	MultiMatchBanner,
+	preloadStageBanners,
 } from "~/components/match-page/MatchBanner";
 import { MatchBannerBottomRow } from "~/components/match-page/MatchBannerBottomRow";
 import { MatchBannerStartedAt } from "~/components/match-page/MatchBannerStartedAt";
@@ -19,7 +20,7 @@ import { useUser } from "~/features/auth/core/user";
 import { SENDOUQ_BEST_OF } from "~/features/sendouq/q-constants";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
 import { databaseTimestampToDate } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { resolveGroupNames } from "../core/match-timeline";
 import * as SendouQMatch from "../core/SendouQMatch";
 import type { SendouQMatchLoaderData } from "../loaders/q.match.$id.server";
@@ -79,6 +80,12 @@ export function SendouQMatchBanner({ data }: { data: SendouQMatchLoaderData }) {
 
 	const currentMap = data.match.currentMap;
 	invariant(currentMap);
+
+	preloadStageBanners(
+		data.match.mapList
+			.filter((map) => map.winnerGroupId === null)
+			.map((map) => map.stageId),
+	);
 
 	const isParticipant = Boolean(
 		SendouQMatch.resolveGroupMemberOf({

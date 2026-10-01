@@ -7,23 +7,23 @@ import { LAYOUT_DATA_ROUTE } from "~/utils/urls";
 import type { loader } from "./routes/api.layout";
 
 const TEN_MINUTES = 10 * 60 * 1000;
+const ONE_MINUTE = 60 * 1000;
 
 interface LayoutData {
 	/** `null` when the server has no session, `undefined` when it has not said. */
 	loggedInUserId?: number | null;
 	sidebar?: RootLoaderData["sidebar"];
+	globalStatus?: RootLoaderData["globalStatus"];
 	buildCommit?: string;
 }
 
 interface LayoutDataContextValue extends LayoutData {
 	/** Refetches the app shell data, without touching the page's own loaders. */
 	refresh: () => void;
-	isRefreshing: boolean;
 }
 
 const LayoutDataContext = React.createContext<LayoutDataContextValue>({
 	refresh: () => {},
-	isRefreshing: false,
 });
 
 /**
@@ -43,15 +43,16 @@ export function LayoutDataProvider({
 		refresh,
 	} = useBackgroundResource<SerializeFrom<typeof loader>>(LAYOUT_DATA_ROUTE);
 
-	// a ref so a poll elsewhere does not re-run the effect and restart the interval before it fires
-	const isLoadingRef = React.useRef(isLoading);
-	isLoadingRef.current = isLoading;
+	const lastRefreshedAtRef = React.useRef(0);
 
 	React.useEffect(() => {
 		const loadIfIdle = () => {
-			if (!isLoadingRef.current) {
-				void refresh();
-			}
+			if (isLoading()) return;
+			// alt-tabbing back is not worth a full app shell rebuild if one just happened
+			if (Date.now() - lastRefreshedAtRef.current < ONE_MINUTE) return;
+
+			lastRefreshedAtRef.current = Date.now();
+			void refresh();
 		};
 
 		const handleVisibilityChange = () => {
@@ -67,7 +68,7 @@ export function LayoutDataProvider({
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			clearInterval(interval);
 		};
-	}, [refresh]);
+	}, [refresh, isLoading]);
 
 	const newest = useNewestOf(data, polledData);
 
@@ -80,7 +81,6 @@ export function LayoutDataProvider({
 	const value: LayoutDataContextValue = {
 		...newest,
 		refresh,
-		isRefreshing: isLoading,
 	};
 
 	return (

@@ -14,7 +14,8 @@
 .menuButton {
 	display: flex;
 	align-items: center;
-	padding: 0 var(--s-2);
+	gap: var(--s-1);
+	padding: 0 var(--s-1-5);
 	height: var(--field-size-sm);
 	border: none;
 	border-radius: var(--radius-field);
@@ -29,6 +30,13 @@
 		outline: var(--focus-ring);
 		outline-offset: 1px;
 	}
+}
+
+.menuButtonChevron {
+	width: 14px;
+	height: 14px;
+	color: var(--color-text-high);
+	flex-shrink: 0;
 }
 
 .menuPopover {
@@ -80,7 +88,7 @@
 
 .preview {
 	position: absolute;
-	top: calc(100% + var(--s-1));
+	top: calc(100% + var(--floating-gap));
 	left: 0;
 	z-index: 1;
 	display: grid;
@@ -100,6 +108,11 @@
 		transition-delay: 0s;
 	}
 
+	/* a menu opened before hydration has no state to unmount the preview */
+	.menuWrapper:has(:popover-open) & {
+		display: none;
+	}
+
 	.container:hover .menuWrapper:not(:hover) & {
 		display: none;
 	}
@@ -108,7 +121,7 @@
 		content: "";
 		position: absolute;
 		z-index: -1;
-		inset: calc(-1 * (var(--s-1) + var(--border-width)));
+		inset: calc(-1 * (var(--floating-gap) + var(--border-width)));
 	}
 }
 

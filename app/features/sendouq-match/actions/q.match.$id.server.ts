@@ -37,14 +37,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 		schema: qMatchPageParamsSchema,
 	}).id;
 	const user = requireUser();
-	const result = await parseFormData({
+	const parsed = await parseFormData({
 		request,
 		schema: matchSchema,
 	});
-	if (!result.success) {
-		return { fieldErrors: result.fieldErrors };
+	if (!parsed.success) {
+		return { fieldErrors: parsed.fieldErrors };
 	}
-	const data = result.data;
+	const data = parsed.data;
 
 	const match = notFoundIfNullish(await SQMatchRepository.findById(matchId));
 	const isStaff = user.roles.includes("STAFF");
@@ -56,6 +56,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 		"Not a participant of this match",
 	);
 
+	const notifyMatchStatusChanged = () =>
+		ChatSystemMessage.notifyStatusChanged(
+			SendouQMatch.allMembers(match).map((m) => m.id),
+		);
+
 	try {
 		switch (data._action) {
 			case "REPORT_SCORE": {
@@ -66,6 +71,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 					winnerId: data.winnerId,
 					reportedByUserId: user.id,
 					reportedCount: data.reportedCount,
+					confirmingReportedAt: data.confirmingReportedAt,
 					isStaffReport,
 				});
 
@@ -95,6 +101,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
 				await refreshSendouQInstance();
 
+				notifyMatchStatusChanged();
+
 				if (match.chatRoomId) {
 					if (result.status === "MATCH_FINALIZED") {
 						ChatSystemMessage.sendPersisted({
@@ -107,6 +115,41 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 							channel: chatRoomChannel(match.chatRoomId),
 						});
 					}
+				}
+
+				break;
+			}
+			case "DISPUTE_SCORE": {
+				errorToastIfFalsy(!match.isLocked, "Match is already locked");
+				errorToastIfFalsy(
+					SendouQMatch.score(match).isDecisive,
+					"No reported score to dispute",
+				);
+
+				const decidingMap = match.mapList
+					.toReversed()
+					.find((m) => m.winnerGroupId !== null);
+				const reporterSide = SendouQMatch.resolveGroupMemberOf({
+					groupAlpha: match.groupAlpha,
+					groupBravo: match.groupBravo,
+					userId: decidingMap?.reportedByUserId,
+				});
+				const disputerSide = SendouQMatch.resolveGroupMemberOf({
+					groupAlpha: match.groupAlpha,
+					groupBravo: match.groupBravo,
+					userId: user.id,
+				});
+				errorToastIfFalsy(
+					disputerSide !== null && disputerSide !== reporterSide,
+					"Only the team asked to confirm can dispute the score",
+				);
+
+				if (match.chatRoomId) {
+					ChatSystemMessage.sendPersisted({
+						roomId: match.chatRoomId,
+						type: "SCORE_DISPUTED",
+						authorUserId: user.id,
+					});
 				}
 
 				break;
@@ -157,6 +200,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
 				// the group re-enters the looking pool
 				ChatSystemMessage.send({ channel: SENDOUQ_LOOKING_CHANNEL });
+
+				ChatSystemMessage.notifyStatusChanged(
+					previousGroup.members.map((m) => m.id),
+				);
 
 				break;
 			}
@@ -229,6 +276,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 					ChatSystemMessage.notifyRoomsChanged(
 						viewerGroup.members.map((member) => member.id),
 					);
+					ChatSystemMessage.notifyStatusChanged(
+						viewerGroup.members.map((member) => member.id),
+					);
 
 					// the continuing group re-enters the looking pool
 					ChatSystemMessage.send({ channel: SENDOUQ_LOOKING_CHANNEL });
@@ -275,6 +325,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
 				await refreshSendouQInstance();
 
+				notifyMatchStatusChanged();
+
 				if (match.chatRoomId) {
 					ChatSystemMessage.send({
 						channel: chatRoomChannel(match.chatRoomId),
@@ -297,6 +349,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 				}
 
 				await refreshSendouQInstance();
+
+				notifyMatchStatusChanged();
 
 				if (match.chatRoomId) {
 					ChatSystemMessage.send({
@@ -361,6 +415,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 				}
 
 				await refreshSendouQInstance();
+
+				notifyMatchStatusChanged();
 				break;
 			}
 			case "ADMIN_CANCEL": {
@@ -381,6 +437,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 				}
 
 				await refreshSendouQInstance();
+
+				notifyMatchStatusChanged();
 
 				if (match.chatRoomId) {
 					ChatSystemMessage.send({

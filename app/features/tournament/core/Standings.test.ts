@@ -9,9 +9,10 @@ import {
 	testTournament,
 	tournamentCtxTeam,
 } from "~/features/tournament-bracket/core/tests/test-utils";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
 	matchesPlayedByTeamId,
+	recordByTeamId,
 	reNumberPlacements,
 	sprByTeamId,
 	tournamentStandings,
@@ -335,6 +336,47 @@ describe("matchesPlayedByTeamId", () => {
 	});
 });
 
+describe("recordByTeamId", () => {
+	test("sums set and map results over every bracket the team played", () => {
+		const tournament = roundRobinToSingleEliminationTournament();
+
+		const records = recordByTeamId(tournament);
+
+		// wins the 3 round robin matches and the single elimination final, 2-0 each
+		expect(records.get(1)).toEqual({
+			setWins: 4,
+			setLosses: 0,
+			mapWins: 8,
+			mapLosses: 0,
+		});
+		expect(records.get(4)).toEqual({
+			setWins: 0,
+			setLosses: 3,
+			mapWins: 0,
+			mapLosses: 6,
+		});
+	});
+
+	test("counts a walkover with no maps reported as a set win and loss with no maps", () => {
+		const tournament = singleEliminationWithWalkoverTournament();
+
+		const records = recordByTeamId(tournament);
+
+		expect(records.get(1)).toEqual({
+			setWins: 1,
+			setLosses: 0,
+			mapWins: 0,
+			mapLosses: 0,
+		});
+		expect(records.get(4)).toEqual({
+			setWins: 0,
+			setLosses: 1,
+			mapWins: 0,
+			mapLosses: 0,
+		});
+	});
+});
+
 function roundRobinToSingleEliminationTournament() {
 	const data = playOutLowerIdWins(
 		mergeStages(
@@ -519,6 +561,28 @@ function groupsToRedemptionAndConsolationTournament() {
 	});
 }
 
+/** Team 4 drops out before playing, so its first match is force-ended with no maps reported. */
+function singleEliminationWithWalkoverTournament() {
+	const data = Engine.endDroppedTeamMatches(
+		createResolved({
+			type: "single_elimination",
+			seeding: [1, 2, 3, 4],
+			settings: {},
+		}),
+		[4],
+	).data;
+
+	return testTournament({
+		ctx: {
+			settings: {
+				bracketProgression: progressions.singleElimination,
+			},
+			teams: [1, 2, 3, 4].map((id) => tournamentCtxTeam(id, { seed: id })),
+		},
+		data,
+	});
+}
+
 function singleEliminationTournament() {
 	const data = playOutLowerIdWins(
 		createResolved({
@@ -551,12 +615,14 @@ function singleEliminationWithPendingThirdPlaceMatch() {
 		seeding: [1, 2, 3, 4, 5, 6, 7, 8],
 		settings: { consolationFinal: true },
 	});
-	const thirdPlaceGroupId = Math.max(...data.group.map((group) => group.id));
+	const thirdPlaceRoundId = data.round.find(
+		(round) => round.section === "finals",
+	)!.id;
 
 	while (true) {
 		const pending = data.match.find(
 			(match) =>
-				match.groupId !== thirdPlaceGroupId &&
+				match.roundId !== thirdPlaceRoundId &&
 				typeof match.opponent1?.id === "number" &&
 				typeof match.opponent2?.id === "number" &&
 				!match.winnerSide,

@@ -11,9 +11,19 @@ import {
 import { UserCard } from "../user/user-card";
 
 type Side = "ALPHA" | "BRAVO";
+
+/** One team's account of the cancellation, as the cancel dialog collects it. */
+type CancelReport = {
+	reason: string;
+	/** Id of the player to nominate as a cause. */
+	nominateUserId?: number;
+};
 type Tab = "action" | "result" | "rosters";
 
 const MAPS_TO_WIN = Math.ceil(SENDOUQ_BEST_OF / 2);
+
+/** The loss confirm ignores taps for `CONFIRM_LOSS_MIN_GAP_MS` after arming. */
+const LOSS_CONFIRM_MIN_GAP_MS = 400;
 
 const TEAM_NAMES: Record<Side, string> = {
 	ALPHA: "Group Alpha",
@@ -36,7 +46,7 @@ export class SendouQMatchPage {
 			undoReportButton: page.getByRole("button", { name: "Undo report" }),
 			reportWeaponsButton: page.getByTestId("expand-secondary-action-button"),
 			undoWeaponButton: page.getByRole("button", { name: "Undo weapon" }),
-			confirmScoreButton: page.getByRole("button", { name: "Confirm score" }),
+			confirmScoreButton: page.getByTestId("confirm-score-button"),
 			requestCancelButton: page.getByRole("button", { name: "Request cancel" }),
 			cancelPendingText: page.getByText("Pending other team's confirmation"),
 			cancelPrompt: page.getByText("Accept canceling the set?"),
@@ -45,7 +55,8 @@ export class SendouQMatchPage {
 				name: "Look again with same group",
 			}),
 			rejoinQueueButton: page.getByRole("button", { name: "Rejoin queue" }),
-			declinedText: page.getByText("You declined to continue"),
+			backToQueueButton: page.getByRole("button", { name: "Back to queue" }),
+			declinedText: page.getByText("You are not continuing with this group"),
 			votedYes: page.getByLabel("voted yes"),
 			votedNo: page.getByLabel("voted no"),
 			pendingVotes: page.getByLabel("pending"),
@@ -144,14 +155,36 @@ export class SendouQMatchPage {
 	}
 
 	async confirmScore() {
+		await expect(this.locators.confirmScoreButton).toBeEnabled({
+			timeout: 10_000,
+		});
+		// only a loss needs a second tap; any other first tap already submits, so
+		// the response wait has to be armed before it
+		const isLoss = (
+			await this.locators.confirmScoreButton.textContent()
+		)?.includes("loss");
+
+		if (isLoss) {
+			await this.locators.confirmScoreButton.click();
+			const armedLossButton = this.locators.confirmScoreButton.filter({
+				hasText: "Tap again",
+			});
+			await expect(armedLossButton).toBeVisible();
+			await waitOutLossConfirmMinGap(this.page);
+			await waitForPOSTResponse(this.page, async () => {
+				await armedLossButton.click();
+			});
+			return;
+		}
+
 		await waitForPOSTResponse(this.page, async () => {
 			await this.locators.confirmScoreButton.click();
 		});
 	}
 
-	async requestCancel({ reason }: { reason: string }) {
+	async requestCancel(report: CancelReport) {
 		await this.locators.requestCancelButton.click();
-		await this.submitCancelDialog(reason);
+		await this.submitCancelDialog(report);
 	}
 
 	async refuseCancel() {
@@ -160,15 +193,19 @@ export class SendouQMatchPage {
 		});
 	}
 
-	async acceptCancel({ reason }: { reason: string }) {
+	async acceptCancel(report: CancelReport) {
 		await this.page.getByRole("button", { name: "Accept" }).click();
-		await this.submitCancelDialog(reason);
+		await this.submitCancelDialog(report);
 	}
 
-	/** Nominates the first listed player, fills the reason and submits the cancel dialog. */
-	private async submitCancelDialog(reason: string) {
+	/** Nominates a player, the first listed one unless named, and submits the cancel dialog. */
+	private async submitCancelDialog({ reason, nominateUserId }: CancelReport) {
 		const dialog = this.page.getByRole("dialog");
-		await dialog.getByRole("checkbox").first().check();
+		// each nomination checkbox carries its player's id as its value
+		await (nominateUserId
+			? dialog.locator(`input[type="checkbox"][value="${nominateUserId}"]`)
+			: dialog.getByRole("checkbox").first()
+		).check();
 		await dialog.getByLabel("Reason").fill(reason);
 		await waitForPOSTResponse(this.page, async () => {
 			await dialog.getByTestId("cancel-match-submit").click();
@@ -204,22 +241,12 @@ export class SendouQMatchPage {
 		// previous winner can still be selected; clicking the about-to-unmount label
 		// loses the selection on remount
 		await expect(this.locators.selectedWinner).toHaveCount(0);
-		// react-aria's Radio hides its input behind a span overlay, so the label is
-		// what clicks. The press occasionally never completes (same React Aria
-		// nondeterminism as in waitForPOSTResponse), leaving Submit disabled, so the
-		// click is re-issued until the radio reports selected.
-		const label = this.page.locator(
-			`label:has(input[aria-label="${teamName}"])`,
-		);
+		// the radio's testId sits on the label wrapping its visually hidden input
 		const radio = this.page.locator(
 			`[data-testid^="winner-radio-"]:has(input[aria-label="${teamName}"])`,
 		);
-		await expect(async () => {
-			await label.click();
-			await expect(radio).toHaveAttribute("data-selected", "true", {
-				timeout: 1_000,
-			});
-		}).toPass();
+		await radio.click();
+		await expect(radio).toHaveAttribute("data-selected", "true");
 	}
 
 	private async confirmDialog() {
@@ -227,4 +254,10 @@ export class SendouQMatchPage {
 			await this.page.getByTestId("confirm-button").click();
 		});
 	}
+}
+
+/** Waits out the gap the loss confirm keeps between arming and accepting the second tap. */
+async function waitOutLossConfirmMinGap(page: Page) {
+	// biome-ignore lint/nursery/noPlaywrightWaitForTimeout: the min gap after arming has no observable end
+	await page.waitForTimeout(LOSS_CONFIRM_MIN_GAP_MS);
 }

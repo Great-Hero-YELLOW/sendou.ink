@@ -95,7 +95,12 @@ export function wrappedAction<T extends AnySchema>({
 				if (thrown instanceof Response) {
 					if (thrown.status === 302) return thrown;
 
-					throw new Error(`Response thrown with status code: ${thrown.status}`);
+					throw new Error(
+						`Response thrown with status code: ${thrown.status}`,
+						{
+							cause: thrown,
+						},
+					);
 				}
 
 				throw thrown;
@@ -145,7 +150,12 @@ export function wrappedLoader<T>({
 				return data as T;
 			} catch (thrown) {
 				if (thrown instanceof Response) {
-					throw new Error(`Response thrown with status code: ${thrown.status}`);
+					throw new Error(
+						`Response thrown with status code: ${thrown.status}`,
+						{
+							cause: thrown,
+						},
+					);
 				}
 
 				throw thrown;
@@ -160,9 +170,14 @@ export function assertResponseErrored(response: Response, message?: string) {
 		throw new Error(`Expected a Response, got: ${response}`);
 	}
 
-	expect(response.headers.get("Location")).toContain("?__error=");
+	const location = response.headers.get("Location") ?? "";
+	const errorMessage = new URLSearchParams(location.split("?")[1]).get(
+		"__error",
+	);
+
+	expect(errorMessage).not.toBeNull();
 	if (message) {
-		expect(response.headers.get("Location")).toContain(message);
+		expect(errorMessage).toContain(message);
 	}
 }
 

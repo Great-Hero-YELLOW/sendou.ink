@@ -1,13 +1,58 @@
 import * as React from "react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import type { EventsReadyState } from "~/features/events/events-client";
 import type { ChatMessageAuthor, ClientChatMessage } from "../chat-types";
 import { Chat } from "./Chat";
+
+const CONNECTION_STATUS_GRACE_MS = 1_500;
 
 vi.mock("~/features/auth/core/user", () => ({
 	useUser: () => null,
 }));
+
+// the composer only sends over a live event stream, which the tests have none of
+const readyStateStore = vi.hoisted(() => {
+	let current = "CONNECTED";
+	const listeners = new Set<() => void>();
+
+	return {
+		get: () => current,
+		set: (next: string) => {
+			current = next;
+			for (const listener of listeners) listener();
+		},
+		subscribe: (listener: () => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	};
+});
+
+vi.mock("~/features/events/events-hooks", async (importOriginal) => {
+	const react = await import("react");
+
+	return {
+		...(await importOriginal<
+			typeof import("~/features/events/events-hooks")
+		>()),
+		useEventsReadyState: () =>
+			react.useSyncExternalStore(
+				readyStateStore.subscribe,
+				readyStateStore.get,
+			),
+	};
+});
+
+const setReadyState = (next: EventsReadyState) => readyStateStore.set(next);
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+afterEach(() => {
+	setReadyState("CONNECTED");
+});
 
 const ALICE: ChatMessageAuthor = {
 	id: 1,
@@ -95,7 +140,7 @@ function isScrolledToBottom(element: HTMLElement) {
 }
 
 describe("Chat", () => {
-	test("renders messages inside a virtualized listbox", async () => {
+	test("renders messages inside a virtualized log", async () => {
 		const screen = await renderChat([
 			createMessage({
 				id: 1,
@@ -109,32 +154,30 @@ describe("Chat", () => {
 			}),
 		]);
 
-		await expect.element(screen.getByRole("listbox")).toBeInTheDocument();
+		await expect.element(screen.getByRole("log")).toBeInTheDocument();
 		await expect.element(screen.getByText("First message")).toBeInTheDocument();
 		await expect
 			.element(screen.getByText("Second message"))
 			.toBeInTheDocument();
-		expect(screen.getByRole("option").elements()).toHaveLength(2);
+		expect(screen.getByTestId("chat-message-row").elements()).toHaveLength(2);
 	});
 
 	test("virtualizes a long list into a scrollable region taller than its viewport", async () => {
 		const screen = await renderChat(manyMessages(100));
 
-		const listbox = screen.getByRole("listbox").element() as HTMLElement;
-		await expect.element(screen.getByRole("listbox")).toBeInTheDocument();
+		const log = screen.getByRole("log").element() as HTMLElement;
+		await expect.element(screen.getByRole("log")).toBeInTheDocument();
 
-		const scrollContent = listbox.querySelector(
-			":scope > [role=presentation]",
+		const scrollContent = log.querySelector(
+			":scope > div",
 		) as HTMLElement | null;
-		const messageRow = listbox.querySelector(
-			"[role=option]",
+		const messageRow = log.querySelector(
+			"[data-testid=chat-message-row]",
 		) as HTMLElement | null;
 
 		expect(scrollContent).not.toBeNull();
-		expect(scrollContent!.offsetHeight).toBeGreaterThan(listbox.clientHeight);
-		expect(getComputedStyle(messageRow!.parentElement!).position).toBe(
-			"absolute",
-		);
+		expect(scrollContent!.offsetHeight).toBeGreaterThan(log.clientHeight);
+		expect(getComputedStyle(messageRow!).position).toBe("absolute");
 	});
 
 	test("renders system messages with the author interpolated", async () => {
@@ -158,6 +201,32 @@ describe("Chat", () => {
 		expect(screen.getByRole("textbox").elements()).toHaveLength(0);
 	});
 
+	test("sends the draft on enter and clears the composer", async () => {
+		const onSend = vi.fn();
+		const screen = await renderChat([createMessage()], { onSend });
+
+		const composer = screen.getByPlaceholder("Press enter to send");
+		await composer.fill("hello there");
+		await userEvent.keyboard("{Enter}");
+
+		expect(onSend).toHaveBeenCalledWith({
+			publicId: expect.any(String),
+			contents: "hello there",
+		});
+		await expect.element(composer).toHaveValue("");
+	});
+
+	test("a blank draft is not sent", async () => {
+		const onSend = vi.fn();
+		const screen = await renderChat([createMessage()], { onSend });
+
+		const composer = screen.getByPlaceholder("Press enter to send");
+		await composer.fill("   ");
+		await userEvent.keyboard("{Enter}");
+
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
 	test("renders a splatnet room link with its QR code", async () => {
 		const url = "https://s.nintendo.com/av5ja/lobby";
 		const screen = await renderChat([
@@ -169,9 +238,9 @@ describe("Chat", () => {
 		await expect.element(link).toHaveAttribute("target", "_blank");
 		await expect.element(link).toHaveAttribute("rel", "noopener noreferrer");
 		await expect.element(screen.getByRole("img")).toBeInTheDocument();
-		expect(screen.getByRole("option").element().textContent).toContain(
-			"join here",
-		);
+		expect(
+			screen.getByTestId("chat-message-row").element().textContent,
+		).toContain("join here");
 	});
 
 	test("renders a deleted account's message with a fallback name", async () => {
@@ -186,11 +255,11 @@ describe("Chat", () => {
 	test("scrolls to the bottom on initial load", async () => {
 		const { screen } = await renderChatWithControls(manyMessages(50));
 
-		const listbox = screen.getByRole("listbox");
-		await expect.element(listbox).toBeInTheDocument();
+		const log = screen.getByRole("log");
+		await expect.element(log).toBeInTheDocument();
 
 		await vi.waitFor(() => {
-			const element = listbox.element() as HTMLElement;
+			const element = log.element() as HTMLElement;
 			expect(element.scrollHeight).toBeGreaterThan(element.clientHeight);
 			expect(isScrolledToBottom(element)).toBe(true);
 		});
@@ -199,9 +268,9 @@ describe("Chat", () => {
 	test("auto scrolls when a new message arrives while at the bottom", async () => {
 		const { screen, controls } = await renderChatWithControls(manyMessages(50));
 
-		const listbox = screen.getByRole("listbox");
+		const log = screen.getByRole("log");
 		await vi.waitFor(() => {
-			expect(isScrolledToBottom(listbox.element() as HTMLElement)).toBe(true);
+			expect(isScrolledToBottom(log.element() as HTMLElement)).toBe(true);
 		});
 
 		controls.addMessage(
@@ -217,19 +286,19 @@ describe("Chat", () => {
 			.element(screen.getByText(/A brand new message/))
 			.toBeInTheDocument();
 		await vi.waitFor(() => {
-			expect(isScrolledToBottom(listbox.element() as HTMLElement)).toBe(true);
+			expect(isScrolledToBottom(log.element() as HTMLElement)).toBe(true);
 		});
 	});
 
 	test("does not auto scroll when scrolled up, shows the new messages button instead", async () => {
 		const { screen, controls } = await renderChatWithControls(manyMessages(50));
 
-		const listbox = screen.getByRole("listbox");
+		const log = screen.getByRole("log");
 		await vi.waitFor(() => {
-			expect(isScrolledToBottom(listbox.element() as HTMLElement)).toBe(true);
+			expect(isScrolledToBottom(log.element() as HTMLElement)).toBe(true);
 		});
 
-		const element = listbox.element() as HTMLElement;
+		const element = log.element() as HTMLElement;
 		element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
 		element.scrollTop = 0;
 		element.dispatchEvent(new Event("scroll"));
@@ -261,12 +330,12 @@ describe("Chat", () => {
 	test("keeps the reading position when a new message arrives while scrolled up", async () => {
 		const { screen, controls } = await renderChatWithControls(manyMessages(50));
 
-		const listbox = screen.getByRole("listbox");
+		const log = screen.getByRole("log");
 		await vi.waitFor(() => {
-			expect(isScrolledToBottom(listbox.element() as HTMLElement)).toBe(true);
+			expect(isScrolledToBottom(log.element() as HTMLElement)).toBe(true);
 		});
 
-		const element = listbox.element() as HTMLElement;
+		const element = log.element() as HTMLElement;
 		const readingPosition = Math.floor(element.scrollHeight / 2);
 		element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
 		element.scrollTop = readingPosition;
@@ -285,5 +354,29 @@ describe("Chat", () => {
 		await expect.element(screen.getByText("New messages")).toBeInTheDocument();
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(element.scrollTop).toBe(readingPosition);
+	});
+
+	test("says the stream is down only once it has been down for the grace period", async () => {
+		const screen = await renderChat([createMessage()]);
+
+		setReadyState("CLOSED");
+		await wait(CONNECTION_STATUS_GRACE_MS / 2);
+		expect(screen.getByText("Disconnected").elements()).toHaveLength(0);
+
+		await wait(CONNECTION_STATUS_GRACE_MS);
+		await expect.element(screen.getByText("Disconnected")).toBeInTheDocument();
+	});
+
+	test("never says the stream is down when it reconnects inside the grace period", async () => {
+		const screen = await renderChat([createMessage()]);
+
+		setReadyState("CONNECTING");
+		await wait(CONNECTION_STATUS_GRACE_MS / 2);
+		expect(screen.getByText("Connecting...").elements()).toHaveLength(0);
+
+		setReadyState("CONNECTED");
+		await wait(CONNECTION_STATUS_GRACE_MS * 2);
+		expect(screen.getByText("Connecting...").elements()).toHaveLength(0);
+		expect(screen.getByText("Disconnected").elements()).toHaveLength(0);
 	});
 });

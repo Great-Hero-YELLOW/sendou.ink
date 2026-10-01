@@ -246,10 +246,10 @@ function MatchRow({
 			return { team: tournament.teamById(opponent.id), simulated: false };
 		}
 
-		const simulated = showSimulation
+		const simulatedMatch = showSimulation
 			? bracket.simulatedMatch(match.id)
 			: undefined;
-		const simulatedOpponent = simulated?.[opponentKey];
+		const simulatedOpponent = simulatedMatch?.[opponentKey];
 
 		return simulatedOpponent?.id
 			? { team: tournament.teamById(simulatedOpponent.id), simulated: true }
@@ -403,7 +403,7 @@ function MatchVods({ vods }: MatchVodsProps) {
 function MatchTimer({ match, bracket }: Pick<MatchProps, "match" | "bracket">) {
 	const tournament = useTournament();
 
-	if (tournament.isLeague) return null;
+	if (bracket.hasScheduling) return null;
 	if (!match.startedAt) return null;
 
 	const isOver = Boolean(match.winnerSide);

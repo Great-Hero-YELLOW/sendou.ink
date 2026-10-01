@@ -1,11 +1,13 @@
 import clsx from "clsx";
-import { HardDriveDownload } from "lucide-react";
+import { HardDriveDownload, UserPlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { MetaFunction } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
+import { Divider } from "~/components/Divider";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
 import { ModeImage, StageImage } from "~/components/Image";
+import { InviteLinkInput } from "~/components/InviteLinkInput";
 import { Placement } from "~/components/Placement";
 import { UserLink } from "~/components/UserLink";
 import { useUser } from "~/features/auth/core/user";
@@ -15,16 +17,19 @@ import {
 	type TournamentRunGraphicSeriesWin,
 } from "~/features/img-export/components/TournamentRunGraphic";
 import { useTournament } from "~/features/tournament/tournament-context";
+import { tournamentJoinPage } from "~/features/tournament/tournament-urls";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
 import type { TournamentMaplistSource } from "~/modules/tournament-map-list-generator/types";
 import { metaTags } from "~/utils/remix";
 import {
+	SENDOU_INK_BASE_URL,
 	teamPage,
 	tournamentMatchPage,
 	tournamentTeamCompsPage,
 	tournamentTeamPage,
 } from "~/utils/urls";
 import { TeamWithRoster } from "../components/TeamWithRoster";
+import type * as Standings from "../core/Standings";
 import type { TournamentTeamCompsLoaderData } from "../loaders/to.$id.teams.$tid.comps.server";
 import {
 	loader,
@@ -57,7 +62,7 @@ export default function TournamentTeamPage() {
 	const data = useLoaderData<typeof loader>();
 	const tournament = useTournament();
 	const teamIndex = tournament.ctx.teams.findIndex(
-		(t) => t.id === data.tournamentTeamId,
+		(candidate) => candidate.id === data.tournamentTeamId,
 	);
 	const team = data.team;
 
@@ -77,9 +82,13 @@ export default function TournamentTeamPage() {
 						{t("tournament:team.teamPage")}
 					</Link>
 				) : null}
+				{data.subInviteCode ? (
+					<AddSubPopover inviteCode={data.subInviteCode} />
+				) : null}
 			</div>
-			{data.winCounts.sets.total > 0 ? (
+			{data.record ? (
 				<StatSquares
+					record={data.record}
 					seed={teamIndex + 1}
 					teamsCount={tournament.ctx.teams.length}
 				/>
@@ -95,9 +104,11 @@ export default function TournamentTeamPage() {
 }
 
 function StatSquares({
+	record,
 	seed,
 	teamsCount,
 }: {
+	record: Standings.TeamRecord;
 	seed: number;
 	teamsCount: number;
 }) {
@@ -105,6 +116,8 @@ function StatSquares({
 	const data = useLoaderData<typeof loader>();
 
 	const { placement, undergroundPlacement, division } = data;
+	const setsTotal = record.setWins + record.setLosses;
+	const mapsTotal = record.mapWins + record.mapLosses;
 
 	return (
 		<div className={styles.teamStats}>
@@ -113,10 +126,10 @@ function StatSquares({
 					{t("tournament:team.setWins")}
 				</div>
 				<div className={styles.teamStatMain}>
-					{data.winCounts.sets.won} / {data.winCounts.sets.total}
+					{record.setWins} / {setsTotal}
 				</div>
 				<div className={styles.teamStatSub}>
-					{data.winCounts.sets.percentage}%
+					{winPercentage(record.setWins, setsTotal)}%
 				</div>
 			</div>
 
@@ -125,10 +138,10 @@ function StatSquares({
 					{t("tournament:team.mapWins")}
 				</div>
 				<div className={styles.teamStatMain}>
-					{data.winCounts.maps.won} / {data.winCounts.maps.total}
+					{record.mapWins} / {mapsTotal}
 				</div>
 				<div className={styles.teamStatSub}>
-					{data.winCounts.maps.percentage}%
+					{winPercentage(record.mapWins, mapsTotal)}%
 				</div>
 			</div>
 
@@ -162,6 +175,49 @@ function StatSquares({
 			</div>
 		</div>
 	);
+}
+
+function AddSubPopover({ inviteCode }: { inviteCode: string }) {
+	const { t } = useTranslation(["tournament"]);
+	const tournament = useTournament();
+	const data = useLoaderData<typeof loader>();
+
+	const subsAvailableToAdd =
+		tournament.maxMembersPerTeam - data.team.members.length;
+
+	const inviteLink = `${SENDOU_INK_BASE_URL}${tournamentJoinPage({
+		tournamentId: tournament.ctx.id,
+		inviteCode,
+	})}`;
+
+	return (
+		<SendouPopover
+			popoverClassName="text-xs"
+			trigger={
+				<SendouButton
+					className="mx-auto"
+					variant="outlined"
+					size="small"
+					icon={<UserPlus />}
+					data-testid="add-sub-button"
+				>
+					{t("tournament:actions.addSub")}
+				</SendouButton>
+			}
+		>
+			{t("tournament:actions.sub.prompt", { count: subsAvailableToAdd })}
+			{subsAvailableToAdd > 0 ? (
+				<>
+					<Divider className="my-2" />
+					<InviteLinkInput link={inviteLink} />
+				</>
+			) : null}
+		</SendouPopover>
+	);
+}
+
+function winPercentage(won: number, total: number) {
+	return total === 0 ? 0 : Math.round((won / total) * 100);
 }
 
 function RunImageExport() {
@@ -253,7 +309,7 @@ function RunImageExport() {
 					size="small"
 					variant="outlined"
 					icon={<HardDriveDownload />}
-					onPress={handleOpen}
+					onClick={handleOpen}
 					className="mx-auto"
 				>
 					{t("common:imageExport.export")}
@@ -306,8 +362,8 @@ function SetInfo({
 				return t("tournament:pickInfo.both");
 			case "DEFAULT":
 				return t("tournament:pickInfo.default");
-			case "TIEBREAKER":
-				return t("tournament:pickInfo.tiebreaker");
+			case "RANDOM":
+				return t("tournament:pickInfo.random");
 			case "COUNTERPICK": {
 				if (mapIndex > 0) {
 					const previousMap = set.maps[mapIndex - 1];

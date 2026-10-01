@@ -6,7 +6,7 @@ import type {
 	BracketData,
 	RoundData,
 } from "~/features/tournament-bracket/core/engine/types";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import * as AbDivisions from "../AbDivisions";
 import * as Engine from "../engine";
@@ -121,6 +121,11 @@ export abstract class Bracket {
 		if (this.sources) return true;
 
 		return this.tournament.regularCheckInHasEnded;
+	}
+
+	/** League bracket whose sets the teams schedule, false when it was started to be played in real time. */
+	get hasScheduling() {
+		return this.tournament.isLeague && !this.data.stage[0]?.settings.isRealtime;
 	}
 
 	/** Unplayed matches filled in with the expected results. Simulating is expensive so it happens on first access only. */

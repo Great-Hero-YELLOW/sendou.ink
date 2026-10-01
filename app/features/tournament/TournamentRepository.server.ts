@@ -1,6 +1,7 @@
 import { sub } from "date-fns";
 import {
 	type Insertable,
+	type Kysely,
 	type NotNull,
 	type SqlBool,
 	sql,
@@ -29,8 +30,9 @@ import { modesShort } from "~/modules/in-game-lists/modes";
 import { isSupporter } from "~/modules/permissions/utils";
 import { nullFilledArray, nullifyingAvg } from "~/utils/arrays";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import {
+	calendarEventStartTime,
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
 	jsonArrayFrom,
@@ -93,10 +95,10 @@ export async function findById(id: number) {
 									"TournamentOrganizationMember.userId",
 									"User.id",
 								)
-								.select((eb) => [
+								.select((memberEb) => [
 									"TournamentOrganizationMember.userId",
 									"TournamentOrganizationMember.role",
-									...commonUserSelect(eb),
+									...commonUserSelect(memberEb),
 									"User.pronouns",
 									"User.isTournamentOrganizer",
 									"User.patronTier",
@@ -128,15 +130,18 @@ export async function findById(id: number) {
 			jsonObjectFrom(
 				eb
 					.selectFrom("User")
-					.select((eb) => [...commonUserSelect(eb), "User.pronouns"])
+					.select((authorEb) => [
+						...commonUserSelect(authorEb),
+						"User.pronouns",
+					])
 					.whereRef("User.id", "=", "CalendarEvent.authorId"),
 			).as("author"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("TournamentStaff")
 					.innerJoin("User", "TournamentStaff.userId", "User.id")
-					.select((eb) => [
-						...commonUserSelect(eb),
+					.select((staffEb) => [
+						...commonUserSelect(staffEb),
 						"User.pronouns",
 						"TournamentStaff.role",
 					])
@@ -200,13 +205,7 @@ export async function findById(id: number) {
 										"=",
 										"TournamentTeamMember.userId",
 									)
-									.on(
-										"SeedingSkill.type",
-										"=",
-										sql<
-											Tables["SeedingSkill"]["type"]
-										> /*sql*/`case when json_extract("Tournament"."settings", '$.isRanked') = 1 then 'RANKED' else 'UNRANKED' end`,
-									),
+									.on("SeedingSkill.type", "=", seedingSkillType(id)),
 							)
 							.select(({ fn }) =>
 								fn.avg<number>("SeedingSkill.ordinal").as("v"),
@@ -254,16 +253,6 @@ export async function findById(id: number) {
 					.orderBy("TournamentTeam.createdAt", "asc")
 					.orderBy("TournamentTeam.id", "asc"),
 			).as("teams"),
-			jsonArrayFrom(
-				eb
-					.selectFrom("MapPoolMap")
-					.select(["MapPoolMap.stageId", "MapPoolMap.mode"])
-					.whereRef(
-						"MapPoolMap.tieBreakerCalendarEventId",
-						"=",
-						"CalendarEvent.id",
-					),
-			).as("tieBreakerMapPool"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("MapPoolMap")
@@ -497,7 +486,6 @@ export type TeamFull = Unwrapped<typeof findTeamsFullByTournamentId>;
 export async function findTeamsFullByTournamentId(tournamentId: number) {
 	const teams = await db
 		.selectFrom("TournamentTeam")
-		.innerJoin("Tournament", "Tournament.id", "TournamentTeam.tournamentId")
 		.leftJoin(
 			"UserSubmittedImage as PickupAvatar",
 			"TournamentTeam.avatarImgId",
@@ -525,16 +513,13 @@ export async function findTeamsFullByTournamentId(tournamentId: number) {
 					.leftJoin("SeedingSkill", (join) =>
 						join
 							.onRef("User.id", "=", "SeedingSkill.userId")
-							.on(
-								"SeedingSkill.type",
-								"=",
-								sql<
-									Tables["SeedingSkill"]["type"]
-								> /*sql*/`case when json_extract("Tournament"."settings", '$.isRanked') = 1 then 'RANKED' else 'UNRANKED' end`,
-							),
+							.on("SeedingSkill.type", "=", seedingSkillType(tournamentId)),
 					)
-					.select((eb) => [
-						...commonUserSelect(eb, { idAs: "userId", inTournament: true }),
+					.select((memberEb) => [
+						...commonUserSelect(memberEb, {
+							idAs: "userId",
+							inTournament: true,
+						}),
 						"User.country",
 						"User.tournamentName",
 						"SeedingSkill.ordinal",
@@ -584,12 +569,12 @@ export async function findTeamsFullByTournamentId(tournamentId: number) {
 						"UserSubmittedImage.id",
 					)
 					.whereRef("AllTeam.id", "=", "TournamentTeam.teamId")
-					.select((eb) => [
+					.select((teamEb) => [
 						"AllTeam.id",
 						"AllTeam.customUrl",
-						concatUserSubmittedImagePrefix(eb.ref("UserSubmittedImage.url")).as(
-							"logoUrl",
-						),
+						concatUserSubmittedImagePrefix(
+							teamEb.ref("UserSubmittedImage.url"),
+						).as("logoUrl"),
 						"AllTeam.deletedAt",
 					]),
 			).as("team"),
@@ -603,11 +588,11 @@ export async function findTeamsFullByTournamentId(tournamentId: number) {
 
 	return teams.map((team) => ({
 		...team,
-		members: team.members.map(({ ordinal, ...member }) => member),
+		members: team.members.map((member) => R.omit(member, ["ordinal"])),
 		avgSeedingSkillOrdinal: nullifyingAvg(
 			team.members
 				.map((member) => member.ordinal)
-				.filter((ordinal) => typeof ordinal === "number"),
+				.filter((memberOrdinal) => typeof memberOrdinal === "number"),
 		),
 	}));
 }
@@ -712,7 +697,7 @@ export async function findLatestFinalizedLeagueParticipants(args: {
 			"CalendarEvent.id",
 			"CalendarEventDate.eventId",
 		)
-		.select(["Tournament.id", "Tournament.settings"])
+		.select(["Tournament.id", "Tournament.settings", "CalendarEvent.name"])
 		.where("CalendarEvent.organizationId", "=", args.organizationId)
 		.where("CalendarEvent.name", "like", `${args.namePrefix}%`)
 		.where("Tournament.isFinalized", "=", 1)
@@ -742,6 +727,7 @@ export async function findLatestFinalizedLeagueParticipants(args: {
 
 	return {
 		tournamentId: league.id,
+		name: league.name,
 		bracketProgression: league.settings.bracketProgression,
 		participants,
 	};
@@ -872,16 +858,16 @@ export function findAllForShowcase() {
 					)
 					.whereRef("TournamentResult.tournamentId", "=", "Tournament.id")
 					.where("TournamentResult.placement", "=", 1)
-					.select((eb) => [
-						...commonUserSelect(eb, { inTournament: true }),
+					.select((placerEb) => [
+						...commonUserSelect(placerEb, { inTournament: true }),
 						"User.country",
 						"TournamentResult.div",
 						"TournamentTeam.name as teamName",
-						concatUserSubmittedImagePrefix(eb.ref("TeamAvatar.url")).as(
+						concatUserSubmittedImagePrefix(placerEb.ref("TeamAvatar.url")).as(
 							"teamLogoUrl",
 						),
 						concatUserSubmittedImagePrefix(
-							eb.ref("TournamentTeamAvatar.url"),
+							placerEb.ref("TournamentTeamAvatar.url"),
 						).as("pickupAvatarUrl"),
 					]),
 			).as("firstPlacers"),
@@ -952,6 +938,90 @@ export function findAllBetweenTwoTimestamps({
 		.where("CalendarEventDate.startsAt", "<=", dateToDatabaseTimestamp(endTime))
 		.where("CalendarEvent.hidden", "=", 0)
 		.execute();
+}
+
+/**
+ * Members of teams that have not checked in nor dropped out, for every tournament whose first day starts inside the window.
+ * One row per member per tournament; the caller narrows the window to the check-in period.
+ */
+export function findPendingCheckInsStartingBetween({
+	startsAfter,
+	startsBefore,
+}: {
+	startsAfter: Date;
+	startsBefore: Date;
+}) {
+	return (
+		db
+			.selectFrom("TournamentTeamMember")
+			.innerJoin(
+				"TournamentTeam",
+				"TournamentTeamMember.tournamentTeamId",
+				"TournamentTeam.id",
+			)
+			.innerJoin("Tournament", "TournamentTeam.tournamentId", "Tournament.id")
+			.innerJoin("CalendarEvent", "CalendarEvent.tournamentId", "Tournament.id")
+			.innerJoin(
+				"CalendarEventDate",
+				"CalendarEvent.id",
+				"CalendarEventDate.eventId",
+			)
+			.select((eb) => [
+				"TournamentTeamMember.userId",
+				"Tournament.id as tournamentId",
+				tournamentLogoWithDefault(eb).as("logoUrl"),
+			])
+			// a multi-day tournament checks in before its first day only
+			.where("CalendarEventDate.startsAt", "=", (eb) =>
+				calendarEventStartTime(eb),
+			)
+			.where(
+				"CalendarEventDate.startsAt",
+				">",
+				dateToDatabaseTimestamp(startsAfter),
+			)
+			.where(
+				"CalendarEventDate.startsAt",
+				"<=",
+				dateToDatabaseTimestamp(startsBefore),
+			)
+			.where("CalendarEvent.hidden", "=", 0)
+			.where("Tournament.isFinalized", "=", 0)
+			.where("TournamentTeam.droppedOut", "=", 0)
+			.where("TournamentTeam.isPlaceholder", "=", 0)
+			.where(
+				sql<number>`json_extract("Tournament"."settings", '$.isTest')`,
+				"is not",
+				1,
+			)
+			.where(
+				sql<number>`json_extract("Tournament"."settings", '$.isLeague')`,
+				"is not",
+				1,
+			)
+			.where(
+				sql<number>`json_extract("Tournament"."settings", '$.isDraft')`,
+				"is not",
+				1,
+			)
+			.where((eb) =>
+				eb.not(
+					eb.exists(
+						eb
+							.selectFrom("TournamentTeamCheckIn")
+							.select("TournamentTeamCheckIn.tournamentTeamId")
+							.whereRef(
+								"TournamentTeamCheckIn.tournamentTeamId",
+								"=",
+								"TournamentTeam.id",
+							)
+							.where("TournamentTeamCheckIn.bracketIdx", "is", null),
+					),
+				),
+			)
+			.orderBy("CalendarEventDate.startsAt")
+			.execute()
+	);
 }
 
 /** `ORGANIZE` and `MANAGE_MATCHES` holders keyed by tournament id, without loading the tournaments themselves. */
@@ -1059,13 +1129,10 @@ export async function findFriendCodesByTournamentId(tournamentId: number) {
 		.execute();
 
 	// later friend code overwrites earlier ones
-	return values.reduce(
-		(acc, cur) => {
-			acc[cur.userId] = cur.friendCode;
-			return acc;
-		},
-		{} as Record<number, string>,
-	);
+	return values.reduce<Record<number, string>>((acc, cur) => {
+		acc[cur.userId] = cur.friendCode;
+		return acc;
+	}, {});
 }
 
 export function updateProgression({
@@ -1411,6 +1478,9 @@ const SUMMARY_INSERT_CHUNK_SIZE = 1000;
 /**
  * Finalizes a tournament, recording the full summary: skills, seeding skills, map/player
  * result deltas, badge owners and placements. See {@link finalizeWithoutSummary} for test tournaments.
+ *
+ * Returns false without writing anything if the tournament was already finalized, so that
+ * overlapping requests can't apply the additive summary deltas twice.
  */
 export function finalize({
 	tournamentId,
@@ -1428,6 +1498,8 @@ export function finalize({
 	const seasonValue = season ?? null;
 
 	return db.transaction().execute(async (trx) => {
+		if (!(await claimFinalization(trx, tournamentId))) return false;
+
 		const skillTeamUsers: Array<{ skillId: number; userId: number }> = [];
 		for (const skill of summary.skills) {
 			invariant(seasonValue !== null, "Season missing for skill");
@@ -1635,21 +1707,35 @@ export function finalize({
 			await trx.insertInto("TournamentResult").values(chunk).execute();
 		}
 
-		await trx
-			.updateTable("Tournament")
-			.set({ isFinalized: 1 })
-			.where("id", "=", tournamentId)
-			.execute();
+		return true;
 	});
 }
 
-/** Marks a test tournament as finalized without recording any summary stats. See {@link finalize}. */
+/**
+ * Marks a test tournament as finalized without recording any summary stats. See {@link finalize}.
+ *
+ * Returns false if the tournament was already finalized.
+ */
 export function finalizeWithoutSummary(tournamentId: number) {
-	return db
+	return claimFinalization(db, tournamentId);
+}
+
+/**
+ * Flips `isFinalized` on, atomically. False means another finalization got there first, in which
+ * case the caller must not apply any summary of its own.
+ */
+async function claimFinalization(
+	trx: Kysely<DB> | Transaction<DB>,
+	tournamentId: number,
+) {
+	const result = await trx
 		.updateTable("Tournament")
 		.set({ isFinalized: 1 })
 		.where("id", "=", tournamentId)
-		.execute();
+		.where("isFinalized", "=", 0)
+		.executeTakeFirst();
+
+	return result.numUpdatedRows > 0n;
 }
 
 /** How close to its start time a tournament counts as happening right now. */
@@ -1775,6 +1861,18 @@ export function updateTeamSeeds({
 	});
 }
 
+/** Tier of every league division (starting bracket) of the tournament that has one. */
+export function findDivisionTiersByTournamentId(tournamentId: number) {
+	return db
+		.selectFrom("TournamentDivisionTier")
+		.select([
+			"TournamentDivisionTier.bracketIdx",
+			"TournamentDivisionTier.tier",
+		])
+		.where("TournamentDivisionTier.tournamentId", "=", tournamentId)
+		.execute();
+}
+
 /**
  * Records the tier of one division (= starting bracket) from its checked-in teams and sets the
  * tournament's own tier to the best of its divisions (the same thing when there is one division).
@@ -1880,4 +1978,11 @@ async function trophyTier(
 		.executeTakeFirst();
 
 	return tournament?.tier ?? null;
+}
+
+/** Which seeding skill the tournament ranks by, resolved once: inline in the join it parsed the settings JSON per member row. */
+function seedingSkillType(tournamentId: number) {
+	return sql<
+		Tables["SeedingSkill"]["type"]
+	>`(select case when json_extract("settings", '$.isRanked') = 1 then 'RANKED' else 'UNRANKED' end from "Tournament" where "id" = ${tournamentId})`;
 }

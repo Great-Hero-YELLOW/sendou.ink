@@ -1,5 +1,6 @@
 .root {
 	background-color: var(--color-bg);
+	color: var(--color-text);
 	border-radius: var(--radius-box);
 	padding: var(--s-4);
 	border: var(--border-style);
@@ -21,7 +22,7 @@
 
 .navButton {
 	background-color: transparent;
-	color: var(--color-text-accent);
+	color: var(--color-fg-accent);
 	border: none;
 	padding: 0;
 	border-radius: 100%;
@@ -38,6 +39,7 @@
 
 .grid {
 	width: 100%;
+	border-spacing: 0;
 }
 
 .headerCell {
@@ -52,25 +54,21 @@
 	width: 35px;
 	height: 35px;
 	border-radius: var(--radius-field);
-	outline-color: var(--color-accent);
+	outline-color: var(--color-fg-accent);
+	border: none;
+	background: transparent;
+	color: var(--color-text);
+	cursor: pointer;
+	margin: 0 auto;
 
 	&:focus-visible {
 		outline: var(--focus-ring);
 		outline-offset: 1px;
 	}
 
-	&[data-outside-month] {
-		display: none;
-	}
-
-	&[data-disabled] {
-		opacity: 0.5;
-		background-color: transparent !important;
-	}
-
 	&[data-selected] {
 		background-color: var(--color-bg-high);
-		color: var(--color-text-accent);
+		color: var(--color-fg-accent);
 	}
 
 	&:hover {

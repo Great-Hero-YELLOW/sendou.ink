@@ -34,14 +34,13 @@ export function TournamentMatchActionPickBanTab({
 
 	const canPickBan =
 		tournament.isOrganizer(user) ||
-		tournament.ownedTeamByUser(user)?.id === pickerTeamId;
+		(user ? pickingTeam.memberUserIds.includes(user.id) : false);
 
 	const pickBanMapPool = PickBan.mapsListWithLegality({
-		toSetMapPool: tournament.ctx.toSetMapPool,
+		toSetMapPool: tournament.organizerPickedMapPool,
 		maps: data.match.roundMaps,
 		mapList: data.mapList,
 		teams,
-		tieBreakerMapPool: tournament.ctx.tieBreakerMapPool,
 		pickerTeamId,
 		results: data.results,
 		pickBanEvents: data.pickBanEvents,

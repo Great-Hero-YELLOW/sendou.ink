@@ -9,7 +9,13 @@ import {
 	stringConstant,
 	textField,
 } from "~/form/fields";
-import { _action, id, superRefine, type ValidationCtx } from "~/utils/schema";
+import {
+	_action,
+	id,
+	revalidateRoot,
+	superRefine,
+	type ValidationCtx,
+} from "~/utils/schema";
 import { AVAILABILITY } from "./availability-constants";
 
 const DAY_MINUTES = 24 * 60;
@@ -54,12 +60,22 @@ export const saveWeekSchema = v.object({
 
 export const dismissScheduleNudgeSchema = v.object({
 	_action: _action("DISMISS_SCHEDULE_NUDGE"),
-	revalidateRoot: v.optional(v.nullable(v.literal(true))),
+	revalidateRoot,
+});
+
+export const saveScheduleVisibilitySchema = v.object({
+	_action: stringConstant("SAVE_SCHEDULE_VISIBILITY"),
+	sharedWith: checkboxGroupDynamic({
+		label: "labels.scheduleSharedWith",
+		minLength: 0,
+	}),
+	revalidateRoot,
 });
 
 export const eventsActionSchema = v.union([
 	saveWeekSchema,
 	dismissScheduleNudgeSchema,
+	saveScheduleVisibilitySchema,
 ]);
 
 const teamEventDurationItems = [

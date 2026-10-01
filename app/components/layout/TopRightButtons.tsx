@@ -1,31 +1,39 @@
+import clsx from "clsx";
 import { Heart, LogIn, MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { GlobalStatusIndicator } from "~/features/global-status/components/GlobalStatusIndicator";
+import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
 import { SUPPORT_PAGE } from "~/utils/urls";
 import { LinkButton, SendouButton } from "../elements/Button";
 import { AnythingAdder } from "./AnythingAdder";
-import { GlobalSearch } from "./GlobalSearch";
+import { GlobalSearch, LoggedOutGlobalSearch } from "./GlobalSearch";
 import { LogInButtonContainer } from "./LogInButtonContainer";
 import styles from "./TopRightButtons.module.css";
 
 export function TopRightButtons({
 	showSupport,
-	showSearch,
 	isLoggedIn,
 	onChatToggle,
 	onChatModalToggle,
 	chatUnreadCount,
 }: {
 	showSupport: boolean;
-	showSearch: boolean;
 	isLoggedIn: boolean;
 	onChatToggle?: () => void;
 	onChatModalToggle?: () => void;
 	chatUnreadCount?: number;
 }) {
 	const { t } = useTranslation(["common", "front"]);
+	const { status: globalStatus } = useGlobalStatus();
+	const hasGlobalStatus = globalStatus !== null;
 
 	return (
-		<div className={styles.container}>
+		<div
+			className={clsx(
+				styles.container,
+				hasGlobalStatus ? styles.withStatus : null,
+			)}
+		>
 			{showSupport ? (
 				<>
 					<div className={styles.supportWrapper}>
@@ -33,7 +41,7 @@ export function TopRightButtons({
 							to={SUPPORT_PAGE}
 							size="small"
 							icon={<Heart />}
-							variant="outlined"
+							variant="ghost"
 						>
 							{t("common:pages.support")}
 						</LinkButton>
@@ -43,32 +51,25 @@ export function TopRightButtons({
 							to={SUPPORT_PAGE}
 							size="small"
 							icon={<Heart />}
-							variant="outlined"
+							variant="ghost"
 							shape="square"
 						/>
 					</div>
 				</>
 			) : null}
+			<div className={styles.searchAndAddContainer}>
+				<GlobalStatusIndicator />
+				<div className={styles.searchWrapper}>
+					{isLoggedIn ? <GlobalSearch /> : <LoggedOutGlobalSearch />}
+				</div>
+				{isLoggedIn ? <AnythingAdder /> : null}
+			</div>
 			{isLoggedIn ? (
 				<>
-					<div className={styles.searchAndAddContainer}>
-						{showSearch ? (
-							<div className={styles.searchWrapper}>
-								<GlobalSearch />
-							</div>
-						) : null}
-						<div className={styles.addNewWrapper}>
-							<AnythingAdder />
-						</div>
-						<div className={styles.addNewWrapperCompact}>
-							<AnythingAdder compact />
-						</div>
-					</div>
 					{onChatToggle ? (
 						<div className={styles.chatButtonWrapperPersistent}>
 							<ChatButton
-								variant="outlined"
-								onPress={onChatToggle}
+								onClick={onChatToggle}
 								unreadCount={chatUnreadCount}
 							/>
 						</div>
@@ -76,8 +77,7 @@ export function TopRightButtons({
 					{onChatModalToggle ? (
 						<div className={styles.chatButtonWrapperModal}>
 							<ChatButton
-								variant="outlined"
-								onPress={onChatModalToggle}
+								onClick={onChatModalToggle}
 								unreadCount={chatUnreadCount}
 							/>
 						</div>
@@ -95,12 +95,10 @@ export function TopRightButtons({
 }
 
 function ChatButton({
-	variant,
-	onPress,
+	onClick,
 	unreadCount,
 }: {
-	variant: "outlined" | "primary";
-	onPress: () => void;
+	onClick: () => void;
 	unreadCount?: number;
 }) {
 	return (
@@ -109,12 +107,18 @@ function ChatButton({
 				shape="square"
 				size="small"
 				icon={<MessageSquare />}
-				variant={variant}
-				onPress={onPress}
+				variant="ghost"
+				onClick={onClick}
 				testId="chat-toggle-button"
 			/>
 			{unreadCount ? (
-				<span className={styles.chatUnreadBadge}>{unreadCount}</span>
+				<span
+					className={styles.chatUnreadBadge}
+					role="status"
+					aria-label={`${unreadCount} unread chat ${unreadCount === 1 ? "message" : "messages"}`}
+				>
+					{unreadCount}
+				</span>
 			) : null}
 		</>
 	);

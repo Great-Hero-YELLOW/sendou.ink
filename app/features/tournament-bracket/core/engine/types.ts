@@ -9,7 +9,10 @@ export type Side = "opponent1" | "opponent2";
 
 export type StageType = Tables["TournamentStage"]["type"];
 
-/** Group types of an elimination stage; `final_group` exists in both single and double elimination. */
+/** Part of an elimination group a round belongs to, `null` in round robin and swiss. */
+export type RoundSection = NonNullable<Tables["TournamentRound"]["section"]>;
+
+/** Where a match sits in an elimination stage, derived from the stage type and the round's section; `final_group` exists in both single and double elimination. */
 export type GroupType =
 	| "single_bracket"
 	| "winner_bracket"
@@ -47,6 +50,9 @@ export interface StageSettings {
 
 	/** Optional final between semi-final losers. */
 	consolationFinal?: boolean;
+
+	/** Leagues: sets are played in real time like in a regular tournament instead of the teams scheduling them. */
+	isRealtime?: boolean;
 }
 
 export interface ParticipantResult {
@@ -82,10 +88,12 @@ export interface RoundData {
 	id: number;
 	stageId: number;
 	groupId: number;
+	section: RoundSection | null;
+	/** Restarts from 1 per group, and in an elimination group per section. */
 	number: number;
 	maps?: TournamentRoundMaps | null;
-	/** Datetime the round is played by default (leagues). */
-	defaultPlayTime?: number | null;
+	/** Leagues: the round's sets are playable from this time on. */
+	isPlayableAt?: number | null;
 }
 
 export interface MatchResults {
@@ -103,6 +111,8 @@ export interface MatchData extends MatchResults {
 	roundId: number;
 	number: number;
 	startedAt?: number | null;
+	/** Leagues: the time the teams (or the organizer) agreed the set is played at. */
+	scheduledAt?: number | null;
 }
 
 /** Whole state of one tournament's brackets. Never mutated in place, every engine operation returns a new one. */
@@ -137,6 +147,8 @@ export interface CreateBracketInput {
 	settings: TournamentStageSettings | null;
 	/** (Round robin only) Whether matches are playable independently of rounds (league divisions). */
 	independentRounds?: boolean;
+	/** Leagues: sets are played in real time like in a regular tournament instead of the teams scheduling them. */
+	isRealtime?: boolean;
 	/** Parallel to seeding; required when settings.hasAbDivisions. 0 = A, 1 = B. */
 	abDivisions?: (0 | 1)[];
 	/** Stage number within the tournament. Defaults to 1 (local data; the repository assigns the real number on insert). */
@@ -151,12 +163,17 @@ export interface CreateBracketInput {
 /** One round's map info as picked by the organizer against a bracket preview. */
 export type RoundMapsInput = TournamentRoundMaps & {
 	roundId: number;
-	groupId?: number;
+	section?: RoundSection | null;
+	/** Leagues: the round's sets are playable from this time on. */
+	isPlayableAt?: number | null;
 };
 
 /** {@link CreateBracketInput} with settings already resolved to internal {@link StageSettings}. */
 export interface ResolvedCreateBracketInput
-	extends Omit<CreateBracketInput, "settings" | "independentRounds"> {
+	extends Omit<
+		CreateBracketInput,
+		"settings" | "independentRounds" | "isRealtime"
+	> {
 	settings: StageSettings;
 }
 

@@ -77,7 +77,8 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: var(--s-1);
+	aspect-ratio: 1;
+	padding: var(--s-0-5);
 	background-color: var(--color-bg-higher);
 	border: 2px solid transparent;
 	border-radius: var(--radius-box);
@@ -85,7 +86,7 @@
 	transition: border-color 0.1s;
 
 	&:hover {
-		border-color: var(--color-text-accent);
+		border-color: var(--color-fg-accent);
 	}
 
 	&:disabled {

@@ -6,7 +6,7 @@ import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
-import invariant from "../../../utils/invariant";
+import { invariant } from "../../../utils/invariant";
 
 export interface DBSource {
 	bracketIdx: number;
@@ -207,10 +207,10 @@ export function validatedBrackets(
 	try {
 		parsed = toOutputBracketFormat(brackets);
 	} catch (e) {
-		if ((e as { badBracketIdx: number }).badBracketIdx) {
+		if (e instanceof BadBracketError) {
 			return {
 				type: "PLACEMENTS_PARSE_ERROR",
-				bracketIdx: (e as { badBracketIdx: number }).badBracketIdx,
+				bracketIdx: e.bracketIdx,
 			};
 		}
 
@@ -372,6 +372,15 @@ export function bracketsToValidationError(
 	return null;
 }
 
+class BadBracketError extends Error {
+	readonly bracketIdx: number;
+
+	constructor(bracketIdx: number) {
+		super(`Bracket at index ${bracketIdx} has invalid placements`);
+		this.bracketIdx = bracketIdx;
+	}
+}
+
 function toOutputBracketFormat(brackets: InputBracket[]): ParsedBracket[] {
 	const result = brackets.map((bracket, bracketIdx) => {
 		return {
@@ -395,10 +404,10 @@ function toOutputBracketFormat(brackets: InputBracket[]): ParsedBracket[] {
 						sourceBracket?.type === "swiss" &&
 						sourceBracket?.settings?.advanceThreshold;
 					if (!isSwissWithEarlyAdvance) {
-						throw { badBracketIdx: bracketIdx };
+						throw new BadBracketError(bracketIdx);
 					}
 				} else if (parsed === null) {
-					throw { badBracketIdx: bracketIdx };
+					throw new BadBracketError(bracketIdx);
 				}
 
 				return {
@@ -985,8 +994,8 @@ function resolveMainBracketProgression(
 	const result = [startBracketIdx];
 	const visited = new Set([startBracketIdx]);
 	while (true) {
-		const bracket = brackets.findIndex((bracket) =>
-			bracket.sources?.some(
+		const bracket = brackets.findIndex((candidate) =>
+			candidate.sources?.some(
 				(source) =>
 					// empty array is the swiss early advance case
 					(source.placements.includes(1) || source.placements.length === 0) &&

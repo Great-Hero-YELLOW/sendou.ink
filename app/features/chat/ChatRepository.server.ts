@@ -85,19 +85,18 @@ export async function findAllOpenRoomIdsByUserId(
 			.where("GroupMember.createdAt", ">", joinedSince)
 			.where(openRoom("GroupMatch.chatRoomId"))
 			.execute(),
-		tournamentTeamIds.length === 0
-			? []
-			: db
-					.selectFrom("TournamentMatch")
-					.select("TournamentMatch.chatRoomId as id")
-					.where((eb) =>
-						eb.or([
-							eb(opponentTeamId("opponentOne"), "in", tournamentTeamIds),
-							eb(opponentTeamId("opponentTwo"), "in", tournamentTeamIds),
-						]),
-					)
-					.where(openRoom("TournamentMatch.chatRoomId"))
-					.execute(),
+		// a column per query so each opponent's expression index is used directly,
+		// mirroring the alpha/bravo split above
+		...(["opponentOne", "opponentTwo"] as const).map((column) =>
+			tournamentTeamIds.length === 0
+				? []
+				: db
+						.selectFrom("TournamentMatch")
+						.select("TournamentMatch.chatRoomId as id")
+						.where(opponentTeamId(column), "in", tournamentTeamIds)
+						.where(openRoom("TournamentMatch.chatRoomId"))
+						.execute(),
+		),
 		db
 			.selectFrom("TournamentTeamMember")
 			.innerJoin(
@@ -269,6 +268,24 @@ export async function updateRoomExpiresAt(
 		.execute();
 }
 
+/** Sets rooms' expiry, e.g. to wind down league match rooms once their set is decided. */
+export async function updateRoomsExpiresAt(
+	roomIds: Array<number | null>,
+	expiresAt: Date,
+	trx?: Transaction<DB>,
+) {
+	const idsToUpdate = roomIds.filter((id) => id !== null);
+	if (idsToUpdate.length === 0) return;
+
+	const executor = trx ?? db;
+
+	await executor
+		.updateTable("ChatRoom")
+		.set({ expiresAt: dateToDatabaseTimestamp(expiresAt) })
+		.where("ChatRoom.id", "in", idsToUpdate)
+		.execute();
+}
+
 /** Marks rooms' owner activity as concluded, or active again (a reopened tournament match). */
 export async function updateRoomsInactive(
 	roomIds: Array<number | null>,
@@ -287,7 +304,7 @@ export async function updateRoomsInactive(
 		.execute();
 }
 
-/** Deletes rooms and their messages. Called in the owning entity's delete transaction. */
+/** Deletes rooms and their messages. Only for a room its owner replaces: deleting the owner row deletes its room by trigger. */
 export async function deleteRoomsByIds(
 	roomIds: Array<number | null>,
 	trx?: Transaction<DB>,

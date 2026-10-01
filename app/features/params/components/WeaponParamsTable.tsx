@@ -198,7 +198,7 @@ export function WeaponParamsTable({
 												shape="square"
 												icon={<X />}
 												className={styles.hideButton}
-												onPress={() => hideWeapon(weaponId)}
+												onClick={() => hideWeapon(weaponId)}
 												aria-label={t("common:actions.hide")}
 												testId={`hide-weapon-${weaponId}`}
 											/>
@@ -354,7 +354,7 @@ function ComparisonButton({
 				size="miniscule"
 				shape="square"
 				icon={<ChartColumnBig />}
-				onPress={() => onCompare(label, entries)}
+				onClick={() => onCompare(label, entries)}
 				aria-label={t("params:compare.action")}
 				testId="compare-param"
 			/>
@@ -408,7 +408,7 @@ function DamageRateInfoSection({
 		damageMultipliers[String(weaponId)]?.find((m) => m.target === target);
 
 	return (
-		<Fragment>
+		<>
 			<tr>
 				<td
 					colSpan={visibleWeaponIds.length + 1}
@@ -467,7 +467,7 @@ function DamageRateInfoSection({
 					</tr>
 				);
 			})}
-		</Fragment>
+		</>
 	);
 }
 
@@ -498,7 +498,7 @@ function HiddenWeaponsBar({
 					variant="minimal"
 					size="miniscule"
 					className={styles.hiddenBadge}
-					onPress={() => onRestore(weaponId)}
+					onClick={() => onRestore(weaponId)}
 					testId={`restore-weapon-${weaponId}`}
 				>
 					<WeaponParamImage kind={kind} id={weaponId} size={20} />
@@ -511,7 +511,7 @@ function HiddenWeaponsBar({
 			<SendouButton
 				variant="minimal"
 				size="miniscule"
-				onPress={onShowAll}
+				onClick={onShowAll}
 				testId="show-all-weapons"
 			>
 				{t("common:actions.showAll")}

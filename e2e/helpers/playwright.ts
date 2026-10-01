@@ -3,8 +3,8 @@ import {
 	expect,
 	type Locator,
 	type Page,
-	type Response,
 } from "@playwright/test";
+import { format } from "date-fns";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
 import {
 	assertFlushed,
@@ -29,8 +29,20 @@ interface RouterProbe {
 declare global {
 	interface Window {
 		__routerProbe?: RouterProbe;
+		__scrollYAtPress?: number;
 	}
 }
+
+/** `YT.Player` that never readies, so a VoD form behaves as it does before the real one loads. */
+const YOUTUBE_IFRAME_API_STUB = `
+window.YT = {
+	Player: class {
+		getCurrentTime() { return 0; }
+		destroy() {}
+	},
+};
+window.onYouTubeIframeAPIReady?.();
+`;
 
 export const MOBILE_VIEWPORT = { width: 375, height: 667 };
 export const TABLET_VIEWPORT = { width: 768, height: 1024 };
@@ -78,6 +90,18 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 		await context.route(
 			/^https:\/\/fonts\.(googleapis|gstatic)\.com\//,
 			(route) => route.abort(),
+		);
+		// The VoD pages embed a YouTube player, which loads from the internet
+		// (player, ads, telemetry) at a pace of its own. Under load it landed
+		// mid-test, and the frame arriving closed the select being filled in.
+		// A stub player API keeps the pages off the network.
+		await context.route(/^https:\/\/www\.youtube\.com\//, (route) =>
+			new URL(route.request().url()).pathname === "/iframe_api"
+				? route.fulfill({
+						contentType: "text/javascript",
+						body: YOUTUBE_IFRAME_API_STUB,
+					})
+				: route.abort(),
 		);
 		await use(context);
 	},
@@ -132,7 +156,7 @@ export async function selectWeapon({
 	await page.getByTestId(testId).click();
 	await page.getByPlaceholder("Search weapons...").fill(name);
 	await page
-		.getByRole("listbox", { name: "Suggestions" })
+		.getByRole("listbox")
 		.getByTestId(`weapon-select-option-${name}`)
 		.click();
 }
@@ -154,7 +178,10 @@ export async function selectStage({
 			: page.getByTestId(testId);
 	await select.click();
 	await page.getByPlaceholder("Search stages...").fill(name);
-	await page.getByTestId(`stage-select-option-${name}`).click();
+	await page
+		.getByRole("listbox")
+		.getByTestId(`stage-select-option-${name}`)
+		.click();
 }
 
 export async function selectUser({
@@ -173,14 +200,18 @@ export async function selectUser({
 }) {
 	const comboboxButton = (within ?? page).getByLabel(labelName, { exact });
 	const searchInput = page.getByTestId("user-search-input");
-	const option = page.getByTestId("user-search-item").first();
+	const option = page
+		.getByRole("listbox")
+		.getByTestId("user-search-item")
+		.first();
 
 	await expect(comboboxButton).not.toBeDisabled();
 
 	await comboboxButton.click();
 	await searchInput.fill(userName);
-	await expect(option).toBeVisible();
-	await page.keyboard.press("Enter");
+	// clicking rather than pressing Enter: a result is in the DOM one commit
+	// before the effect that registers it and focuses it for Enter has run
+	await option.click();
 }
 
 export async function selectTournament({
@@ -190,7 +221,7 @@ export async function selectTournament({
 	page: Page;
 	query: string;
 }) {
-	const item = page.getByTestId("tournament-search-item");
+	const item = page.getByRole("listbox").getByTestId("tournament-search-item");
 
 	await page.getByRole("button", { name: /Tournament search/i }).click();
 	await page.getByTestId("tournament-search-input").fill(query);
@@ -198,7 +229,17 @@ export async function selectTournament({
 	await item.first().click();
 }
 
-/** Fills a React Aria datetime field's segments, targeting them by the field's label. */
+/** The value a native `datetime-local` input takes for a local `Date`. */
+export function datetimeLocalValue(date: Date) {
+	return format(date, "yyyy-MM-dd'T'HH:mm");
+}
+
+/** The value a native `date` input takes for a local `Date`. */
+export function dateInputValue(date: Date) {
+	return format(date, "yyyy-MM-dd");
+}
+
+/** Fills a native datetime field, targeting it by its label. */
 export async function fillDateTimeField({
 	scope,
 	label,
@@ -208,18 +249,9 @@ export async function fillDateTimeField({
 	label: string;
 	date: Date;
 }) {
-	const fillSegment = (segment: string, value: string) =>
-		scope
-			.getByRole("spinbutton", { name: new RegExp(`^${segment}, ${label}`) })
-			.fill(value);
-
-	const hours = date.getHours();
-	await fillSegment("year", String(date.getFullYear()));
-	await fillSegment("month", String(date.getMonth() + 1));
-	await fillSegment("day", String(date.getDate()));
-	await fillSegment("hour", String(hours % 12 || 12));
-	await fillSegment("minute", String(date.getMinutes()).padStart(2, "0"));
-	await fillSegment("AM/PM", hours >= 12 ? "PM" : "AM");
+	await scope
+		.getByLabel(new RegExp(`^${label} *\\*?$`))
+		.fill(datetimeLocalValue(date));
 }
 
 /** page.goto that waits for the page to be hydrated before proceeding */
@@ -234,7 +266,36 @@ export async function navigate({ page, url }: { page: Page; url: string }) {
 	}
 	// domcontentloaded: module scripts have run by then and the hydration wait covers the rest
 	await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-	await expectIsHydrated(page);
+	if (await scriptsRan(page)) {
+		await expectIsHydrated(page);
+	}
+}
+
+/** Whether the page's scripts execute, which a `javaScriptEnabled: false` test has turned off. */
+function scriptsRan(page: Page) {
+	return page.evaluate(() => "__reactRouterContext" in window);
+}
+
+/**
+ * Holds back the page's scripts so that the server rendered DOM can be interacted
+ * with the way a user beating hydration to it does. The returned function lets
+ * them through, after which the page hydrates as usual.
+ */
+export async function holdScripts(page: Page) {
+	const waiting: Array<() => void> = [];
+	let holding = true;
+
+	await page.route(/\/assets\/.*\.js/, async (route) => {
+		if (holding) {
+			await new Promise<void>((resolve) => waiting.push(resolve));
+		}
+		await route.continue();
+	});
+
+	return () => {
+		holding = false;
+		for (const release of waiting) release();
+	};
 }
 
 /** Waits and expects the page to be hydrated (click handlers etc. ready for testing) */
@@ -316,12 +377,13 @@ async function retryPost(
 }
 
 /** Clicks a submit button and waits for the POST it fires. Takes a locator when
- * the test id alone is ambiguous, e.g. one button per card on a list page. */
+ * the test id alone is ambiguous, e.g. one button per card on a list page.
+ * Buttons inside closed dialogs (rendered but hidden) are skipped. */
 export async function submit(page: Page, target?: string | Locator) {
 	const button =
 		typeof target === "object"
 			? target
-			: page.getByTestId(target ?? "submit-button");
+			: page.getByTestId(target ?? "submit-button").filter({ visible: true });
 
 	await waitForPOSTResponse(page, async () => {
 		await button.click();
@@ -332,39 +394,29 @@ export async function submit(page: Page, target?: string | Locator) {
 	// page twice. Waiting on the rendered search rather than the browser's URL
 	// covers the commit those remounts land in, which trails the history entry
 	// — otherwise the second remount tears down whatever the test opens next.
-	await page.waitForSelector(
-		'[data-testid="hydrated"]:not([data-location-search*="__success"]):not([data-location-search*="__error"])',
-		{ state: "attached", timeout: 5_000 },
-	);
+	await page
+		.locator(
+			'[data-testid="hydrated"]:not([data-location-search*="__success"]):not([data-location-search*="__error"])',
+		)
+		.waitFor({ state: "attached", timeout: 5_000 });
 }
 
 export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
 	await flushIfDirty(page);
 
-	const MAX_ATTEMPTS = 3;
-	const PER_ATTEMPT_TIMEOUT = 10_000;
+	// A submission aborts in-flight fetcher loads (e.g. UserSearch's initial user) to rerun them
+	// later, but if the action redirects off their route React Router never does and they stay
+	// "loading" forever. The probe below also can't see an already busy router turn busy.
+	await expectRouterIdle(page);
 
 	await armRouterProbe(page);
 
-	// React Aria buttons fire their handler on press end. Occasionally a click
-	// registers the press start (the button goes `:active`) but the press never
-	// completes into a submit, so no POST fires — e.g. when a re-render lands
-	// mid-press. Re-issue the action when the expected POST doesn't arrive
-	// within the per-attempt window.
-	let response: Response | undefined;
-	for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-		const responsePromise = page.waitForResponse(
-			(res) => res.request().method() === "POST" && isDataRequest(res.url()),
-			{ timeout: PER_ATTEMPT_TIMEOUT },
-		);
-		await cb();
-		try {
-			response = await responsePromise;
-			break;
-		} catch (error) {
-			if (attempt === MAX_ATTEMPTS) throw error;
-		}
-	}
+	const responsePromise = page.waitForResponse(
+		(res) => res.request().method() === "POST" && isDataRequest(res.url()),
+		{ timeout: 10_000 },
+	);
+	await cb();
+	const response = await responsePromise;
 
 	// React commits the submission before the POST leaves the browser, but on a
 	// loaded machine it can lag behind the response; without waiting for it the
@@ -388,7 +440,7 @@ export async function waitForPOSTResponse(page: Page, cb: () => Promise<void>) {
 	// revalidation on navigation (e.g. to.$id) then keep the stale data.
 	await expectRouterIdle(page);
 
-	return response!;
+	return response;
 }
 
 function isDataRequest(url: string) {
@@ -430,10 +482,9 @@ async function expectRouterIdle(page: Page) {
 	// A submit's redirect plus the target page's loaders can exceed the default
 	// expect timeout when the full suite is loading all workers.
 	try {
-		await page.waitForSelector(
-			'[data-testid="hydrated"][data-router-idle="true"]',
-			{ state: "attached", timeout: 15_000 },
-		);
+		await page
+			.locator('[data-testid="hydrated"][data-router-idle="true"]')
+			.waitFor({ state: "attached", timeout: 15_000 });
 	} catch (error) {
 		// data-router-busy names what is still in flight, which the attribute
 		// assertion's own message does not
@@ -447,6 +498,66 @@ async function expectRouterIdle(page: Page) {
 			{ cause: error },
 		);
 	}
+}
+
+/** dnd-kit stops every click in the document for this long after a drop (`PointerSensor.detach`). */
+const DND_KIT_CLICK_SUPPRESSION_MS = 50;
+
+/** Waits out dnd-kit's post-drop click suppression, which nothing observable marks the end of. Call after the `mouse.up()` of a drag. */
+export async function waitForDropToSettle(page: Page) {
+	// biome-ignore lint/nursery/noPlaywrightWaitForTimeout: the suppression window has no observable end
+	await page.waitForTimeout(2 * DND_KIT_CLICK_SUPPRESSION_MS);
+}
+
+/** Drags `from` onto the center of `to` with a dnd-kit compatible stepped pointer move, then waits for the drop to settle. */
+export async function dragAndDrop(
+	page: Page,
+	{ from, to }: { from: Locator; to: Locator },
+) {
+	await from.hover();
+	await page.mouse.down();
+
+	const targetBox = await to.boundingBox();
+	if (!targetBox) {
+		throw new Error("The drop target has no bounding box");
+	}
+	// the drag & drop library only registers the drop when moved in steps
+	await page.mouse.move(
+		targetBox.x + targetBox.width / 2,
+		targetBox.y + targetBox.height / 2,
+		{ steps: 10 },
+	);
+	await page.mouse.up();
+
+	await waitForDropToSettle(page);
+}
+
+/**
+ * The scroll position the page was at when it was last pressed, for asserting that
+ * an action did not move the viewer. Playwright scrolls a click target into view
+ * itself, and a retried click force-scrolls it again, so a reading taken before the
+ * press can be stale by the time the press lands.
+ */
+export async function trackScrollYAtPress(page: Page) {
+	await page.evaluate(() => {
+		window.__scrollYAtPress = undefined;
+		document.addEventListener(
+			"pointerdown",
+			() => {
+				window.__scrollYAtPress = window.scrollY;
+			},
+			{ capture: true },
+		);
+	});
+
+	return async () => {
+		const scrollY = await page.evaluate(() => window.__scrollYAtPress);
+		if (typeof scrollY !== "number") {
+			throw new Error("The page was never pressed");
+		}
+
+		return scrollY;
+	};
 }
 
 /** Asserts the page rendered rather than the error boundary catching something. */

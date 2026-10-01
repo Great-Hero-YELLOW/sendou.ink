@@ -22,7 +22,7 @@ import {
 	TORPEDO_ID,
 	ZIPCASTER_ID,
 } from "~/modules/in-game-lists/weapon-ids";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { cutToNDecimalPlaces, roundToNDecimalPlaces } from "~/utils/number";
 import { assertUnreachable } from "~/utils/types";
 import {
@@ -117,14 +117,20 @@ export function buildStats({
 			damages: damages(input),
 			specialWeaponDamages: specialWeaponDamages(input),
 			subWeaponDefenseDamages: subWeaponDefenseDamages(input),
-			mainWeaponWhiteInkSeconds:
-				typeof mainWeaponParams.InkRecoverStop === "number"
-					? framesToSeconds(mainWeaponParams.InkRecoverStop)
-					: undefined,
+			mainWeaponWhiteInkSeconds: optionalFramesToSeconds(
+				mainWeaponParams.InkRecoverStop,
+			),
+			mainWeaponWhiteInkSecondsHorizontalSwing: optionalFramesToSeconds(
+				mainWeaponParams.InkRecoverStop_WeaponWideSwingParam,
+			),
+			mainWeaponWhiteInkSecondsVerticalSwing: optionalFramesToSeconds(
+				mainWeaponParams.InkRecoverStop_WeaponVerticalSwingParam,
+			),
 			subWeaponWhiteInkSeconds: framesToSeconds(subWeaponParams.InkRecoverStop),
 			subWeaponInkConsumptionPercentage:
 				subWeaponInkConsumptionPercentage(input),
 			...mainWeaponInkConsumptionPercentages(input),
+			mainWeaponRollSeconds: mainWeaponRollSeconds(input),
 			squidFormInkRecoverySeconds: squidFormInkRecoverySeconds(input),
 			humanoidFormInkRecoverySeconds: humanoidFormInkRecoverySeconds(input),
 			runSpeed: runSpeed(input),
@@ -141,6 +147,7 @@ export function buildStats({
 			swimSpeed: swimSpeed(input),
 			swimSpeedHoldingRainmaker: swimSpeedHoldingRainmaker(input),
 			runSpeedInEnemyInk: runSpeedInEnemyInk(input),
+			jumpHeightInEnemyInk: jumpHeightInEnemyInk(input),
 			damageTakenInEnemyInkPerSecond: damageTakenInEnemyInkPerSecond(input),
 			enemyInkDamageLimit: enemyInkDamageLimit(input),
 			framesBeforeTakingDamageInEnemyInk:
@@ -154,6 +161,7 @@ export function buildStats({
 			shotAutofireSpreadAir: shotAutofireSpreadAir(input),
 			shotAutofireSpreadGround: mainWeaponParams.Variable_Stand_DegSwerve,
 			squidSurgeChargeFrames: squidSurgeChargeFrames(input),
+			squidRollSpeedRetained: squidRollSpeedRetained(input),
 			subDefPointSensorMarkedTimeInSeconds:
 				subDefPointSensorMarkedTimeInSeconds(input),
 			subDefInkMineMarkedTimeInSeconds: subDefInkMineMarkedTimeInSeconds(input),
@@ -201,7 +209,7 @@ function specialPoint({
 
 	const { effect } = abilityPointsToEffects({
 		abilityPoints: apFromMap({
-			abilityPoints: abilityPoints,
+			abilityPoints,
 			ability: SPECIAL_POINT_ABILITY,
 		}),
 		key: "IncreaseRt_Special",
@@ -247,12 +255,12 @@ function specialLost(
 		? OWN_RESPAWN_PUNISHER_EXTRA_SPECIAL_LOST
 		: 0;
 
-	const specialSavedAfterDeathForDisplay = (effect: number) =>
-		Number(((1.0 - effect) * 100).toFixed(2));
+	const specialSavedAfterDeathForDisplay = (ratio: number) =>
+		Number(((1.0 - ratio) * 100).toFixed(2));
 
 	const { baseEffect, effect } = abilityPointsToEffects({
 		abilityPoints: apFromMap({
-			abilityPoints: abilityPoints,
+			abilityPoints,
 			ability: SPECIAL_SAVED_AFTER_DEATH_ABILITY,
 		}),
 		key: "SpecialGaugeRt_Restart",
@@ -313,11 +321,10 @@ export function fullInkTankOptions(
 				id: nanoid(),
 				subsUsed: subsFromFullInkTank,
 				type,
-				value: effectToRounded(
+				value: cutToNDecimalPlaces(
 					(inkTankSize(args.weaponSplId) -
 						subWeaponInkConsume * subsFromFullInkTank) /
 						mainWeaponInkConsume,
-					2,
 				),
 			});
 		}
@@ -388,6 +395,34 @@ function mainWeaponInkConsumptionPercentages(
 	return result;
 }
 
+function mainWeaponRollSeconds({
+	mainWeaponParams,
+	abilityPoints,
+	weaponSplId,
+}: StatFunctionInput): AnalyzedBuild["stats"]["mainWeaponRollSeconds"] {
+	const inkConsumePerFrame =
+		mainWeaponParams.InkConsumeMaxPerFrame_WeaponRollParam;
+	if (typeof inkConsumePerFrame !== "number") return;
+
+	const { baseEffect, effect } = abilityPointsToEffects({
+		abilityPoints: apFromMap({
+			abilityPoints,
+			ability: "ISM",
+		}),
+		key: "ConsumeRt_Main",
+		weapon: mainWeaponParams,
+	});
+
+	const rollFrames = (consumeRate: number) =>
+		inkTankSize(weaponSplId) / (inkConsumePerFrame * consumeRate);
+
+	return {
+		baseValue: framesToSeconds(rollFrames(baseEffect)),
+		value: framesToSeconds(rollFrames(effect)),
+		modifiedBy: "ISM",
+	};
+}
+
 function mainWeaponInkConsumeByType({
 	mainWeaponParams,
 	abilityPoints,
@@ -427,6 +462,8 @@ function inkConsumeTypeToParamsKeys(
 			return ["InkConsume_SwingParam", "InkConsume_WeaponSwingParam"];
 		case "SLOSH":
 			return ["InkConsumeSlosher"];
+		case "SECONDARY_MODE":
+			return ["InkConsumeVariable"];
 		case "TAP_SHOT":
 			return ["InkConsumeMinCharge"];
 		case "FULL_CHARGE":
@@ -469,6 +506,7 @@ const damageTypeToParamsKey: Record<
 	DIRECT_SECONDARY_MIN: "DamageParam_Secondary_ValueDirectMin",
 	DIRECT_SECONDARY_MAX: "DamageParam_Secondary_ValueDirectMax",
 	DISTANCE: ["BlastParam_DistanceDamage", "DistanceDamage_BlastParamArray"],
+	DISTANCE_JUMP: "BlastJumpParam_DistanceDamage",
 	SPLASH: ["BlastParam_SplashDamage", "DistanceDamage_SplashBlastParam"],
 	SPLASH_MIN: "SwingUnitGroupParam_DamageParam_DamageMinValue",
 	SPLASH_MAX: "SwingUnitGroupParam_DamageParam_DamageMaxValue",
@@ -489,6 +527,7 @@ const damageTypeToParamsKey: Record<
 	WAVE: "WaveDamage",
 	SPECIAL_MAX_CHARGE: "ExhaleBlastParamMaxChargeDistanceDamage",
 	SPECIAL_MIN_CHARGE: "ExhaleBlastParamMinChargeDistanceDamage",
+	SPECIAL_INHALE: "InhaleDamage",
 	SPECIAL_SWING: "SwingDamage",
 	SPECIAL_THROW: "ThrowDamage",
 	SPECIAL_THROW_DIRECT: "ThrowDirectDamage",
@@ -698,12 +737,12 @@ function subWeaponDefenseDamages(
 								distance: [
 									Math.min(
 										...secondHalfValues.map(
-											(value) => value.distance as number,
+											(halfValue) => halfValue.distance as number,
 										),
 									),
 									Math.max(
 										...secondHalfValues.map(
-											(value) => value.distance as number,
+											(halfValue) => halfValue.distance as number,
 										),
 									),
 								],
@@ -716,10 +755,14 @@ function subWeaponDefenseDamages(
 								subWeaponId: id,
 								distance: [
 									Math.min(
-										...firstHalfValues.map((value) => value.distance as number),
+										...firstHalfValues.map(
+											(halfValue) => halfValue.distance as number,
+										),
 									),
 									Math.max(
-										...firstHalfValues.map((value) => value.distance as number),
+										...firstHalfValues.map(
+											(halfValue) => halfValue.distance as number,
+										),
 									),
 								],
 								baseValue: firstHalfValues[0].baseValue,
@@ -809,6 +852,8 @@ export function subWeaponDamageValue({
 
 const framesToSeconds = (frames: number) =>
 	effectToRounded(Math.ceil(frames) / 60);
+const optionalFramesToSeconds = (frames: number | undefined) =>
+	typeof frames === "number" ? framesToSeconds(frames) : undefined;
 function squidFormInkRecoverySeconds(
 	args: StatFunctionInput,
 ): AnalyzedBuild["stats"]["squidFormInkRecoverySeconds"] {
@@ -890,6 +935,26 @@ function runSpeedInEnemyInk(
 		baseValue: effectToRounded(baseEffect * 10),
 		value: effectToRounded(effect * 10),
 		modifiedBy: RUN_SPEED_IN_ENEMY_INK_ABILITY,
+	};
+}
+
+function jumpHeightInEnemyInk(
+	args: StatFunctionInput,
+): AnalyzedBuild["stats"]["jumpHeightInEnemyInk"] {
+	const JUMP_HEIGHT_IN_ENEMY_INK_ABILITY = "RES";
+	const { baseEffect, effect } = abilityPointsToEffects({
+		abilityPoints: apFromMap({
+			abilityPoints: args.abilityPoints,
+			ability: JUMP_HEIGHT_IN_ENEMY_INK_ABILITY,
+		}),
+		key: "OpInk_JumpVel",
+		weapon: args.mainWeaponParams,
+	});
+
+	return {
+		baseValue: effectToRounded(baseEffect * 10),
+		value: effectToRounded(effect * 10),
+		modifiedBy: JUMP_HEIGHT_IN_ENEMY_INK_ABILITY,
 	};
 }
 
@@ -1177,6 +1242,26 @@ function squidSurgeChargeFrames(
 	};
 }
 
+function squidRollSpeedRetained(
+	args: StatFunctionInput,
+): AnalyzedBuild["stats"]["squidRollSpeedRetained"] {
+	const SQUID_ROLL_SPEED_RETAINED_ABILITY = "IA";
+	const { baseEffect, effect } = abilityPointsToEffects({
+		abilityPoints: apFromMap({
+			abilityPoints: args.abilityPoints,
+			ability: SQUID_ROLL_SPEED_RETAINED_ABILITY,
+		}),
+		key: "Somersault_MoveVelKd",
+		weapon: args.mainWeaponParams,
+	});
+
+	return {
+		baseValue: effectToRounded(baseEffect * 100, 1),
+		value: effectToRounded(effect * 100, 1),
+		modifiedBy: SQUID_ROLL_SPEED_RETAINED_ABILITY,
+	};
+}
+
 function damageTakenInEnemyInkPerSecond(
 	args: StatFunctionInput,
 ): AnalyzedBuild["stats"]["damageTakenInEnemyInkPerSecond"] {
@@ -1294,16 +1379,16 @@ export function subStats(
 			weapon: args.subWeaponParams,
 		});
 
-		const toValue = (effect: number) => {
+		const toValue = (rawEffect: number) => {
 			switch (type) {
 				case "NO_CHANGE":
-					return roundToNDecimalPlaces(effect);
+					return roundToNDecimalPlaces(rawEffect);
 				case "SUB_VELOCITY":
-					return roundToNDecimalPlaces(effect, 3);
+					return roundToNDecimalPlaces(rawEffect, 3);
 				case "HP":
-					return roundToNDecimalPlaces(hpDivided(effect), 1);
+					return roundToNDecimalPlaces(hpDivided(rawEffect), 1);
 				case "TIME":
-					return framesToSeconds(effect);
+					return framesToSeconds(rawEffect);
 				default:
 					assertUnreachable(type);
 			}

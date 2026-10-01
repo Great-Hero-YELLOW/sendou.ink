@@ -361,6 +361,16 @@ export const weaponParams = {
 					Distance: 2.035,
 				},
 			],
+			BlastJumpParam_DistanceDamage: [
+				{
+					Damage: 700,
+					Distance: 0.975,
+				},
+				{
+					Damage: 500,
+					Distance: 3.635,
+				},
+			],
 			Jump_DegSwerve: 8,
 			Stand_DegSwerve: 0,
 			InkRecoverStop: 60,
@@ -407,6 +417,7 @@ export const weaponParams = {
 			Range_FreeGravity: 0.016,
 			Range_ZRate: 2,
 			MoveSpeed: 0.066,
+			MoveSpeedVariable: 0.072,
 			DamageParam_ValueMax: 380,
 			DamageParam_ValueMin: 190,
 			Variable_Damage_ValueMax: 300,
@@ -416,6 +427,7 @@ export const weaponParams = {
 			Variable_Jump_DegSwerve: 13,
 			Variable_Stand_DegSwerve: 8,
 			InkConsume: 0.024,
+			InkConsumeVariable: 0.0108,
 		},
 		"1000": {
 			Range_SpawnSpeed: 1.5166,
@@ -429,7 +441,10 @@ export const weaponParams = {
 			VerticalSwingUnitGroupParam_DamageParam_DamageMaxValue: 1200,
 			WideSwingUnitGroupParam_DamageParam_DamageMinValue: 250,
 			WideSwingUnitGroupParam_DamageParam_DamageMaxValue: 1000,
+			InkRecoverStop_WeaponVerticalSwingParam: 45,
+			InkRecoverStop_WeaponWideSwingParam: 40,
 			InkConsume_WeaponSwingParam: 0.0396,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.001,
 		},
 		"1010": {
 			Range_SpawnSpeed: 1.8338,
@@ -442,7 +457,10 @@ export const weaponParams = {
 			VerticalSwingUnitGroupParam_DamageParam_DamageMaxValue: 1500,
 			WideSwingUnitGroupParam_DamageParam_DamageMinValue: 350,
 			WideSwingUnitGroupParam_DamageParam_DamageMaxValue: 1500,
+			InkRecoverStop_WeaponVerticalSwingParam: 58,
+			InkRecoverStop_WeaponWideSwingParam: 43,
 			InkConsume_WeaponSwingParam: 0.085,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.001,
 		},
 		"1020": {
 			Range_SpawnSpeed: 2.0289,
@@ -456,7 +474,10 @@ export const weaponParams = {
 			VerticalSwingUnitGroupParam_DamageParam_DamageMaxValue: 1800,
 			WideSwingUnitGroupParam_DamageParam_DamageMinValue: 400,
 			WideSwingUnitGroupParam_DamageParam_DamageMaxValue: 1800,
+			InkRecoverStop_WeaponVerticalSwingParam: 70,
+			InkRecoverStop_WeaponWideSwingParam: 55,
 			InkConsume_WeaponSwingParam: 0.21,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.001,
 		},
 		"1030": {
 			Range_SpawnSpeed: 1.7026,
@@ -469,8 +490,11 @@ export const weaponParams = {
 			VerticalSwingUnitGroupParam_DamageParam_DamageMaxValue: 1500,
 			WideSwingUnitGroupParam_DamageParam_DamageMinValue: 300,
 			WideSwingUnitGroupParam_DamageParam_DamageMaxValue: 1500,
+			InkRecoverStop_WeaponVerticalSwingParam: 65,
+			InkRecoverStop_WeaponWideSwingParam: 45,
 			InkConsume_WeaponVerticalSwingParam: 0.12,
 			InkConsume_WeaponWideSwingParam: 0.08,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.001,
 		},
 		"1040": {
 			Range_SpawnSpeed: 2.2749,
@@ -483,7 +507,10 @@ export const weaponParams = {
 			VerticalSwingUnitGroupParam_DamageParam_DamageMaxValue: 1200,
 			WideSwingUnitGroupParam_DamageParam_DamageMinValue: 400,
 			WideSwingUnitGroupParam_DamageParam_DamageMaxValue: 700,
+			InkRecoverStop_WeaponVerticalSwingParam: 50,
+			InkRecoverStop_WeaponWideSwingParam: 45,
 			InkConsume_WeaponSwingParam: 0.09,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.0005,
 		},
 		"1100": {
 			Range_SpawnSpeed: 0.72,
@@ -493,7 +520,9 @@ export const weaponParams = {
 			BodyParam_Damage: 200,
 			SwingUnitGroupParam_DamageParam_DamageMinValue: 150,
 			SwingUnitGroupParam_DamageParam_DamageMaxValue: 300,
+			InkRecoverStop: 30,
 			InkConsume_WeaponSwingParam: 0.02,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.00125,
 		},
 		"1110": {
 			Range_SpawnSpeed: 0.84,
@@ -502,7 +531,9 @@ export const weaponParams = {
 			BodyParam_Damage: 250,
 			SwingUnitGroupParam_DamageParam_DamageMinValue: 200,
 			SwingUnitGroupParam_DamageParam_DamageMaxValue: 400,
+			InkRecoverStop: 30,
 			InkConsume_WeaponSwingParam: 0.027,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.0015,
 		},
 		"1120": {
 			Range_SpawnSpeed: 1.05,
@@ -511,7 +542,9 @@ export const weaponParams = {
 			BodyParam_Damage: 300,
 			SwingUnitGroupParam_DamageParam_DamageMinValue: 310,
 			SwingUnitGroupParam_DamageParam_DamageMaxValue: 600,
+			InkRecoverStop: 50,
 			InkConsume_WeaponSwingParam: 0.048,
+			InkConsumeMaxPerFrame_WeaponRollParam: 0.0018,
 		},
 		"2000": {
 			DistanceFullCharge: 16.765,
@@ -963,6 +996,7 @@ export const weaponParams = {
 			MoveSpeed: 0.05,
 			DamageParam_ValueMax: 1190,
 			CanopyHP: 7000,
+			InkRecoverStop: 70,
 			InkConsumeUmbrella_WeaponShelterCanopyParam: 0.23,
 			InkConsume_WeaponShelterShotgunParam: 0.11,
 		},
@@ -975,6 +1009,7 @@ export const weaponParams = {
 			MoveSpeed: 0.072,
 			DamageParam_ValueMax: 400,
 			CanopyHP: 2000,
+			InkRecoverStop: 40,
 			InkConsume_WeaponShelterShotgunParam: 0.037,
 		},
 		"6030": {
@@ -985,6 +1020,7 @@ export const weaponParams = {
 			MoveSpeed: 0.058,
 			DamageParam_ValueMax: 900,
 			CanopyHP: 1500,
+			InkRecoverStop: 50,
 			InkConsumeUmbrella_WeaponShelterCanopyParam: 0.15,
 			InkConsume_WeaponShelterShotgunParam: 0.06,
 		},
@@ -1063,6 +1099,7 @@ export const weaponParams = {
 			DamageParam_SplatanaVertical: 700,
 			DamageParam_SplatanaHorizontalDirect: 550,
 			DamageParam_SplatanaHorizontal: 350,
+			InkRecoverStop: 40,
 			InkConsume_SwingParam: 0.052,
 			InkConsumeFullCharge_ChargeParam: 0.117,
 		},
@@ -1080,6 +1117,7 @@ export const weaponParams = {
 			DamageParam_SplatanaVertical: 600,
 			DamageParam_SplatanaHorizontalDirect: 450,
 			DamageParam_SplatanaHorizontal: 300,
+			InkRecoverStop: 30,
 			InkConsume_SwingParam: 0.03,
 			InkConsumeFullCharge_ChargeParam: 0.06,
 		},
@@ -1096,6 +1134,7 @@ export const weaponParams = {
 			DamageParam_SplatanaVertical: 800,
 			DamageParam_SplatanaHorizontalDirect: 700,
 			DamageParam_SplatanaHorizontal: 400,
+			InkRecoverStop: 50,
 			InkConsume_SwingParam: 0.065,
 			InkConsumeFullCharge_ChargeParam: 0.13,
 		},
@@ -2370,6 +2409,11 @@ export const weaponParams = {
 		},
 		"4": {
 			overwrites: {
+				PaintRadius: {
+					High: 3.78,
+					Low: 3.15,
+					Mid: 3.465,
+				},
 				TargetInCircleRadius: {
 					High: 240,
 					Low: 140,
@@ -2460,6 +2504,7 @@ export const weaponParams = {
 					Distance: 11,
 				},
 			],
+			InhaleDamage: 20,
 		},
 		"9": {
 			overwrites: {
@@ -2473,6 +2518,11 @@ export const weaponParams = {
 		},
 		"10": {
 			overwrites: {
+				PaintRadius: {
+					High: 4.7,
+					Mid: 4.265000000000001,
+					Low: 3.83,
+				},
 				DistanceDamageDistanceRate: {
 					High: 1.3,
 					Low: 1,
@@ -2492,11 +2542,6 @@ export const weaponParams = {
 					High: 510,
 					Low: 450,
 					Mid: 480,
-				},
-				PaintRadius: {
-					High: 3.9000000000000004,
-					Mid: 3.865,
-					Low: 3.83,
 				},
 			},
 			DistanceDamage: [
@@ -2631,6 +2676,11 @@ export const weaponParams = {
 		},
 		"16": {
 			overwrites: {
+				PaintRadius: {
+					High: 4.1,
+					Low: 3.5,
+					Mid: 3.8,
+				},
 				CrossPaintCheckLength: {
 					High: 3,
 					Low: 2.5,

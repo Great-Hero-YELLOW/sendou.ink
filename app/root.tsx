@@ -2,15 +2,9 @@ import clsx from "clsx";
 import generalI18next from "i18next";
 import NProgress from "nprogress";
 import * as React from "react";
-import { useEffect } from "react";
-import { I18nProvider, RouterProvider } from "react-aria-components";
 import { ErrorBoundary as ClientErrorBoundary } from "react-error-boundary";
 import { useTranslation } from "react-i18next";
-import type {
-	LoaderFunctionArgs,
-	MetaFunction,
-	NavigateOptions,
-} from "react-router";
+import type { LoaderFunctionArgs, MetaFunction } from "react-router";
 import {
 	data,
 	Links,
@@ -20,7 +14,6 @@ import {
 	ScrollRestoration,
 	type ShouldRevalidateFunction,
 	useFetchers,
-	useHref,
 	useLoaderData,
 	useLocation,
 	useMatches,
@@ -33,6 +26,7 @@ import { Config } from "~/config";
 import type { CustomTheme } from "~/db/tables-json";
 import { resolveLayoutData } from "~/features/layout/core/layout.server";
 import { useDebounce } from "~/hooks/useDebounce";
+import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
 import lexendLatinUrl from "~/styles/fonts/lexend-latin.woff2?url";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import type { Route } from "./+types/root";
@@ -43,7 +37,9 @@ import { Layout, NPROGRESS_ANCHOR_ID } from "./components/layout";
 import { getUser } from "./features/auth/core/user.server";
 import { userMiddleware } from "./features/auth/core/user-middleware.server";
 import { ChatProvider } from "./features/chat/ChatProvider";
+import { resolveRoomList } from "./features/chat/chat-room-list.server";
 import { isMatchResultsScopedRevalidation } from "./features/chat/revalidation-scope";
+import { GlobalStatusProvider } from "./features/global-status/GlobalStatusProvider";
 import { getSidenavSession } from "./features/layout/core/sidenav-session.server";
 import { LayoutDataProvider } from "./features/layout/LayoutDataProvider";
 import { NotificationsProvider } from "./features/notifications/NotificationsProvider";
@@ -58,7 +54,6 @@ import {
 import { getThemeSession } from "./features/theme/core/theme-session.server";
 import { timezoneMiddleware } from "./features/timezone/timezone-middleware.server";
 import { UnsavedChangesGuard } from "./form/UnsavedChangesGuard";
-import { useUserIntlPreference } from "./hooks/intl/useUserIntlPreference";
 import { useHydrated } from "./hooks/useHydrated";
 import {
 	ALWAYS_LOADED_NAMESPACES,
@@ -79,6 +74,17 @@ import { allI18nNamespaces } from "./utils/i18n";
 import { isRevalidation, metaTags, type SerializeFrom } from "./utils/remix";
 import { requestContextMiddleware } from "./utils/request-context-middleware.server";
 import { APP_ICON_URL, pwaSplashScreenImageUrl } from "./utils/urls";
+import "~/styles/fonts.css";
+import "~/styles/vars.css";
+import "~/styles/normalize.css";
+import "~/styles/common.css";
+import "~/styles/utils.css";
+import "~/styles/flags.css";
+import "nprogress/nprogress.css";
+import {
+	OpenModalsContext,
+	useHoverCursorForViewTransitions,
+} from "~/utils/view-transition";
 
 const PRELOAD_TRANSLATION_TIMEOUT_MS = 3000;
 
@@ -90,14 +96,6 @@ export const middleware: Route.MiddlewareFunction[] = [
 	i18nMiddleware,
 	timezoneMiddleware,
 ];
-
-import "~/styles/fonts.css";
-import "~/styles/vars.css";
-import "~/styles/normalize.css";
-import "~/styles/common.css";
-import "~/styles/utils.css";
-import "~/styles/flags.css";
-import "nprogress/nprogress.css";
 
 // anchors the loading bar to the header (between the sidebars); at module scope so
 // even the very first navigation's NProgress.start doesn't render over the sidebar
@@ -152,6 +150,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 	return data(
 		{
 			locale,
+			chatRoomList: user ? await resolveRoomList(user) : [],
 			i18nPreloadUrls: localePreloadUrls(locale),
 			theme: themeSession.getTheme(),
 			sidenavCollapsed: sidenavSession.getCollapsed(),
@@ -170,6 +169,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 						plusTier: user.plusTier,
 						roles: user.roles,
 						createdAt: user.createdAt,
+						team: user.team,
 					}
 				: undefined,
 			customTheme: isSupporter(user) ? user?.customTheme : undefined,
@@ -188,26 +188,25 @@ export const handle: SendouRouteHandle = {
 
 function Document({
 	children,
-	data,
+	data: rootData,
 }: {
 	children: React.ReactNode;
 	data?: RootLoaderData;
 }) {
 	const { htmlThemeClass } = useTheme();
 	const { i18n } = useTranslation();
-	const { language } = useUserIntlPreference();
-	const navigate = useNavigate();
-	const locale = data?.locale ?? DEFAULT_LANGUAGE;
+	const locale = rootData?.locale ?? DEFAULT_LANGUAGE;
 	const customThemeStyle = useCustomThemeVars();
 
 	useChangeLanguage(locale);
 	usePreloadTranslation();
 	useLoadingIndicator();
 	useTriggerToasts();
+	useHoverCursorForViewTransitions();
 
 	const htmlStyle: Record<string, string | number> = {
 		...Object.fromEntries(customThemeStyle),
-		...(data?.user?.roles.includes("MINOR_SUPPORT")
+		...(rootData?.user?.roles.includes("MINOR_SUPPORT")
 			? { "--layout-fuse-bottom-height": "0px" }
 			: {}),
 	};
@@ -219,7 +218,7 @@ function Document({
 			className={clsx(htmlThemeClass, "scrollbar")}
 			style={htmlStyle}
 			data-fuse={
-				Config.fuseEnabled && !data?.user?.roles.includes("MINOR_SUPPORT")
+				Config.fuseEnabled && !rootData?.user?.roles.includes("MINOR_SUPPORT")
 					? "true"
 					: undefined
 			}
@@ -229,8 +228,8 @@ function Document({
 				<meta charSet="utf-8" />
 				{Config.fuseEnabled &&
 				// check for data so supporters don't see ads on error page
-				data &&
-				!data.user?.roles.includes("MINOR_SUPPORT") ? (
+				rootData &&
+				!rootData.user?.roles.includes("MINOR_SUPPORT") ? (
 					<script
 						async
 						src="https://cdn.fuseplatform.net/publift/tags/2/4242/fuse.js"
@@ -249,7 +248,7 @@ function Document({
 				<meta name="theme-color" content="#010115" />
 				<Meta />
 				<Links />
-				{data?.i18nPreloadUrls?.map((url) => (
+				{rootData?.i18nPreloadUrls?.map((url) => (
 					<link
 						key={url}
 						rel="preload"
@@ -259,31 +258,32 @@ function Document({
 					/>
 				))}
 				<ThemeHead />
-				{data?.devFaviconColors ? (
-					<DevFavicon colors={data.devFaviconColors} />
+				{rootData?.devFaviconColors ? (
+					<DevFavicon colors={rootData.devFaviconColors} />
 				) : null}
 				<link rel="manifest" href="/app.webmanifest" />
 				<PWALinks />
 				<Fonts />
 			</head>
 			<body>
-				{IS_E2E_TEST_RUN && <HydrationTestIndicator />}
+				{IS_E2E_TEST_RUN ? <HydrationTestIndicator /> : null}
 				<React.StrictMode>
 					<SearchParamsProvider>
-						<RouterProvider navigate={navigate} useHref={useExternalAwareHref}>
-							<I18nProvider locale={language}>
-								<SendouToastRegion />
-								<UnsavedChangesGuard />
-								<MyFuse data={data} />
-								<ChatProvider user={data?.user}>
-									<NotificationsProvider user={data?.user}>
-										<LayoutDataProvider data={data}>
-											<Layout data={data}>{children}</Layout>
-										</LayoutDataProvider>
-									</NotificationsProvider>
-								</ChatProvider>
-							</I18nProvider>
-						</RouterProvider>
+						<SendouToastRegion />
+						<UnsavedChangesGuard />
+						<MyFuse data={rootData} />
+						<ChatProvider
+							user={rootData?.user}
+							roomList={rootData?.chatRoomList}
+						>
+							<NotificationsProvider user={rootData?.user}>
+								<LayoutDataProvider data={rootData}>
+									<GlobalStatusProvider user={rootData?.user}>
+										<Layout data={rootData}>{children}</Layout>
+									</GlobalStatusProvider>
+								</LayoutDataProvider>
+							</NotificationsProvider>
+						</ChatProvider>
 					</SearchParamsProvider>
 				</React.StrictMode>
 				<ScrollRestoration />
@@ -293,24 +293,18 @@ function Document({
 	);
 }
 
-const ABSOLUTE_URL_REGEX = /^[a-z][a-z\d+\-.]*:/i;
-
-/** Href for React Aria links: `useHref` would resolve an absolute URL like a Twitch link into a path of our own. */
-function useExternalAwareHref(href: string) {
-	const resolved = useHref(href);
-
-	return ABSOLUTE_URL_REGEX.test(href) ? href : resolved;
-}
-
 function useTriggerToasts() {
 	// biome-ignore lint/plugin: app-wide toast params written by server redirects, belonging to no one feature
 	const [searchParams] = useSearchParams();
 	const navigate = useNavigate();
+	const scrollBeforeToast = useScrollBeforeToast();
 
 	const error = searchParams.get("__error");
 	const success = searchParams.get("__success");
+	const searchWithoutToastParams = searchParamsWithoutToastParams(searchParams);
 
-	React.useEffect(() => {
+	// layout effect: the restore has to land after <ScrollRestoration /> (a child) reset the scroll, before paint
+	useIsomorphicLayoutEffect(() => {
 		if (!error && !success) return;
 
 		if (error) {
@@ -330,8 +324,46 @@ function useTriggerToasts() {
 			);
 		}
 
-		navigate({ search: "" }, { replace: true, defaultShouldRevalidate: false });
-	}, [error, success, navigate]);
+		if (scrollBeforeToast.current.pathname === window.location.pathname) {
+			window.scrollTo(0, scrollBeforeToast.current.y);
+		}
+
+		navigate(
+			{ search: searchWithoutToastParams },
+			{
+				replace: true,
+				preventScrollReset: true,
+				defaultShouldRevalidate: false,
+			},
+		);
+	}, [error, success, searchWithoutToastParams, navigate, scrollBeforeToast]);
+}
+
+function searchParamsWithoutToastParams(searchParams: URLSearchParams) {
+	const rest = new URLSearchParams(searchParams);
+	rest.delete("__error");
+	rest.delete("__success");
+
+	const asString = rest.toString();
+
+	return asString ? `?${asString}` : "";
+}
+
+/** Latest scroll position and the page it was scrolled on, to undo the scroll reset of a toast's redirect. */
+function useScrollBeforeToast() {
+	const ref = React.useRef({ pathname: "", y: 0 });
+
+	React.useEffect(() => {
+		const onScroll = () => {
+			ref.current = { pathname: window.location.pathname, y: window.scrollY };
+		};
+
+		window.addEventListener("scroll", onScroll, { passive: true });
+
+		return () => window.removeEventListener("scroll", onScroll);
+	}, []);
+
+	return ref;
 }
 
 function useLoadingIndicator() {
@@ -370,21 +402,17 @@ function usePreloadTranslation() {
 	}, []);
 }
 
-declare module "react-aria-components" {
-	interface RouterConfig {
-		routerOptions: NavigateOptions;
-	}
-}
-
 function useCustomThemeVars() {
 	const matches = useMatches();
 	const styles: Map<string, number> = new Map();
 
 	for (const match of matches) {
-		const data = match.loaderData as { customTheme?: CustomTheme } | undefined;
+		const loaderData = match.loaderData as
+			| { customTheme?: CustomTheme }
+			| undefined;
 
-		if (data?.customTheme) {
-			for (const [key, value] of Object.entries(data.customTheme)) {
+		if (loaderData?.customTheme) {
+			for (const [key, value] of Object.entries(loaderData.customTheme)) {
 				// Skips size and border variables for themes that arent the user's own
 				if (
 					match.id !== "root" &&
@@ -402,59 +430,24 @@ function useCustomThemeVars() {
 }
 
 export default function App() {
-	const data = useLoaderData<RootLoaderData>();
-
-	// Move overflow:hidden from html to body to allow position: sticky and position: fixed
-	// elements to work properly when a React Aria Component disabled scrolling
-	useEffect(() => {
-		const htmlStyle = document.documentElement.style;
-		const bodyStyle = document.body.style;
-
-		const observer = new MutationObserver(() => {
-			observer.disconnect();
-
-			if (htmlStyle.overflow === "hidden") {
-				htmlStyle.overflow = "";
-				htmlStyle.scrollbarGutter = "";
-
-				const scrollbarWidth =
-					window.innerWidth - document.documentElement.clientWidth;
-
-				htmlStyle.overflow = "initial";
-				bodyStyle.overflow = "hidden";
-				bodyStyle.paddingRight = `${scrollbarWidth}px`;
-			} else if (bodyStyle.overflow === "hidden") {
-				bodyStyle.overflow = "";
-				bodyStyle.paddingRight = "";
-			}
-
-			observer.observe(document.documentElement, {
-				attributes: true,
-				attributeFilter: ["style"],
-			});
-		});
-
-		observer.observe(document.documentElement, {
-			attributes: true,
-			attributeFilter: ["style"],
-		});
-
-		return () => observer.disconnect();
-	}, []);
+	const rootData = useLoaderData<RootLoaderData>();
+	const [openModals, setOpenModals] = React.useState(0);
 
 	return (
-		<ThemeProvider
-			specifiedTheme={isTheme(data.theme) ? data.theme : null}
-			themeSource="user-preference"
-		>
-			<Document data={data}>
-				<Outlet />
-			</Document>
-		</ThemeProvider>
+		<OpenModalsContext value={{ count: openModals, setCount: setOpenModals }}>
+			<ThemeProvider
+				specifiedTheme={isTheme(rootData.theme) ? rootData.theme : null}
+				themeSource="user-preference"
+			>
+				<Document data={rootData}>
+					<Outlet />
+				</Document>
+			</ThemeProvider>
+		</OpenModalsContext>
 	);
 }
 
-export const ErrorBoundary = () => {
+export function ErrorBoundary() {
 	return (
 		<ThemeProvider themeSource="static" specifiedTheme={Theme.DARK}>
 			<Document>
@@ -462,7 +455,7 @@ export const ErrorBoundary = () => {
 			</Document>
 		</ThemeProvider>
 	);
-};
+}
 
 function HydrationTestIndicator() {
 	const isHydrated = useHydrated();
@@ -747,8 +740,8 @@ function PWALinks() {
 	);
 }
 
-function MyFuse({ data }: { data: RootLoaderData | undefined }) {
-	if (!data || data.user?.roles.includes("MINOR_SUPPORT")) {
+function MyFuse({ data: rootData }: { data: RootLoaderData | undefined }) {
+	if (!rootData || rootData.user?.roles.includes("MINOR_SUPPORT")) {
 		return null;
 	}
 

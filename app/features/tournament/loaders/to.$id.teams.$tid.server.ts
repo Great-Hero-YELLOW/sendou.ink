@@ -1,4 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
+import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	tournamentDataCached,
 	tournamentFromParams,
@@ -6,15 +7,12 @@ import {
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { tournamentTeamPageParamsSchema } from "~/features/tournament-bracket/tournament-bracket-schemas";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import type { SerializeFrom } from "~/utils/remix";
 import { parseParams } from "~/utils/remix.server";
 import * as Standings from "../core/Standings";
-import {
-	type AllRoundsItem,
-	tournamentTeamSets,
-	winCounts,
-} from "../core/sets.server";
+import { type AllRoundsItem, tournamentTeamSets } from "../core/sets.server";
+import * as TournamentTeamRepository from "../TournamentTeamRepository.server";
 
 export type TournamentTeamLoaderData = SerializeFrom<typeof loader>;
 
@@ -43,8 +41,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		await TournamentMatchRepository.findByTournamentTeamId(tournamentTeamId);
 	const allRounds: AllRoundsItem[] = data.round.map((round) => {
 		const stage = data.stage.find((s) => s.id === round.stageId);
-		const group = data.group.find((g) => g.id === round.groupId);
-		invariant(stage && group, "Stage or group not found for round");
+		invariant(stage, "Stage not found for round");
 		invariant(stage.name, "Stage from the database is missing a name");
 
 		return {
@@ -52,7 +49,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			stageName: stage.name,
 			stageType: stage.type,
 			roundNumber: round.number,
-			groupNumber: group.number,
+			section: round.section,
 		};
 	});
 
@@ -66,6 +63,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	return {
 		tournamentTeamId,
 		team,
+		// the invite link of the add sub popover, only the team's own captain gets it
+		subInviteCode: canAddSubs(fullTournament, tournamentTeamId, user)
+			? await TournamentTeamRepository.findInviteCodeById(tournamentTeamId)
+			: null,
 		activePlayers:
 			sets.length > 0
 				? fullTournament.participatedPlayerUserIdsByTeamId(tournamentTeamId)
@@ -78,7 +79,8 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 				set.tournamentMatchId,
 			),
 		})),
-		winCounts: winCounts(sets),
+		record:
+			Standings.recordByTeamId(fullTournament).get(tournamentTeamId) ?? null,
 		participatedUsersCount: fullTournament.participatedUserIds?.length ?? 0,
 		division:
 			standingsResult.type === "multi"
@@ -101,3 +103,18 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 				: undefined,
 	};
 };
+
+function canAddSubs(
+	tournament: Tournament,
+	tournamentTeamId: number,
+	user: { id: number } | undefined,
+) {
+	if (tournament.ownedTeamByUser(user)?.id !== tournamentTeamId) return false;
+
+	return (
+		tournament.hasStarted &&
+		!tournament.everyBracketOver &&
+		tournament.autonomousSubs &&
+		tournament.teamMemberOfProgressStatus(user)?.type !== "THANKS_FOR_PLAYING"
+	);
+}

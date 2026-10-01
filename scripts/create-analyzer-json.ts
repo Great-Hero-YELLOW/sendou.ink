@@ -21,7 +21,7 @@ import {
 	subWeaponIds,
 	weaponIdToBaseWeaponId,
 } from "~/modules/in-game-lists/weapon-ids";
-import invariant from "~/utils/invariant";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import {
 	LANG_JSONS_TO_CREATE,
@@ -205,7 +205,7 @@ function splitIntoBaseStatsAndKits(
 		for (const prop of nonKitProps) {
 			const firstVal = JSON.stringify(firstVariant[prop]);
 			const allSame = variants.every(
-				(v) => JSON.stringify(v.params[prop]) === firstVal,
+				(variant) => JSON.stringify(variant.params[prop]) === firstVal,
 			);
 			if (allSame && firstVariant[prop] !== undefined) {
 				(sharedProps as any)[prop] = firstVariant[prop];
@@ -545,7 +545,9 @@ function parametersToMainWeaponResult(
 		MoveSpeedFullCharge:
 			params.WeaponParam?.MoveSpeedFullCharge ??
 			params.spl__WeaponStringerParam?.ChargeParam?.MoveSpeedFullCharge,
-		MoveSpeedVariable: params.VariableShotParam?.MoveSpeed,
+		MoveSpeedVariable:
+			params.VariableWeaponParam?.MoveSpeed ??
+			params.VariableShotParam?.MoveSpeed,
 		DamageParam_ValueMax: DamageParam_ValueMax(),
 		DamageParam_ValueMin: !DamageParam_ValueDirect
 			? (params.DamageParam?.ValueMin ??
@@ -561,6 +563,7 @@ function parametersToMainWeaponResult(
 			? params.UnitGroupParam?.Unit?.[1]?.DamageParam?.ValueMax
 			: undefined,
 		BlastParam_DistanceDamage: BlastParam_DistanceDamage(),
+		BlastJumpParam_DistanceDamage: params.BlastJumpParam?.DistanceDamage,
 		DamageParam_ValueFullCharge: params.DamageParam?.ValueFullCharge,
 		DamageParam_ValueFullChargeMax:
 			params.DamageParam?.ValueFullChargeMax !== DamageParam_ValueMax()
@@ -625,8 +628,17 @@ function parametersToMainWeaponResult(
 		Variable_Stand_DegSwerve:
 			params.VariableWeaponParam?.Stand_DegSwerve ??
 			params.VariableShotParam?.Stand_DegSwerve,
-		InkRecoverStop: params.WeaponParam?.InkRecoverStop,
+		InkRecoverStop:
+			params.WeaponParam?.InkRecoverStop ??
+			params.WeaponSwingParam?.InkRecoverStop ??
+			params.spl__WeaponSaberParam?.SwingParam?.InkRecoverStop ??
+			params.spl__WeaponShelterShotgunParam?.InkRecoverStop,
+		InkRecoverStop_WeaponVerticalSwingParam:
+			params.WeaponVerticalSwingParam?.InkRecoverStop,
+		InkRecoverStop_WeaponWideSwingParam:
+			params.WeaponWideSwingParam?.InkRecoverStop,
 		InkConsume,
+		InkConsumeVariable: params.VariableWeaponParam?.InkConsume,
 		InkConsumeSlosher,
 		InkConsumeFullCharge: params.WeaponParam?.InkConsumeFullCharge,
 		InkConsumeMinCharge: params.WeaponParam?.InkConsumeMinCharge,
@@ -642,6 +654,8 @@ function parametersToMainWeaponResult(
 		InkConsume_WeaponShelterShotgunParam:
 			InkConsume_WeaponShelterShotgunParam(),
 		InkConsume_SideStepParam: params.SideStepParam?.InkConsume,
+		InkConsumeMaxPerFrame_WeaponRollParam:
+			params.WeaponRollParam?.InkConsumeMaxPerFrame,
 		InkConsume_SwingParam: params.spl__WeaponSaberParam?.SwingParam?.InkConsume,
 		InkConsumeFullCharge_ChargeParam:
 			params.spl__WeaponSaberParam?.ChargeParam?.InkConsumeFullCharge ??
@@ -810,12 +824,6 @@ function parametersToSpecialWeaponResult(params: any) {
 		}
 	}
 
-	// for Ultra Splashdown
-	if (params.BlastParamDokanWarp) {
-		result.SubSpecialSpecUpList =
-			params.BlastParamDokanWarp.SubSpecialSpecUpList;
-	}
-
 	const resultUnwrapped = unwrapSubSpecialSpecUpList(result);
 
 	const specialDurationFrameKeyAlises = [
@@ -832,29 +840,17 @@ function parametersToSpecialWeaponResult(params: any) {
 	}
 
 	if (resultUnwrapped.SplashAroundPaintRadius) {
-		// Inkjet
-		if (params.BlastParam?.PaintRadius) {
-			const regularPaintRadius = params.BlastParam.PaintRadius;
-
-			resultUnwrapped.PaintRadius = {
-				High: resultUnwrapped.SplashAroundPaintRadius.High + regularPaintRadius,
-				Mid: resultUnwrapped.SplashAroundPaintRadius.Mid + regularPaintRadius,
-				Low: resultUnwrapped.SplashAroundPaintRadius.Low + regularPaintRadius,
-			};
-			// Reefslider
-		} else {
-			resultUnwrapped.PaintRadius = {
-				High:
-					resultUnwrapped.SplashAroundPaintRadius.High +
-					resultUnwrapped.PaintRadius.High,
-				Mid:
-					resultUnwrapped.SplashAroundPaintRadius.Mid +
-					resultUnwrapped.PaintRadius.Mid,
-				Low:
-					resultUnwrapped.SplashAroundPaintRadius.Low +
-					resultUnwrapped.PaintRadius.Low,
-			};
-		}
+		resultUnwrapped.PaintRadius = {
+			High:
+				resultUnwrapped.SplashAroundPaintRadius.High +
+				resultUnwrapped.PaintRadius.High,
+			Mid:
+				resultUnwrapped.SplashAroundPaintRadius.Mid +
+				resultUnwrapped.PaintRadius.Mid,
+			Low:
+				resultUnwrapped.SplashAroundPaintRadius.Low +
+				resultUnwrapped.PaintRadius.Low,
+		};
 
 		resultUnwrapped.SplashAroundPaintRadius = undefined;
 	}
@@ -967,6 +963,7 @@ function parametersToSpecialWeaponResult(params: any) {
 			params.ExhaleBlastParamMinCharge?.DistanceDamage,
 		ExhaleBlastParamMaxChargeDistanceDamage:
 			params.ExhaleBlastParamMaxCharge?.DistanceDamage,
+		InhaleDamage: params.InhaleParam?.DamagePerFrameByObject,
 		SwingDamage: SwingDamage(),
 		ThrowDamage: ThrowDamage(),
 		ThrowDirectDamage: params.ThrowMoveParam?.DirectDamageValue,
@@ -988,15 +985,16 @@ function unwrapSubSpecialSpecUpList(result: any) {
 		Object.entries(result).flatMap((entries) => {
 			const [key, value]: any = entries;
 			if (Array.isArray(value)) {
-				return value.map((v: any) => {
+				return value.map((entry: any) => {
 					if (
-						!v.SpecUpType ||
-						(v.Value.Low === v.Value.Mid && v.Value.Mid === v.Value.High)
+						entry.Value.Low === entry.Value.Mid &&
+						entry.Value.Mid === entry.Value.High
 					) {
 						return [];
 					}
 
-					return [v.SpecUpType, v.Value];
+					// datamine omits SpecUpType when it's the enum default
+					return [entry.SpecUpType ?? "PaintRadius", entry.Value];
 				});
 			}
 
@@ -1254,8 +1252,8 @@ function writeTranslationsJsons(arr: TranslationArray) {
 	}
 }
 
-function logWeaponIds(weapons: Record<number, WeaponKit>) {
-	logger.info(JSON.stringify(Object.keys(weapons).map(Number)));
+function logWeaponIds(weaponKits: Record<number, WeaponKit>) {
+	logger.info(JSON.stringify(Object.keys(weaponKits).map(Number)));
 }
 
 void main();

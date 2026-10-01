@@ -44,7 +44,7 @@ test.describe("Tournament", () => {
 			authorId: ADMIN_ID,
 			startTimes: [dateToDatabaseTimestamp(addHours(new Date(), 2))],
 			// teams pick their own counterpick maps
-			mapPickingStyle: "AUTO_ALL",
+			mapPickingStyle: "AUTO",
 		});
 
 		await impersonate(page, captain.id);
@@ -349,7 +349,9 @@ test.describe("Tournament", () => {
 		});
 
 		const captains = await factories.UserFactory.createMany(SEEDED_TEAM_COUNT);
-		const teams = [];
+		const teams: Awaited<
+			ReturnType<typeof factories.TournamentTeamFactory.create>
+		>[] = [];
 		for (const [i, captain] of captains.entries()) {
 			teams.push(
 				await factories.TournamentTeamFactory.create({

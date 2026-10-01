@@ -1,6 +1,11 @@
 import type { ActionFunction } from "react-router";
+import * as R from "remeda";
 import { db } from "~/db/sql";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
+import type { PersistedSystemMessageType } from "~/features/chat/chat-types";
+import { notify } from "~/features/notifications/core/notify.server";
+import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
@@ -24,8 +29,8 @@ import {
 	tournamentChannel,
 } from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
-import invariant from "~/utils/invariant";
+import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
+import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import {
 	errorToastIfFalsy,
@@ -37,6 +42,7 @@ import { noDuplicates } from "~/utils/schema";
 import { errorIsSqliteUniqueConstraintFailure } from "~/utils/sql";
 import { assertUnreachable } from "~/utils/types";
 import { executeRoll } from "../core/executeRoll.server";
+import * as LeagueScheduling from "../core/LeagueScheduling";
 import { resolveMatchMapList } from "../core/mapList.server";
 import { reportScore } from "../core/reportScore.server";
 import type { FindMatchById } from "../TournamentMatchRepository.server";
@@ -96,6 +102,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 	// lets broadcast receivers skip revalidating the tournament layout and root loaders
 	let onlyMatchResultsChanged = false;
 	let setIsOver = false;
+	let emitStatusUpdate = false;
 	let endedDroppedMatchIds: number[] = [];
 	let followingMatchIds: number[] = [];
 
@@ -348,9 +355,10 @@ export const action: ActionFunction = async ({ params, request }) => {
 			errorToastIfFalsy(turnOfResult, "Not time to pick/ban");
 			const pickerTeamId = turnOfResult.teamId;
 			const actionType = turnOfResult.action;
+			const pickerTeam = pickerTeamId === teamOne.id ? teamOne : teamTwo;
 			errorToastIfFalsy(
 				tournament.isOrganizer(user) ||
-					tournament.ownedTeamByUser(user)?.id === pickerTeamId,
+					pickerTeam.memberUserIds.includes(user.id),
 				"Unauthorized",
 			);
 
@@ -362,12 +370,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 			const pickBanLegalityArgs = {
 				results,
 				maps: match.roundMaps,
-				toSetMapPool:
-					tournament.ctx.mapPickingStyle === "TO"
-						? await TournamentRepository.findTOSetMapPoolById(tournamentId)
-						: [],
+				toSetMapPool: tournament.organizerPickedMapPool,
 				mapList,
-				tieBreakerMapPool: tournament.ctx.tieBreakerMapPool,
 				teams: [teamOne, teamTwo] as [PickBan.MapPoolTeam, PickBan.MapPoolTeam],
 				pickerTeamId,
 				pickBanEvents: currentPickBanEvents,
@@ -436,6 +440,15 @@ export const action: ActionFunction = async ({ params, request }) => {
 				throw error;
 			}
 
+			const chatMessageType = pickBanChatMessageType(actionType);
+			if (match.chatRoomId && chatMessageType) {
+				void ChatSystemMessage.sendPersisted({
+					roomId: match.chatRoomId,
+					type: chatMessageType,
+					authorUserId: user.id,
+				});
+			}
+
 			if (match.roundMaps.pickBan === "CUSTOM" && match.roundMaps.customFlow) {
 				const updatedEvents =
 					await TournamentRepository.findPickBanEventsByMatchId(match.id);
@@ -444,9 +457,8 @@ export const action: ActionFunction = async ({ params, request }) => {
 					maps: match.roundMaps,
 					pickBanEvents: updatedEvents,
 					results,
-					tournamentId,
 					teams: [teamOne, teamTwo],
-					tieBreakerMapPool: tournament.ctx.tieBreakerMapPool,
+					toSetMapPool: tournament.organizerPickedMapPool,
 				});
 			}
 
@@ -509,6 +521,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 
 			emitMatchUpdate = true;
 			emitTournamentUpdate = true;
+			emitStatusUpdate = true;
 
 			break;
 		}
@@ -555,6 +568,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			});
 
 			emitMatchUpdate = true;
+			emitStatusUpdate = true;
 
 			break;
 		}
@@ -570,6 +584,7 @@ export const action: ActionFunction = async ({ params, request }) => {
 			});
 
 			emitMatchUpdate = true;
+			emitStatusUpdate = true;
 
 			break;
 		}
@@ -662,6 +677,173 @@ export const action: ActionFunction = async ({ params, request }) => {
 
 			break;
 		}
+		case "PROPOSE_TIMES": {
+			const team = leagueTeamOfUser(tournament, match, user.id);
+			errorToastIfFalsy(team, "Not a member of either team");
+
+			const schedule = leagueSchedule(tournament, match);
+			const proposals =
+				await TournamentMatchRepository.findScheduleProposalsByMatchId(
+					match.id,
+				);
+			const proposedAts = R.unique(data.times.map(dateToDatabaseTimestamp));
+			const error = LeagueScheduling.validateProposals({
+				proposedAts,
+				existingProposedAts: proposals
+					.filter((proposal) => proposal.tournamentTeamId === team.id)
+					.map((proposal) => proposal.proposedAt),
+				phase: schedule.phase,
+				isPlayableAt: match.roundIsPlayableAt,
+				now: schedule.now,
+				setByOrganizer: Boolean(match.scheduleSetByOrganizer),
+			});
+			errorToastIfFalsy(!error, PROPOSAL_ERROR_MESSAGES[error ?? "NOT_OPEN"]);
+
+			const added = await TournamentMatchRepository.replaceScheduleProposals({
+				matchId: match.id,
+				tournamentTeamId: team.id,
+				authorId: user.id,
+				proposedAts,
+			});
+
+			emitMatchUpdate = true;
+			emitTournamentUpdate = true;
+
+			if (added.length === 0) break;
+
+			const [latestMessage] = match.chatRoomId
+				? await ChatRepository.findAllMessagesByRoomId(match.chatRoomId, {
+						limit: 1,
+					})
+				: [];
+			if (
+				LeagueScheduling.shouldAnnounceProposals({
+					latestMessage,
+					teamMemberUserIds: team.memberUserIds,
+					now: schedule.now,
+				})
+			) {
+				sendLeagueChatMessage(match, "LEAGUE_TIMES_PROPOSED", user.id);
+			}
+			notify({
+				userIds: team.opponent.memberUserIds,
+				notification: {
+					type: "TO_LEAGUE_TIMES_PROPOSED",
+					meta: {
+						tournamentId,
+						matchId: match.id,
+						opponentTeamName: team.name,
+					},
+					pictureUrl: tournament.ctx.logoUrl,
+				},
+			});
+
+			break;
+		}
+		case "ACCEPT_PROPOSAL": {
+			const schedule = leagueSchedule(tournament, match);
+			errorToastIfFalsy(
+				schedule.phase !== "CLOSED" && schedule.phase !== "NOT_OPEN",
+				"Set can't be scheduled",
+			);
+
+			const proposal = notFoundIfNullish(
+				await TournamentMatchRepository.findScheduleProposalById(
+					data.proposalId,
+				),
+			);
+			errorToastIfFalsy(
+				proposal.matchId === match.id,
+				"Not this set's candidate",
+			);
+
+			const team = leagueTeamOfUser(tournament, match, user.id);
+			const isOtherTeamsCandidate =
+				team !== null && proposal.tournamentTeamId !== team.id;
+			const isOrganizer = tournament.isOrganizer(user);
+			errorToastIfFalsy(
+				isOtherTeamsCandidate || isOrganizer,
+				"Only the other team can pick a candidate",
+			);
+			errorToastIfFalsy(
+				!match.scheduleSetByOrganizer || isOrganizer,
+				"The organizer set the time of this set",
+			);
+			errorToastIfFalsy(
+				LeagueScheduling.isAcceptableProposal({
+					proposedAt: proposal.proposedAt,
+					now: schedule.now,
+				}),
+				"The time has already passed",
+			);
+
+			const setByOrganizer = !isOtherTeamsCandidate;
+			await TournamentMatchRepository.scheduleMatch({
+				matchId: match.id,
+				scheduledAt: proposal.proposedAt,
+				setByOrganizer,
+			});
+
+			sendLeagueChatMessage(
+				match,
+				setByOrganizer ? "LEAGUE_TIME_SET_BY_ORGANIZER" : "LEAGUE_TIME_PICKED",
+				user.id,
+			);
+			await notifyLeagueMatchScheduled({
+				tournament,
+				match,
+				actorId: user.id,
+			});
+
+			emitMatchUpdate = true;
+			emitTournamentUpdate = true;
+
+			break;
+		}
+		case "REJECT_RESCHEDULE": {
+			const team = leagueTeamOfUser(tournament, match, user.id);
+			errorToastIfFalsy(team, "Not a member of either team");
+			errorToastIfFalsy(match.scheduledAt !== null, "Set has no time yet");
+
+			const deletedCount =
+				await TournamentMatchRepository.deleteScheduleProposalsByTeam({
+					matchId: match.id,
+					tournamentTeamId: team.opponent.id,
+				});
+			if (deletedCount === 0) break;
+
+			sendLeagueChatMessage(match, "LEAGUE_RESCHEDULE_DECLINED", user.id);
+
+			emitMatchUpdate = true;
+			emitTournamentUpdate = true;
+
+			break;
+		}
+		case "ORGANIZER_SET_TIME": {
+			requireTournamentOrganizer(tournament, user);
+			errorToastIfFalsy(
+				leagueSchedule(tournament, match).phase !== "CLOSED",
+				"Set can't be scheduled",
+			);
+
+			await TournamentMatchRepository.scheduleMatch({
+				matchId: match.id,
+				scheduledAt: dateToDatabaseTimestamp(data.scheduledAt),
+				setByOrganizer: true,
+			});
+
+			sendLeagueChatMessage(match, "LEAGUE_TIME_SET_BY_ORGANIZER", user.id);
+			await notifyLeagueMatchScheduled({
+				tournament,
+				match,
+				actorId: user.id,
+			});
+
+			emitMatchUpdate = true;
+			emitTournamentUpdate = true;
+
+			break;
+		}
 		default: {
 			assertUnreachable(data);
 		}
@@ -670,12 +852,28 @@ export const action: ActionFunction = async ({ params, request }) => {
 	clearTournamentDataCache(tournamentId);
 
 	// refresh RunningTournaments so the sidebar doesn't show stale matches while the TO delays finalizing
-	if (setIsOver) {
+	if (setIsOver || emitStatusUpdate) {
 		const refreshedTournament = await tournamentFromDB(tournamentId);
-		// teams just advanced into following matches: their "waiting for teams" pages revalidate too
-		followingMatchIds = refreshedTournament
-			.followingMatches(match.id)
-			.map((followingMatch) => followingMatch.id);
+		const followingMatches = refreshedTournament.followingMatches(match.id);
+
+		if (setIsOver) {
+			// teams just advanced into following matches: their "waiting for teams" pages revalidate too
+			followingMatchIds = followingMatches.map(
+				(followingMatch) => followingMatch.id,
+			);
+		}
+
+		ChatSystemMessage.notifyStatusChanged([
+			...match.players.map((player) => player.id),
+			...followingMatches.flatMap((followingMatch) =>
+				[followingMatch.opponent1?.id, followingMatch.opponent2?.id].flatMap(
+					(teamId) =>
+						typeof teamId === "number"
+							? (refreshedTournament.teamById(teamId)?.memberUserIds ?? [])
+							: [],
+				),
+			),
+		]);
 	}
 
 	const revalidateScope = onlyMatchResultsChanged
@@ -712,6 +910,120 @@ export const action: ActionFunction = async ({ params, request }) => {
 	return null;
 };
 
+const PROPOSAL_ERROR_MESSAGES: Record<LeagueScheduling.ProposalError, string> =
+	{
+		NOT_OPEN: "Scheduling is not open for this set",
+		BEFORE_PLAYABLE: "The round is not playable that early",
+		IN_PAST: "Candidate times must be in the future",
+		TOO_MANY: "Too many candidate times",
+		ORGANIZER_LOCKED: "The organizer set the time of this set",
+	};
+
+function leagueSchedule(
+	tournament: Tournament,
+	match: NonNullable<FindMatchById>,
+) {
+	const now = databaseTimestampNow();
+
+	return {
+		now,
+		phase: LeagueScheduling.phase({
+			hasScheduling: tournament.matchHasScheduling(match.id),
+			isOver: Boolean(match.winnerSide),
+			hasBothTeams: Boolean(match.opponentOne?.id && match.opponentTwo?.id),
+			isPlayableAt: match.roundIsPlayableAt,
+			scheduledAt: match.scheduledAt,
+			now,
+		}),
+	};
+}
+
+/** The user's team of the set with the opposing team's roster next to it, null when they play for neither. */
+function leagueTeamOfUser(
+	tournament: Tournament,
+	match: NonNullable<FindMatchById>,
+	userId: number,
+) {
+	const teamIds = [match.opponentOne?.id, match.opponentTwo?.id];
+	const ownTeamId = match.players.find(
+		(player) => player.id === userId,
+	)?.tournamentTeamId;
+	const opponentId = teamIds.find(
+		(teamId) => typeof teamId === "number" && teamId !== ownTeamId,
+	);
+	if (typeof ownTeamId !== "number" || typeof opponentId !== "number") {
+		return null;
+	}
+
+	const nameOf = (teamId: number) => tournament.teamById(teamId)?.name ?? "";
+
+	const memberUserIdsOf = (teamId: number) =>
+		match.players
+			.filter((player) => player.tournamentTeamId === teamId)
+			.map((player) => player.id);
+
+	return {
+		id: ownTeamId,
+		name: nameOf(ownTeamId),
+		memberUserIds: memberUserIdsOf(ownTeamId),
+		opponent: {
+			id: opponentId,
+			name: nameOf(opponentId),
+			memberUserIds: memberUserIdsOf(opponentId),
+		},
+	};
+}
+
+function sendLeagueChatMessage(
+	match: NonNullable<FindMatchById>,
+	type: PersistedSystemMessageType,
+	authorUserId: number,
+) {
+	if (!match.chatRoomId) return;
+
+	void ChatSystemMessage.sendPersisted({
+		roomId: match.chatRoomId,
+		type,
+		authorUserId,
+	});
+}
+
+/** Both rosters learn the set has a time; each is told the other team's name. */
+async function notifyLeagueMatchScheduled({
+	tournament,
+	match,
+	actorId,
+}: {
+	tournament: Tournament;
+	match: NonNullable<FindMatchById>;
+	actorId: number;
+}) {
+	await resolveNotifications({
+		userIds: match.players.map((player) => player.id),
+		type: "TO_LEAGUE_MATCH_STARTING_SOON",
+		meta: { matchId: match.id },
+	});
+
+	for (const player of match.players) {
+		const team = leagueTeamOfUser(tournament, match, player.id);
+		if (!team) continue;
+
+		notify({
+			userIds: [player.id],
+			defaultSeenUserIds: [actorId],
+			notification: {
+				type: "TO_LEAGUE_MATCH_SCHEDULED",
+				meta: {
+					tournamentId: tournament.ctx.id,
+					matchId: match.id,
+					opponentTeamName: team.opponent.name,
+				},
+				pictureUrl: tournament.ctx.logoUrl,
+			},
+		});
+	}
+}
+
 /** Room of the brackets page views rendering this match; the whole tournament's room if its bracket can't be resolved. */
 function matchResultsRoom(
 	tournament: Tournament,
@@ -731,6 +1043,28 @@ function matchResultsRoom(
 		bracketIdx,
 		groupId: showsOneGroupAtATime(type) ? match.groupId : null,
 	});
+}
+
+/** What the match chat reports the pick/ban as, so both teams see who on the picking team acted. */
+function pickBanChatMessageType(
+	actionType: PickBan.TurnOfResult["action"],
+): PersistedSystemMessageType | null {
+	switch (actionType) {
+		case "PICK":
+		case "PICK_NO_MODE_REPEAT":
+			return "MAP_PICKED";
+		case "BAN":
+			return "MAP_BANNED";
+		case "MODE_PICK":
+			return "MODE_PICKED";
+		case "MODE_BAN":
+			return "MODE_BANNED";
+		// the server's own step, never a team's turn
+		case "ROLL":
+			return null;
+		default:
+			assertUnreachable(actionType);
+	}
 }
 
 function canReportTournamentScore({

@@ -35,6 +35,15 @@ export function useEventsReadyState(): EventsReadyState {
 	);
 }
 
+/** Whether the shared SSE connection is up; unlike the ready state, the CLOSED to CONNECTING flip doesn't re-render. */
+export function useEventsConnected(): boolean {
+	return React.useSyncExternalStore(
+		eventsClient.subscribeToReadyState,
+		getIsConnected,
+		getServerIsConnected,
+	);
+}
+
 /** Calls `listener` for every server event received over the shared SSE connection. */
 export function useServerEventListener(listener: (event: ServerEvent) => void) {
 	const handleEvent = React.useEffectEvent(listener);
@@ -60,11 +69,14 @@ export function useEventsTopic(topic: string, enabled = true) {
 export function useEventStreamCatchUp({
 	enabled,
 	onCatchUp,
+	heldSince,
 }: {
 	enabled: boolean;
 	onCatchUp: () => void;
+	/** When the data the caller holds was current (client clock), for data that predates listening: a first connect landing long after it catches up. Defaults to when listening started. */
+	heldSince?: number;
 }) {
-	const readyState = useEventsReadyState();
+	const connected = useEventsConnected();
 	const latestOnCatchUp = React.useRef(onCatchUp);
 	latestOnCatchUp.current = onCatchUp;
 	const scheduledRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,7 +100,7 @@ export function useEventStreamCatchUp({
 		[],
 	);
 
-	useCatchUpOnConnect(enabled, readyState, catchUp);
+	useCatchUpOnConnect(enabled, connected, catchUp, heldSince);
 
 	React.useEffect(() => {
 		if (!enabled) return;
@@ -97,11 +109,11 @@ export function useEventStreamCatchUp({
 	}, [enabled, catchUp]);
 
 	React.useEffect(() => {
-		if (!enabled || readyState === "CONNECTED") return;
+		if (!enabled || connected) return;
 
 		const interval = setInterval(catchUp, EVENTS_DOWN_CATCH_UP_MS);
 		return () => clearInterval(interval);
-	}, [enabled, readyState, catchUp]);
+	}, [enabled, connected, catchUp]);
 
 	return catchUp;
 }
@@ -112,8 +124,9 @@ export function useEventStreamCatchUp({
  */
 function useCatchUpOnConnect(
 	enabled: boolean,
-	readyState: EventsReadyState,
+	connected: boolean,
 	onConnect: () => void,
+	heldSince?: number,
 ) {
 	const hasConnectedRef = React.useRef(false);
 	const listeningSinceRef = React.useRef<number | null>(null);
@@ -126,19 +139,20 @@ function useCatchUpOnConnect(
 		}
 		listeningSinceRef.current ??= Date.now();
 
-		if (readyState !== "CONNECTED") return;
+		if (!connected) return;
 
 		const isFirstConnect = !hasConnectedRef.current;
 		hasConnectedRef.current = true;
 		if (
 			isFirstConnect &&
-			Date.now() - listeningSinceRef.current < LATE_FIRST_CONNECT_MS
+			Date.now() - (heldSince ?? listeningSinceRef.current) <
+				LATE_FIRST_CONNECT_MS
 		) {
 			return;
 		}
 
 		onConnect();
-	}, [enabled, readyState, onConnect]);
+	}, [enabled, connected, onConnect, heldSince]);
 }
 
 const returnListeners = new Set<() => void>();
@@ -187,3 +201,5 @@ function noticeReturn() {
 }
 
 const getServerReadyState = (): EventsReadyState => "CLOSED";
+const getIsConnected = () => eventsClient.getReadyState() === "CONNECTED";
+const getServerIsConnected = () => false;

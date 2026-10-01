@@ -23,6 +23,10 @@ const devOnlyRoutes =
 					"features/components-showcase/routes/components.tsx",
 				),
 				route(
+					"/components/colors",
+					"features/components-showcase/routes/components.colors.tsx",
+				),
+				route(
 					"/comp-analyzer/all-ranges",
 					"features/comp-analyzer/routes/comp-analyzer.all-ranges.tsx",
 				),
@@ -102,11 +106,11 @@ export default [
 		),
 		route("seasons", "features/user-page/routes/u.$identifier.seasons.tsx", [
 			index("features/user-page/routes/u.$identifier.seasons.index.tsx"),
-			route(
-				"stats",
-				"features/user-page/routes/u.$identifier.seasons.stats.tsx",
-			),
 		]),
+		route(
+			"seasons/stats",
+			"features/user-page/routes/u.$identifier.seasons.stats.tsx",
+		),
 		route("vods", "features/user-page/routes/u.$identifier.vods.tsx"),
 		route("builds", "features/user-page/routes/u.$identifier.builds.tsx"),
 		route(
@@ -224,6 +228,7 @@ export default [
 				),
 			],
 		),
+		route("matches", "features/tournament-match/routes/to.$id.matches.tsx"),
 		route(
 			"matches/:mid",
 			"features/tournament-match/routes/to.$id.matches.$mid.tsx",
@@ -343,6 +348,7 @@ export default [
 		"/api/notifications",
 		"features/notifications/routes/api.notifications.ts",
 	),
+	route("/api/status", "features/global-status/routes/api.status.ts"),
 	route("/api", "features/api/routes/api.tsx"),
 
 	...prefix("/a", [

@@ -19,8 +19,8 @@ import type {
 } from "./core/engine/types";
 
 const CHAT_ROOM_LIFESPAN_DAYS = 7;
-// league rounds can be scheduled weeks out and all rooms are created on insertBracket
-const LEAGUE_CHAT_ROOM_LIFESPAN_DAYS = 30;
+// scheduled league sets can be postponed to the end of the season, so their rooms live until the set is decided
+const LEAGUE_CHAT_ROOM_LIFESPAN_DAYS = 60;
 
 /**
  * Full BracketData of all stages, with score/totalKos aggregated over TournamentMatchGameResult.
@@ -77,9 +77,10 @@ export async function findByTournamentId(
 						"TournamentRound.id",
 						"TournamentRound.stageId",
 						"TournamentRound.groupId",
+						"TournamentRound.section",
 						"TournamentRound.number",
 						"TournamentRound.maps",
-						"TournamentRound.defaultPlayTime",
+						"TournamentRound.isPlayableAt",
 					])
 					.where("TournamentStage.tournamentId", "=", tournamentId)
 					.orderBy("TournamentRound.stageId", "asc")
@@ -93,11 +94,6 @@ export async function findByTournamentId(
 						"TournamentStage.id",
 						"TournamentMatch.stageId",
 					)
-					.leftJoin(
-						"TournamentMatchGameResult",
-						"TournamentMatch.id",
-						"TournamentMatchGameResult.matchId",
-					)
 					.select([
 						"TournamentMatch.id",
 						"TournamentMatch.stageId",
@@ -105,13 +101,13 @@ export async function findByTournamentId(
 						"TournamentMatch.roundId",
 						"TournamentMatch.number",
 						"TournamentMatch.startedAt",
+						"TournamentMatch.scheduledAt",
 						"TournamentMatch.winnerSide",
 						// totalKos is never persisted, it is aggregated fresh from the game results
 						serializedOpponentWithKos("opponentOne").as("opponent1"),
 						serializedOpponentWithKos("opponentTwo").as("opponent2"),
 					])
 					.where("TournamentStage.tournamentId", "=", tournamentId)
-					.groupBy("TournamentMatch.id")
 					.orderBy("TournamentMatch.stageId", "asc")
 					.orderBy("TournamentMatch.id", "asc"),
 			).as("match"),
@@ -121,20 +117,23 @@ export async function findByTournamentId(
 	return { stage, group, round, match };
 }
 
-/** Opponent JSON with `totalKos` summed over the match's game results, `null` for BYEs. */
+/** Opponent JSON with `totalKos` counted over the match's game results, `null` for BYEs. */
 function serializedOpponentWithKos(
 	column: "opponentOne" | "opponentTwo",
 ): RawBuilder<ParticipantResult | null> {
+	const opponent = kyselySql.ref(`TournamentMatch.${column}`);
+
+	// a correlated count is answered by the (matchId, winnerTeamId, ko) index alone; the
+	// left join + group by it replaces read every game result row of the tournament
 	return kyselySql<ParticipantResult | null>`json_set(
-		${kyselySql.ref(`TournamentMatch.${column}`)},
+		${opponent},
 		'$.totalKos',
-		sum(
-			case
-				when "TournamentMatchGameResult"."ko" = 1
-					and "TournamentMatchGameResult"."winnerTeamId" = ${kyselySql.ref(`TournamentMatch.${column}`)} ->> '$.id'
-				then 1
-				else 0
-			end
+		(
+			select count(*)
+			from "TournamentMatchGameResult"
+			where "TournamentMatchGameResult"."matchId" = "TournamentMatch"."id"
+				and "TournamentMatchGameResult"."winnerTeamId" = ${opponent} ->> '$.id'
+				and "TournamentMatchGameResult"."ko" = 1
 		)
 	)`;
 }
@@ -144,11 +143,12 @@ export function insertBracket(args: {
 	tournamentId: number;
 	name: string;
 	bracket: BracketData;
-	/** League rounds are all playable from the start, so their chat rooms live longer. */
+	/** League rounds are all playable from the start, so their chat rooms live longer unless the stage is real-time. */
 	isLeague: boolean;
 }): Promise<{ stageId: number }> {
 	const stageInput = args.bracket.stage[0];
 	if (!stageInput) throw new Error("Bracket has no stage");
+	const hasScheduling = args.isLeague && !stageInput.settings.isRealtime;
 
 	return db.transaction().execute(async (trx) => {
 		const stage = await trx
@@ -162,6 +162,13 @@ export function insertBracket(args: {
 			})
 			.returning(["id"])
 			.executeTakeFirstOrThrow();
+
+		// no team can join once a bracket has started, so none is looking for members anymore
+		await trx
+			.updateTable("TournamentTeam")
+			.set({ isLooking: 0 })
+			.where("tournamentId", "=", args.tournamentId)
+			.execute();
 
 		if (
 			args.bracket.group.length === 0 ||
@@ -194,8 +201,10 @@ export function insertBracket(args: {
 				args.bracket.round.map((round) => ({
 					stageId: stage.id,
 					groupId: groupIdMapping.get(round.groupId)!,
+					section: round.section,
 					number: round.number,
 					maps: JSON.stringify(round.maps),
+					isPlayableAt: round.isPlayableAt ?? null,
 				})),
 			)
 			.returning(["id"])
@@ -211,7 +220,7 @@ export function insertBracket(args: {
 			(match) => statuses.get(match.id) === "STARTED",
 		);
 		const startedChatRoomIds = await insertMatchChatRooms(
-			{ count: startedMatches.length, isLeague: args.isLeague },
+			{ count: startedMatches.length, hasScheduling },
 			trx,
 		);
 		const chatRoomIdByMatchId = new Map(
@@ -252,7 +261,7 @@ export async function applyMatchChanges(
 	args: {
 		previousData: BracketData;
 		result: EngineResult;
-		/** League rounds are all playable from the start, so their chat rooms live longer. */
+		/** League rounds are all playable from the start, so their chat rooms live longer unless the stage is real-time. */
 		isLeague: boolean;
 	},
 	trx: Transaction<DB>,
@@ -278,7 +287,14 @@ export async function applyMatchChanges(
 		trx,
 	);
 
-	return syncChatRoomInactive(args.previousData, args.result.data, trx);
+	return syncChatRoomInactive(
+		{
+			previousData: args.previousData,
+			data: args.result.data,
+			isLeague: args.isLeague,
+		},
+		trx,
+	);
 }
 
 /**
@@ -292,6 +308,7 @@ async function syncStartedAt(
 	const { previousData, data } = args;
 	const previousStatuses = matchStatuses(previousData);
 	const statuses = matchStatuses(data);
+	const scheduledMatchIds = matchIdsWithScheduling(data, args.isLeague);
 
 	const wasPending = (matchId: number) =>
 		previousStatuses.get(matchId) === "PENDING";
@@ -325,16 +342,21 @@ async function syncStartedAt(
 			.where("TournamentMatch.id", "in", startedMatchIds)
 			.where("TournamentMatch.chatRoomId", "is", null)
 			.execute();
-		const chatRoomIds = await insertMatchChatRooms(
-			{ count: roomlessMatches.length, isLeague: args.isLeague },
-			trx,
-		);
-		for (const [i, match] of roomlessMatches.entries()) {
-			await trx
-				.updateTable("TournamentMatch")
-				.set({ chatRoomId: chatRoomIds[i] })
-				.where("TournamentMatch.id", "=", match.id)
-				.execute();
+		for (const hasScheduling of [true, false]) {
+			const matches = roomlessMatches.filter(
+				(match) => scheduledMatchIds.has(match.id) === hasScheduling,
+			);
+			const chatRoomIds = await insertMatchChatRooms(
+				{ count: matches.length, hasScheduling },
+				trx,
+			);
+			for (const [i, match] of matches.entries()) {
+				await trx
+					.updateTable("TournamentMatch")
+					.set({ chatRoomId: chatRoomIds[i] })
+					.where("TournamentMatch.id", "=", match.id)
+					.execute();
+			}
 		}
 	}
 
@@ -349,12 +371,16 @@ async function syncStartedAt(
 
 /**
  * Completing marks the chat room inactive, losing the winner again (reopen, undone final game) reactivates it.
+ * A scheduled league set's long room lifespan is cut short on completion and restored on reopen.
  *
  * @returns ids of the rewritten chat rooms
  */
 async function syncChatRoomInactive(
-	previousData: BracketData,
-	data: BracketData,
+	{
+		previousData,
+		data,
+		isLeague,
+	}: { previousData: BracketData; data: BracketData; isLeague: boolean },
 	trx: Transaction<DB>,
 ): Promise<number[]> {
 	const previousStatuses = matchStatuses(previousData);
@@ -372,15 +398,49 @@ async function syncChatRoomInactive(
 		.filter((match) => wasCompleted(match.id) && !isCompleted(match.id))
 		.map((match) => match.id);
 
-	return [
-		...(await updateMatchChatRoomsInactive(completedMatchIds, true, trx)),
-		...(await updateMatchChatRoomsInactive(reopenedMatchIds, false, trx)),
-	];
+	const completedChatRoomIds = await updateMatchChatRoomsInactive(
+		completedMatchIds,
+		true,
+		trx,
+	);
+	const reopenedChatRoomIds = await updateMatchChatRoomsInactive(
+		reopenedMatchIds,
+		false,
+		trx,
+	);
+
+	const scheduledMatchIds = matchIdsWithScheduling(data, isLeague);
+	if (scheduledMatchIds.size > 0) {
+		const hasScheduling = (matchId: number) => scheduledMatchIds.has(matchId);
+
+		await ChatRepository.updateRoomsExpiresAt(
+			await matchChatRoomIds(completedMatchIds.filter(hasScheduling), trx),
+			addDays(new Date(), CHAT_ROOM_LIFESPAN_DAYS),
+			trx,
+		);
+		await ChatRepository.updateRoomsExpiresAt(
+			await matchChatRoomIds(reopenedMatchIds.filter(hasScheduling), trx),
+			addDays(new Date(), LEAGUE_CHAT_ROOM_LIFESPAN_DAYS),
+			trx,
+		);
+	}
+
+	return [...completedChatRoomIds, ...reopenedChatRoomIds];
 }
 
 async function updateMatchChatRoomsInactive(
 	matchIds: number[],
 	inactive: boolean,
+	trx: Transaction<DB>,
+): Promise<number[]> {
+	const chatRoomIds = await matchChatRoomIds(matchIds, trx);
+	await ChatRepository.updateRoomsInactive(chatRoomIds, inactive, trx);
+
+	return chatRoomIds;
+}
+
+async function matchChatRoomIds(
+	matchIds: number[],
 	trx: Transaction<DB>,
 ): Promise<number[]> {
 	if (matchIds.length === 0) return [];
@@ -393,10 +453,24 @@ async function updateMatchChatRoomsInactive(
 		.$narrowType<{ chatRoomId: NotNull }>()
 		.execute();
 
-	const chatRoomIds = matches.map((match) => match.chatRoomId);
-	await ChatRepository.updateRoomsInactive(chatRoomIds, inactive, trx);
+	return matches.map((match) => match.chatRoomId);
+}
 
-	return chatRoomIds;
+/** Matches whose sets the teams schedule, i.e. a league's matches outside its real-time stages. */
+function matchIdsWithScheduling(data: BracketData, isLeague: boolean) {
+	if (!isLeague) return new Set<number>();
+
+	const scheduledStageIds = new Set(
+		data.stage
+			.filter((stage) => !stage.settings.isRealtime)
+			.map((stage) => stage.id),
+	);
+
+	return new Set(
+		data.match
+			.filter((match) => scheduledStageIds.has(match.stageId))
+			.map((match) => match.id),
+	);
 }
 
 /** INSERTs a generated round's matches (swiss advance). */
@@ -404,8 +478,8 @@ export async function insertRoundMatches(
 	args: {
 		stageId: number;
 		round: GeneratedRound;
-		/** League rounds are all playable from the start, so their chat rooms live longer. */
-		isLeague: boolean;
+		/** The teams schedule the sets (league), so their chat rooms live longer. */
+		hasScheduling: boolean;
 	},
 	trx?: Transaction<DB>,
 ): Promise<void> {
@@ -421,7 +495,7 @@ export async function insertRoundMatches(
 
 	const playableMatches = args.round.matches.filter(hasBothOpponents);
 	const chatRoomIds = await insertMatchChatRooms(
-		{ count: playableMatches.length, isLeague: args.isLeague },
+		{ count: playableMatches.length, hasScheduling: args.hasScheduling },
 		trx,
 	);
 	const chatRoomIdByMatch = new Map(
@@ -449,42 +523,21 @@ export async function insertRoundMatches(
 
 /** DELETEs a round's matches (swiss unadvance). */
 export async function deleteRoundMatches(args: {
+	stageId: number;
 	groupId: number;
 	roundId: number;
 }): Promise<void> {
-	await db.transaction().execute(async (trx) => {
-		const matches = await trx
-			.selectFrom("TournamentMatch")
-			.select(["TournamentMatch.chatRoomId"])
-			.where("groupId", "=", args.groupId)
-			.where("roundId", "=", args.roundId)
-			.execute();
-		await ChatRepository.deleteRoomsByIds(
-			matches.map((match) => match.chatRoomId),
-			trx,
-		);
-
-		await trx
-			.deleteFrom("TournamentMatch")
-			.where("groupId", "=", args.groupId)
-			.where("roundId", "=", args.roundId)
-			.execute();
-	});
+	await db
+		.deleteFrom("TournamentMatch")
+		.where("stageId", "=", args.stageId)
+		.where("groupId", "=", args.groupId)
+		.where("roundId", "=", args.roundId)
+		.execute();
 }
 
 /** Deletes the whole stage subtree (matches, rounds, groups, stage). */
 export function resetBracket(tournamentStageId: number) {
 	return db.transaction().execute(async (trx) => {
-		const matches = await trx
-			.selectFrom("TournamentMatch")
-			.select(["TournamentMatch.chatRoomId"])
-			.where("stageId", "=", tournamentStageId)
-			.execute();
-		await ChatRepository.deleteRoomsByIds(
-			matches.map((match) => match.chatRoomId),
-			trx,
-		);
-
 		await trx
 			.deleteFrom("TournamentMatch")
 			.where("stageId", "=", tournamentStageId)
@@ -516,7 +569,7 @@ function serializeOpponent(opponent: ParticipantResult | null): string | null {
 }
 
 function insertMatchChatRooms(
-	args: { count: number; isLeague: boolean },
+	args: { count: number; hasScheduling: boolean },
 	trx: Transaction<DB>,
 ) {
 	return ChatRepository.insertRooms(
@@ -524,7 +577,7 @@ function insertMatchChatRooms(
 			type: "TOURNAMENT_MATCH",
 			expiresAt: addDays(
 				new Date(),
-				args.isLeague
+				args.hasScheduling
 					? LEAGUE_CHAT_ROOM_LIFESPAN_DAYS
 					: CHAT_ROOM_LIFESPAN_DAYS,
 			),

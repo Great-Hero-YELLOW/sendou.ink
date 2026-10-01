@@ -26,8 +26,8 @@ const schema = v.pipe(
 		DISCORD_CLIENT_SECRET: requiredInProd(isProd, ""),
 
 		STORAGE_END_POINT: requiredInProd(isProd, "http://127.0.0.1:9000"),
-		STORAGE_ACCESS_KEY: requiredInProd(isProd, "minio-user"),
-		STORAGE_SECRET: requiredInProd(isProd, "minio-password"),
+		STORAGE_ACCESS_KEY: requiredInProd(isProd, "seaweedfs-user"),
+		STORAGE_SECRET: requiredInProd(isProd, "seaweedfs-password"),
 		STORAGE_REGION: requiredInProd(isProd, "us-east-1"),
 		STORAGE_BUCKET: requiredInProd(isProd, "sendou"),
 
@@ -99,12 +99,12 @@ export const ServerConfig = {
 /** Adds a validation issue unless `a` and `b` are both set or both unset. */
 function requireTogether(
 	ctx: ValidationCtx,
-	values: Record<string, unknown>,
+	parsedValues: Record<string, unknown>,
 	a: string,
 	b: string,
 ) {
-	const aSet = Boolean(values[a]);
-	const bSet = Boolean(values[b]);
+	const aSet = Boolean(parsedValues[a]);
+	const bSet = Boolean(parsedValues[b]);
 	if (aSet === bSet) return;
 
 	const present = aSet ? a : b;

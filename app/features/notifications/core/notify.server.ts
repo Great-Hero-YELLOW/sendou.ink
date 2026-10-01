@@ -10,7 +10,7 @@ import { logger } from "../../../utils/logger";
 import * as NotificationRepository from "../NotificationRepository.server";
 import type { Notification } from "../notifications-types";
 import { notificationLink, notificationMeta } from "../notifications-utils";
-import webPush, { webPushEnabled } from "./webPush.server";
+import { webPush, webPushEnabled } from "./webPush.server";
 
 const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
 	SQ_ADDED_TO_GROUP: "high",
@@ -36,6 +36,9 @@ const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
 	SCRIM_SCHEDULED: "high",
 	SCRIM_CANCELED: "high",
 	SCRIM_STARTING_SOON: "high",
+	TO_LEAGUE_TIMES_PROPOSED: "high",
+	TO_LEAGUE_MATCH_SCHEDULED: "high",
+	TO_LEAGUE_MATCH_STARTING_SOON: "high",
 	SCRIM_AUTO_DELETED: "normal",
 	COMMISSIONS_CLOSED: "normal",
 	FRIEND_REQUEST_RECEIVED: "normal",

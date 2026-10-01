@@ -2,14 +2,15 @@ import clsx from "clsx";
 import { Check } from "lucide-react";
 import type * as React from "react";
 import { useState } from "react";
-import { Radio, RadioGroup } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { useWebHaptics } from "web-haptics/react";
+import { useCooldown } from "~/hooks/useCooldown";
 import { shortStageName } from "~/modules/in-game-lists/stage-ids";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import type { CommonUser } from "~/utils/kysely.server";
 import { Avatar } from "../Avatar";
 import { SendouButton } from "../elements/Button";
+import { SendouRadio, SendouRadioGroup } from "../elements/Radio";
 import { SendouTabPanel } from "../elements/Tabs";
 import { ModeImage, StageImage } from "../Image";
 import styles from "./MatchActionTab.module.css";
@@ -43,6 +44,7 @@ interface MatchActionTabProps {
 	onSubmit?: (data: { winnerId: number; ko?: boolean }) => void;
 	isSubmitting?: boolean;
 	setEnding?: SetEndingData;
+	submitCooldownUntil?: number | null;
 	actionButtons?: React.ReactNode;
 	secondaryAction?: React.ReactNode;
 }
@@ -56,6 +58,7 @@ export function MatchActionTab({
 	onSubmit,
 	isSubmitting,
 	setEnding,
+	submitCooldownUntil = null,
 	actionButtons,
 	secondaryAction,
 }: MatchActionTabProps) {
@@ -64,8 +67,9 @@ export function MatchActionTab({
 	const [isKo, setIsKo] = useState(false);
 	const [confirming, setConfirming] = useState(false);
 	const { trigger } = useWebHaptics();
+	const cooldownSecondsLeft = useCooldown(submitCooldownUntil);
 
-	const canSubmit = winnerId !== null;
+	const canSubmit = winnerId !== null && cooldownSecondsLeft === 0;
 
 	const isOnTeam =
 		ownTeamId != null &&
@@ -98,7 +102,7 @@ export function MatchActionTab({
 						<div className={styles.actionButtons}>{actionButtons}</div>
 					) : null}
 
-					<RadioGroup
+					<SendouRadioGroup
 						value={winnerId !== null ? String(winnerId) : null}
 						onChange={(value) => {
 							const selectedId = Number(value);
@@ -147,7 +151,7 @@ export function MatchActionTab({
 							className={clsx(styles.bravo)}
 							testId="winner-radio-2"
 						/>
-					</RadioGroup>
+					</SendouRadioGroup>
 
 					{withKo ? (
 						<div className={styles.ko}>
@@ -166,7 +170,7 @@ export function MatchActionTab({
 					<SendouButton
 						variant="primary"
 						isDisabled={!canSubmit || isSubmitting}
-						onPress={() => {
+						onClick={() => {
 							if (winnerId === null) return;
 							if (setEnding?.setEndingTeamIds.includes(winnerId)) {
 								setConfirming(true);
@@ -177,7 +181,9 @@ export function MatchActionTab({
 						className={styles.submit}
 						testId="report-score-button"
 					>
-						{t("common:actions.submit")}
+						{cooldownSecondsLeft > 0
+							? `${t("common:actions.submit")} (${cooldownSecondsLeft})`
+							: t("common:actions.submit")}
 					</SendouButton>
 				</div>
 			)}
@@ -241,12 +247,12 @@ function SetEndingConfirmation({
 				<SendouButton
 					variant="primary"
 					isDisabled={isSubmitting}
-					onPress={onConfirm}
+					onClick={onConfirm}
 					testId="confirm-set-end-button"
 				>
 					{t("common:actions.confirm")}
 				</SendouButton>
-				<SendouButton variant="outlined" onPress={onBack}>
+				<SendouButton variant="outlined" onClick={onBack}>
 					{t("common:actions.back")}
 				</SendouButton>
 			</div>
@@ -272,7 +278,7 @@ function TeamRadioOption({
 	const isLongName = team.name.length > LONG_TEAM_NAME_THRESHOLD;
 
 	return (
-		<Radio
+		<SendouRadio
 			value={String(team.id)}
 			aria-label={team.name}
 			className={clsx(styles.teamRadioContainer, className)}
@@ -318,6 +324,6 @@ function TeamRadioOption({
 					</span>
 				</span>
 			)}
-		</Radio>
+		</SendouRadio>
 	);
 }

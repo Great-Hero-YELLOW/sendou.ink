@@ -1,6 +1,15 @@
 import type { DamageType, TenacityPlayerDeficit } from "./analyzer-types";
 
-export const MAX_LDE_INTENSITY = 21;
+/** Opponent's remaining points when Last-Ditch Effort starts ramping up in ranked modes. */
+export const LDE_START_POINTS = 50;
+
+/** Opponent's remaining points when Last-Ditch Effort reaches its maximum. */
+const LDE_MAX_POINTS = 30;
+
+const MAX_LDE_INTENSITY = LDE_START_POINTS - LDE_MAX_POINTS + 1;
+
+/** Intensity standing for the clock based activation, which always grants the maximum boost. */
+export const LDE_CLOCK_INTENSITY = MAX_LDE_INTENSITY + 1;
 
 /** Every ability point total reachable by some main/sub slot combination, ascending. */
 export function possibleApValues() {
@@ -30,6 +39,7 @@ export const DAMAGE_TYPE = [
 	"MAX_CHARGE",
 	"TAP_SHOT",
 	"DISTANCE",
+	"DISTANCE_JUMP",
 	"SPLASH",
 	"WAVE",
 	"BOMB_DIRECT",
@@ -47,6 +57,7 @@ export const DAMAGE_TYPE = [
 	"ROLL_OVER",
 	"SPECIAL_MAX_CHARGE",
 	"SPECIAL_MIN_CHARGE",
+	"SPECIAL_INHALE",
 	"SPECIAL_THROW_DIRECT",
 	"SPECIAL_THROW",
 	"SPECIAL_SWING",
@@ -83,6 +94,7 @@ export const damageTypeToWeaponType: Record<
 	MAX_CHARGE: "MAIN",
 	TAP_SHOT: "MAIN",
 	DISTANCE: "MAIN",
+	DISTANCE_JUMP: "MAIN",
 	SPLASH: "MAIN",
 	BOMB_NORMAL: "SUB",
 	BOMB_DIRECT: "SUB",
@@ -100,6 +112,7 @@ export const damageTypeToWeaponType: Record<
 	WAVE: "SPECIAL",
 	SPECIAL_MAX_CHARGE: "SPECIAL",
 	SPECIAL_MIN_CHARGE: "SPECIAL",
+	SPECIAL_INHALE: "SPECIAL",
 	SPECIAL_SWING: "SPECIAL",
 	SPECIAL_THROW: "SPECIAL",
 	SPECIAL_THROW_DIRECT: "SPECIAL",

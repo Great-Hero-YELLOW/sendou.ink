@@ -1,7 +1,9 @@
+import clsx from "clsx";
 import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { newArtPage } from "~/features/art/art-urls";
 import { useUser } from "~/features/auth/core/user";
+import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
 import { lfgNewPostPage } from "~/features/lfg/lfg-urls";
 import { plusSuggestionsNewPage } from "~/features/plus-suggestions/plus-suggestions-urls";
 import { canAccessTrophies } from "~/features/trophies/trophies-utils";
@@ -23,10 +25,12 @@ import {
 	SendouMenuItem,
 	type SendouMenuItemProps,
 } from "../elements/Menu";
+import styles from "./AnythingAdder.module.css";
 
-export function AnythingAdder({ compact }: { compact?: boolean }) {
+export function AnythingAdder() {
 	const { t } = useTranslation(["common"]);
 	const user = useUser();
+	const { status: globalStatus } = useGlobalStatus();
 
 	if (!user) {
 		return null;
@@ -112,14 +116,19 @@ export function AnythingAdder({ compact }: { compact?: boolean }) {
 	return (
 		<SendouMenu
 			placement="bottom right"
+			eager
 			trigger={
 				<SendouButton
 					size="small"
 					icon={<Plus />}
-					shape={compact ? "square" : undefined}
+					className={clsx(
+						styles.button,
+						globalStatus ? styles.withStatus : null,
+					)}
+					aria-label={t("common:actions.addNew")}
 					data-testid="anything-adder-menu-button"
 				>
-					{compact ? undefined : `${t("common:actions.addNew")}…`}
+					<span className={styles.label}>{t("common:actions.addNew")}</span>
 				</SendouButton>
 			}
 		>

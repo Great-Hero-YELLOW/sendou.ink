@@ -2,8 +2,8 @@ import * as R from "remeda";
 import type { Tables } from "~/db/tables";
 import * as Standings from "~/features/tournament/core/Standings";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
-import invariant from "~/utils/invariant";
-import type { BracketMapCounts } from "../toMapList";
+import { invariant } from "~/utils/invariant";
+import { type BracketMapCounts, roundSetKey } from "../toMapList";
 import { Bracket, type Standing } from "./Bracket";
 
 export class RoundRobinBracket extends Bracket {
@@ -160,7 +160,7 @@ export class RoundRobinBracket extends Bracket {
 				mapLosses?: number;
 				koCount?: number;
 			}) => {
-				const team = teams.find((team) => team.id === teamId);
+				const team = teams.find((candidate) => candidate.id === teamId);
 				if (team) {
 					team.setWins += setWins;
 					team.setLosses += setLosses;
@@ -357,13 +357,12 @@ export class RoundRobinBracket extends Bracket {
 		const result: BracketMapCounts = new Map();
 
 		for (const round of data.round) {
-			if (!result.get(round.groupId)) {
-				result.set(round.groupId, new Map());
+			const key = roundSetKey(round);
+			if (!result.get(key)) {
+				result.set(key, new Map());
 			}
 
-			result
-				.get(round.groupId)!
-				.set(round.number, { count: 3, type: "BEST_OF" });
+			result.get(key)!.set(round.number, { count: 3, type: "BEST_OF" });
 		}
 
 		return result;

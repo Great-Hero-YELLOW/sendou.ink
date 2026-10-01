@@ -1,29 +1,33 @@
 import clsx from "clsx";
-import { Mic, Star, Trash, Volume2, VolumeX } from "lucide-react";
+import { Edit, Mic, Star, Trash, Volume2, VolumeX } from "lucide-react";
 import * as React from "react";
-import { Flipped } from "react-flip-toolkit";
+import { ViewTransition } from "react";
 import { useTranslation } from "react-i18next";
 import { ActionButton } from "~/components/ActionButton";
 import { Avatar } from "~/components/Avatar";
 import { Divider } from "~/components/Divider";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
+import { SendouSwitch } from "~/components/elements/Switch";
 import { FormWithConfirm } from "~/components/FormWithConfirm";
 import { Image, WeaponImage } from "~/components/Image";
 import { NoteAvatar } from "~/components/NoteAvatar";
 import { useUser } from "~/features/auth/core/user";
-import { IS_Q_LOOKING_MOBILE_BREAKPOINT } from "~/features/sendouq/q-constants";
 import { useTournament } from "~/features/tournament/tournament-context";
 import {
 	UserCard,
 	useUserCardData,
 } from "~/features/user-card/components/UserCard";
 import { SendouForm } from "~/form/SendouForm";
-import { useMainContentWidth } from "~/hooks/useMainContentWidth";
+import { useActionSubmit } from "~/hooks/useActionSubmit";
 import type { UnifiedLanguageCode } from "~/modules/i18n/config";
 import { languagesUnified } from "~/modules/i18n/config";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { navIconUrl } from "~/utils/urls";
+import {
+	finishUpdateIfUnmoved,
+	usePageViewTransitionClasses,
+} from "~/utils/view-transition";
 import {
 	lookingSchema,
 	updateGroupFormSchema,
@@ -82,7 +86,7 @@ export function LFGGroupCard({
 	const showOrganizerDelete = !currentMember && tournament.isOrganizer(user);
 
 	return (
-		<LFGGroupCardContainer groupId={group.id} isOwnGroup={isOwnGroup}>
+		<LFGGroupCardContainer isOwnGroup={isOwnGroup}>
 			<section className={styles.group}>
 				{group.teamName ? (
 					<Divider smallText className={styles.teamHeader}>
@@ -103,8 +107,8 @@ export function LFGGroupCard({
 					))}
 				</div>
 				{isOwnGroup ? (
-					<LFGTeamNote
-						key={`${group.note ?? ""}-${currentMember?.isStayAsSub ?? false}`}
+					<LFGOwnGroupControls
+						key={group.note ?? ""}
 						note={group.note}
 						editable={group.usersRole === "OWNER"}
 						isStayAsSub={currentMember?.isStayAsSub ?? false}
@@ -176,19 +180,22 @@ function LFGOrganizerGroupRemover({ group }: { group: LFGGroup }) {
 
 function LFGGroupCardContainer({
 	isOwnGroup,
-	groupId,
 	children,
 }: {
 	isOwnGroup: boolean;
-	groupId: number;
 	children: React.ReactNode;
 }) {
-	const width = useMainContentWidth();
-	const layout = width < IS_Q_LOOKING_MOBILE_BREAKPOINT ? "mobile" : "desktop";
+	const transitionClasses = usePageViewTransitionClasses({
+		update: "card-update",
+	});
 
 	if (isOwnGroup) return <>{children}</>;
 
-	return <Flipped flipId={`${layout}-${groupId}`}>{children}</Flipped>;
+	return (
+		<ViewTransition {...transitionClasses} onUpdate={finishUpdateIfUnmoved}>
+			{children}
+		</ViewTransition>
+	);
 }
 
 function LFGGroupMemberRow({
@@ -249,7 +256,7 @@ function LFGGroupMemberRow({
 	);
 }
 
-function LFGTeamNote({
+function LFGOwnGroupControls({
 	note,
 	editable,
 	isStayAsSub,
@@ -260,60 +267,68 @@ function LFGTeamNote({
 	isStayAsSub: boolean;
 	memberCount: number;
 }) {
-	const { t } = useTranslation(["common", "q"]);
+	const { t } = useTranslation(["q"]);
 	const [editing, setEditing] = React.useState(false);
 
 	if (editing) {
 		return (
-			<LFGEditGroupForm
-				note={note}
-				isStayAsSub={isStayAsSub}
-				memberCount={memberCount}
-				stopEditing={() => setEditing(false)}
-			/>
+			<LFGEditGroupForm note={note} stopEditing={() => setEditing(false)} />
 		);
 	}
 
-	if (note) {
-		return (
-			<div className="text-lighter text-center text-xs mt-1">
-				{note}{" "}
+	return (
+		<div className="stack sm">
+			{note ? (
+				<div className="text-lighter text-center text-xs">{note}</div>
+			) : null}
+			<div className="stack horizontal sm items-center">
+				{memberCount === 1 ? (
+					<LFGStayAsSubSwitch isStayAsSub={isStayAsSub} />
+				) : null}
 				{editable ? (
 					<SendouButton
 						size="miniscule"
-						variant="minimal"
-						onPress={() => setEditing(true)}
-						className="mt-2 ml-auto"
+						variant="outlined"
+						icon={<Edit />}
+						onClick={() => setEditing(true)}
+						className="ml-auto"
 					>
-						{t("q:looking.groups.editNote")}
+						{note
+							? t("q:looking.groups.editNote")
+							: t("q:looking.groups.addNote")}
 					</SendouButton>
 				) : null}
 			</div>
-		);
-	}
+		</div>
+	);
+}
 
-	if (!editable) return null;
+/** Changes the sub preference in place so the group keeps its spot in the list. */
+function LFGStayAsSubSwitch({ isStayAsSub }: { isStayAsSub: boolean }) {
+	const { t } = useTranslation(["forms"]);
+	const { submit, fetcher } = useActionSubmit(lookingSchema, {
+		encType: "application/json",
+	});
+
+	const submitted = fetcher.json as { stayAsSub: boolean } | undefined;
 
 	return (
-		<SendouButton
-			variant="minimal"
-			size="miniscule"
-			onPress={() => setEditing(true)}
+		<SendouSwitch
+			size="small"
+			data-testid="stay-as-sub-switch"
+			isSelected={submitted?.stayAsSub ?? isStayAsSub}
+			onChange={(stayAsSub) => submit("SET_STAY_AS_SUB", { stayAsSub })}
 		>
-			{t("q:looking.groups.addNote")}
-		</SendouButton>
+			{t("forms:labels.stayAsSub")}
+		</SendouSwitch>
 	);
 }
 
 function LFGEditGroupForm({
 	note,
-	isStayAsSub,
-	memberCount,
 	stopEditing,
 }: {
 	note: string | null;
-	isStayAsSub: boolean;
-	memberCount: number;
 	stopEditing: () => void;
 }) {
 	const { t } = useTranslation(["common"]);
@@ -321,24 +336,19 @@ function LFGEditGroupForm({
 	return (
 		<SendouForm
 			schema={updateGroupFormSchema}
-			defaultValues={{ note: note ?? undefined, stayAsSub: isStayAsSub }}
+			defaultValues={{ note: note ?? undefined }}
 			submitButtonText={t("common:actions.save")}
 			secondarySubmit={
 				<SendouButton
 					variant="minimal-destructive"
 					size="miniscule"
-					onPress={stopEditing}
+					onClick={stopEditing}
 				>
 					{t("common:actions.cancel")}
 				</SendouButton>
 			}
 		>
-			{({ FormField }) => (
-				<>
-					<FormField name="note" />
-					{memberCount === 1 ? <FormField name="stayAsSub" /> : null}
-				</>
-			)}
+			{({ FormField }) => <FormField name="note" />}
 		</SendouForm>
 	);
 }
