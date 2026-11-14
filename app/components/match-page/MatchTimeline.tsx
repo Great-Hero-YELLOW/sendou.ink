@@ -52,12 +52,12 @@ const ABILITY_NAMES: ReadonlySet<string> = new Set(
 
 type MatchSide = "ALPHA" | "BRAVO";
 
-export interface TimelineTeam {
+interface TimelineTeam {
 	name: string;
 	avatar?: string;
 }
 
-export interface TimelineScoreboardPlayer {
+interface TimelineScoreboardPlayer {
 	name: string;
 	weaponSplId: MainWeaponId | null;
 	ka: number | null;
@@ -482,7 +482,10 @@ function ScoreboardTable({
 			<thead>
 				<tr className={styles.scoreboardHeaderRow}>
 					<th className={styles.scoreboardWeaponColumn} />
-					<th scope="col" className={styles.scoreboardTeamName}>
+					<th
+						scope="col"
+						className={clsx(styles.scoreboardTeamName, "truncate")}
+					>
 						{name}
 					</th>
 					<th scope="col" className={styles.scoreboardStatHeader}>
@@ -519,7 +522,10 @@ function ScoreboardTable({
 								/>
 							)}
 						</td>
-						<th scope="row" className={styles.scoreboardPlayerName}>
+						<th
+							scope="row"
+							className={clsx(styles.scoreboardPlayerName, "truncate")}
+						>
 							{player.name}
 						</th>
 						<td className={styles.scoreboardStat}>

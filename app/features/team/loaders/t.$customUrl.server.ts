@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
-import * as v from "valibot";
+import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import type { SerializeFrom } from "~/utils/remix";
-import { notFoundIfNullish } from "~/utils/remix.server";
+import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
 import * as TeamRepository from "../TeamRepository.server";
 import { teamParamsSchema } from "../team-schemas.server";
 import { canAddCustomizedColors } from "../team-utils";
@@ -9,7 +9,7 @@ import { canAddCustomizedColors } from "../team-utils";
 export type TeamLoaderData = SerializeFrom<typeof loader>;
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
-	const { customUrl } = v.parse(teamParamsSchema, params);
+	const { customUrl } = parseParams({ params, schema: teamParamsSchema });
 
 	const team = notFoundIfNullish(
 		await TeamRepository.findByCustomUrl(customUrl),
@@ -18,6 +18,9 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	const results = await TeamRepository.findResultPlacementsById(team.id);
 
 	return {
+		...(await UserCardRepository.findAllByUserIds({
+			userIds: team.members.map((member) => member.id),
+		})),
 		team,
 		customTheme: canAddCustomizedColors(team) ? team.customTheme : null,
 		results: resultsMapped(results),

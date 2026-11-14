@@ -1,6 +1,8 @@
+import { isAfter, subMonths } from "date-fns";
 import type { DBBoolean } from "~/db/tables";
 import type { TierName } from "~/features/mmr/mmr-constants";
 import { SENDOUQ_BEST_OF } from "~/features/sendouq/q-constants";
+import { databaseTimestampToDate } from "~/utils/dates";
 
 /** Each group's map win count and whether one has reached the best-of's required wins. */
 export function score(match: {
@@ -22,6 +24,21 @@ export function score(match: {
 		bravoWins,
 		isDecisive: alphaWins >= mapsToWin || bravoWins >= mapsToWin,
 	};
+}
+
+/**
+ * Game being played, starting from 1: the first unreported map. Once the score
+ * is decisive (e.g. awaiting the other team's confirmation) it stays on the
+ * set-ending game.
+ */
+export function currentGameNumber(match: Parameters<typeof score>[0]) {
+	const reportedCount = match.mapList.filter(
+		(map) => map.winnerGroupId !== null,
+	).length;
+
+	if (score(match).isDecisive) return reportedCount;
+
+	return Math.min(reportedCount + 1, match.mapList.length);
 }
 
 /** Members of both groups of the match, alpha's first. */
@@ -49,6 +66,21 @@ export function resolveGroupMemberOf(args: {
 	}
 
 	return null;
+}
+
+/** Participants see each other's friend codes for a month after the match was created, staff always. */
+export function canSeeFriendCodes(args: {
+	matchCreatedAt: number;
+	isParticipant: boolean;
+	isStaff: boolean;
+}) {
+	if (args.isStaff) return true;
+	if (!args.isParticipant) return false;
+
+	return isAfter(
+		databaseTimestampToDate(args.matchCreatedAt),
+		subMonths(new Date(), 1),
+	);
 }
 
 /** Tier a group held when its match started, from the snapshot taken then (thresholds shift with the season's distribution). `undefined` for matches predating the snapshot. */

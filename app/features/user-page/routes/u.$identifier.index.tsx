@@ -1,4 +1,3 @@
-import clsx from "clsx";
 import { Pencil as EditIcon, Puzzle as PuzzleIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { href, useLoaderData, useOutletContext } from "react-router";
@@ -81,7 +80,7 @@ export default function UserInfoPage() {
 					<LinkButton
 						to={href("/u/:identifier/edit-widgets", {
 							identifier:
-								layoutData.user.customUrl ?? layoutData.user.discordId,
+								layoutData.user.customUrl ?? String(layoutData.user.id),
 						})}
 						variant="outlined"
 						size="small"
@@ -92,7 +91,7 @@ export default function UserInfoPage() {
 					<LinkButton
 						to={href("/u/:identifier/edit", {
 							identifier:
-								layoutData.user.customUrl ?? layoutData.user.discordId,
+								layoutData.user.customUrl ?? String(layoutData.user.id),
 						})}
 						variant="outlined"
 						size="small"
@@ -108,7 +107,7 @@ export default function UserInfoPage() {
 			</div>
 
 			<div className={styles.widgets}>
-				<div className={clsx(styles.side, "scrollbar")}>
+				<div className={styles.side}>
 					{sideWidgets.map((widget) => (
 						<Widget key={widget.id} widget={widget} user={layoutData.user} />
 					))}

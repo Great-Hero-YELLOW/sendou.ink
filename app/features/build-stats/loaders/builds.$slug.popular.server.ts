@@ -1,42 +1,43 @@
 import { cachified } from "@epic-web/cachified";
 import type { LoaderFunctionArgs } from "react-router";
 import * as BuildRepository from "~/features/builds/BuildRepository.server";
-import { getServerTFunction } from "~/modules/i18n/i18next.server";
-import { weaponIdToType } from "~/modules/in-game-lists/weapon-ids";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
-import { notFoundIfNullish } from "~/utils/remix.server";
-import { weaponNameSlugToId } from "~/utils/unslugify.server";
+import { weaponBuildsLayoutData } from "~/features/builds/core/weapon-builds-layout.server";
+import { cache, ttl } from "~/utils/cache.server";
+import { ANY_TIME, DEFAULT_UPDATED_SINCE } from "../build-stats-constants";
+import { buildStatsSearchParams } from "../build-stats-search-params";
 import { popularBuilds } from "../build-stats-utils";
 
-export const loader = async ({ params }: LoaderFunctionArgs) => {
-	const t = getServerTFunction(["builds", "weapons"]);
-	const slug = params.slug;
-	const weaponId = notFoundIfNullish(weaponNameSlugToId(slug));
+export const loader = async ({ params, url }: LoaderFunctionArgs) => {
+	const layout = await weaponBuildsLayoutData(params.slug);
+	const { weaponId } = layout;
 
-	if (weaponIdToType(weaponId) === "ALT_SKIN") {
-		throw new Response(null, { status: 404 });
+	const { date: selectedDate } = buildStatsSearchParams.parse(url);
+
+	const popularSince = (date: string) =>
+		cachified({
+			key: `popular-builds-${weaponId}-${date}`,
+			cache,
+			ttl: ttl(Number.POSITIVE_INFINITY),
+			async getFreshValue() {
+				return popularBuilds(
+					await BuildRepository.findNewestBuildPerOwnerByWeaponId({
+						weaponId,
+						updatedSince: date === ANY_TIME ? null : date,
+					}),
+				);
+			},
+		});
+
+	let resolvedDate = selectedDate ?? DEFAULT_UPDATED_SINCE;
+	let popular = await popularSince(resolvedDate);
+	if (!selectedDate && popular.builds.length === 0) {
+		resolvedDate = ANY_TIME;
+		popular = await popularSince(resolvedDate);
 	}
 
-	const weaponName = t(`weapons:MAIN_${weaponId}`);
-
-	const cachedPopularBuilds = await cachified({
-		key: `popular-builds-${weaponId}`,
-		cache,
-		ttl: ttl(IN_MILLISECONDS.ONE_HOUR),
-		async getFreshValue() {
-			return popularBuilds(
-				await BuildRepository.findAllPopularAbilitiesByWeaponId(weaponId),
-			);
-		},
-	});
-
 	return {
-		popularBuilds: cachedPopularBuilds,
-		weaponName,
-		meta: {
-			weaponId,
-			slug: slug!,
-			breadcrumbText: t("builds:linkButton.popularBuilds"),
-		},
+		popular,
+		date: resolvedDate,
+		...layout,
 	};
 };

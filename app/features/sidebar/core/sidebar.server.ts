@@ -1,5 +1,5 @@
 import { cachified } from "@epic-web/cachified";
-import { addDays, addWeeks, subHours } from "date-fns";
+import { addDays, subHours } from "date-fns";
 import { href } from "react-router";
 import * as R from "remeda";
 import * as ExternalStreamRepository from "~/features/admin/ExternalStreamRepository.server";
@@ -10,7 +10,8 @@ import { userIsBanned } from "~/features/ban/core/banned.server";
 import type { ShowcaseCalendarEvent } from "~/features/calendar/calendar-types";
 import {
 	COMBINED_STREAMS_KEY,
-	getLiveTournamentStreamerTwitchNames,
+	fetchRunningTournamentStreams,
+	getLiveTournamentStreamAccounts,
 	getLiveTournamentStreams,
 	getUpcomingLeagueCastStreams,
 	type SidebarStream,
@@ -23,11 +24,17 @@ import {
 } from "~/features/friends/friends-constants";
 import {
 	type FriendActivity,
+	isJoinableFriendLobby,
 	resolveFriendActivity,
 	resolveSendouQMatchStreams,
+	resolveUpcomingLobbiesOfFriends,
+	resolveVisibleActiveLobbiesOfFriends,
 } from "~/features/friends/friends-utils.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
+import * as LiveStream from "~/features/live-streams/core/LiveStream";
 import * as LiveStreamRepository from "~/features/live-streams/LiveStreamRepository.server";
+import * as LobbyRepository from "~/features/lobbies/LobbyRepository.server";
+import * as Seasons from "~/features/mmr/core/Seasons";
 import type { SidebarScrim } from "~/features/scrims/ScrimPostRepository.server";
 import * as ScrimPostRepository from "~/features/scrims/ScrimPostRepository.server";
 import { scrimsSearchParams } from "~/features/scrims/scrims-search-params";
@@ -40,15 +47,15 @@ import {
 import * as SavedCalendarEventRepository from "~/features/tournament/SavedCalendarEventRepository.server";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
 import { cache, ttl } from "~/utils/cache.server";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import type { CommonUser } from "~/utils/kysely.server";
 import {
+	avatarUrl,
 	BLANK_IMAGE_URL,
-	discordAvatarUrl,
+	lobbyPage,
 	navIconUrl,
 	teamSchedulePage,
 	tournamentMatchPage,
-	twitchUrl,
 	userPage,
 } from "~/utils/urls";
 import * as StreamRanking from "./StreamRanking";
@@ -61,23 +68,24 @@ export type SidebarEvent = {
 	/** Whose avatar the event shows instead of a logo of its own. */
 	user: CommonUser | null;
 	startsAt: number;
-	type: "tournament" | "scrim" | "teamEvent" | "leagueMatch";
+	type: "tournament" | "scrim" | "teamEvent" | "leagueMatch" | "lobby";
 	scrimStatus?: "booked" | "looking" | "requestPending";
 };
 
-export type SidebarFriend = {
+type SidebarFriend = {
 	id: number;
 	name: string;
-	discordId: string;
-	discordAvatar: string | null;
-	customAvatarUrl: string | null;
+	avatar: CommonUser["avatar"];
 	url: string;
 	subtitle: string;
-	badge: string;
+	badge: string | null;
 	activityType: FriendActivityType | null;
 	matchId: number | null;
 	tournamentId: number | null;
-	streamUrl: string | null;
+	lobbyId: number | null;
+	/** Present in a lobby with a free spot the viewer isn't in */
+	isInJoinableLobby: boolean;
+	stream: FriendActivity["stream"];
 };
 
 const MAX_EVENTS_VISIBLE = 5;
@@ -86,6 +94,8 @@ const MAX_STREAMS_VISIBLE = 5;
 const UPCOMING_TOURNAMENT_WINDOW_DAYS = 3;
 const SENDOUQ_QUOTA = 2;
 const TOURNAMENT_SUB_QUOTA = 2;
+const LOBBY_QUOTA = 2;
+const UPCOMING_LOBBY_WINDOW_DAYS = 14;
 
 export async function resolveSidebarData(user: AuthenticatedUser | undefined) {
 	const userId = user?.id ?? null;
@@ -111,6 +121,13 @@ export async function resolveSidebarData(user: AuthenticatedUser | undefined) {
 	const incomingFriendRequestIds =
 		await FriendRepository.findPendingReceivedRequestIds(userId);
 	const streamedSendouQMatches = await resolveSendouQMatchStreams();
+	const upcomingLobbiesOfFriends =
+		await resolveUpcomingLobbiesOfFriends(userId);
+	const visibleLobbies = await resolveVisibleActiveLobbiesOfFriends({
+		viewerId: userId,
+		friendIds: friendsWithActivity.map((friend) => friend.id),
+	});
+	const lobbies = await findUpcomingLobbies(userId);
 	const teamEvents = await findUpcomingTeamEvents(userId);
 	const leagueMatches = await findUpcomingLeagueMatches(userId);
 	const scheduleNudge = await showScheduleNudge(user);
@@ -144,17 +161,25 @@ export async function resolveSidebarData(user: AuthenticatedUser | undefined) {
 		leagueMatchToSidebarEvent,
 	);
 
+	const lobbyEvents: SidebarEvent[] = lobbies.map(lobbyToSidebarEvent);
+
 	const events = [
 		...tournamentEvents,
 		...savedEvents,
 		...scrimEvents,
 		...teamEventEvents,
 		...leagueMatchEvents,
+		...lobbyEvents,
 	]
 		.sort((a, b) => a.startsAt - b.startsAt)
 		.slice(0, MAX_EVENTS_VISIBLE);
 
-	const friends = resolveFriends(friendsWithActivity, streamedSendouQMatches);
+	const friends = resolveFriends({
+		friendsWithActivity,
+		streamedSendouQMatches,
+		visibleLobbies,
+		upcomingLobbiesOfFriends,
+	});
 
 	const savedTournamentIds = savedTournaments.map((t) => t.id);
 
@@ -177,7 +202,7 @@ async function showScheduleNudge(user: AuthenticatedUser | undefined) {
 
 	if (!Availability.isLastDayOfWeek(now, timezone)) return false;
 
-	const weekStartsAt = Availability.weekStartsAt(addWeeks(now, 1), timezone);
+	const weekStartsAt = Availability.weekStartsAt(now, timezone, 1);
 	const dismissedAt = user.preferences?.scheduleNudgeDismissedWeekStartsAt;
 
 	if (
@@ -205,21 +230,21 @@ function combinedStreamsCached(): Promise<SidebarStream[]> {
 }
 
 async function combinedStreams(): Promise<SidebarStream[]> {
-	const tournamentStreams = getLiveTournamentStreams();
-	const [sendouQEntries, xRankRows, upcomingTournaments, externalStreams] =
-		await Promise.all([
-			getSendouQSidebarStreams(),
-			LiveStreamRepository.findXRankStreams(),
-			ShowcaseTournaments.upcomingTournaments(),
-			ExternalStreamRepository.findAllForSidebar(),
-		]);
+	const runningTournaments = await fetchRunningTournamentStreams();
+	const tournamentStreams = getLiveTournamentStreams(runningTournaments);
+	const sendouQEntries = await getSendouQSidebarStreams();
+	const xRankRows = await LiveStreamRepository.findXRankStreams(
+		Seasons.currentOrPrevious()!.nth,
+	);
+	const upcomingTournaments = await ShowcaseTournaments.upcomingTournaments();
+	const externalStreams = await ExternalStreamRepository.findAllForSidebar();
 
-	const seenUsernames = new Set([
-		...getLiveTournamentStreamerTwitchNames(),
-		...sendouQEntries.flatMap((e) =>
-			e.twitchUsernames.map((t) => t.toLowerCase()),
-		),
-	]);
+	const seenStreamKeys = new Set(
+		[
+			...getLiveTournamentStreamAccounts(runningTournaments),
+			...sendouQEntries.flatMap((e) => e.streamAccounts),
+		].map(LiveStream.key),
+	);
 
 	const ranked: { stream: SidebarStream; score: number }[] = [];
 
@@ -248,7 +273,7 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 		});
 	}
 
-	for (const stream of getUpcomingLeagueCastStreams()) {
+	for (const stream of getUpcomingLeagueCastStreams(runningTournaments)) {
 		ranked.push({
 			stream,
 			score: StreamRanking.upcomingTournamentTierToScore(
@@ -265,22 +290,23 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 
 	const xRankByStream = new Map<string, (typeof xRankRows)[number]>();
 	for (const row of xRankRows) {
-		const key = row.twitchUsername?.toLowerCase() ?? `user-${row.id}`;
+		const key = LiveStream.key(row);
 		const existing = xRankByStream.get(key);
 		if (!existing || (row.peakXp ?? 0) > (existing.peakXp ?? 0)) {
 			xRankByStream.set(key, row);
 		}
 	}
 
-	for (const row of xRankByStream.values()) {
+	const xRankUserIds = new Set<number>();
+	const xRankRowsMostViewedFirst = R.sortBy(
+		[...xRankByStream.values()],
+		[(row) => row.viewerCount, "desc"],
+	);
+	for (const row of xRankRowsMostViewedFirst) {
 		if (userIsBanned(row.id)) continue;
-
-		if (
-			row.twitchUsername &&
-			seenUsernames.has(row.twitchUsername.toLowerCase())
-		) {
-			continue;
-		}
+		if (seenStreamKeys.has(LiveStream.key(row))) continue;
+		if (xRankUserIds.has(row.id)) continue;
+		xRankUserIds.add(row.id);
 
 		const score = StreamRanking.xpToScore(row.peakXp ?? 0);
 		if (score === null) continue;
@@ -289,20 +315,10 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 			stream: {
 				id: `xrank-${row.id}`,
 				name: row.username,
-				imageUrl: row.customAvatarUrl
-					? row.customAvatarUrl
-					: row.discordAvatar
-						? discordAvatarUrl({
-								discordId: row.discordId,
-								discordAvatar: row.discordAvatar,
-								size: "sm",
-							})
-						: BLANK_IMAGE_URL,
-				url: row.twitchUsername
-					? twitchUrl(row.twitchUsername)
-					: userPage({ discordId: row.discordId, customUrl: row.customUrl }),
+				imageUrl: row.avatar ? avatarUrl(row.avatar, "sm") : BLANK_IMAGE_URL,
+				url: LiveStream.url(row),
 				subtitle: "",
-				startsAt: Math.floor(Date.now() / 1000),
+				startsAt: databaseTimestampNow(),
 				tier: null,
 				peakXp: row.peakXp ?? undefined,
 			},
@@ -310,7 +326,7 @@ async function combinedStreams(): Promise<SidebarStream[]> {
 		});
 	}
 
-	const nowTimestamp = dateToDatabaseTimestamp(new Date());
+	const nowTimestamp = databaseTimestampNow();
 	const threeDaysFromNow = dateToDatabaseTimestamp(
 		addDays(new Date(), UPCOMING_TOURNAMENT_WINDOW_DAYS),
 	);
@@ -349,10 +365,23 @@ type FriendWithActivity = Awaited<
 	ReturnType<typeof FriendRepository.findByUserIdWithActivity>
 >[number];
 
-function resolveFriends(
-	friendsWithActivity: FriendWithActivity[],
-	streamedSendouQMatches: ReadonlyMap<number, string>,
-) {
+function resolveFriends({
+	friendsWithActivity,
+	streamedSendouQMatches,
+	visibleLobbies,
+	upcomingLobbiesOfFriends,
+}: {
+	friendsWithActivity: FriendWithActivity[];
+	streamedSendouQMatches: Awaited<
+		ReturnType<typeof resolveSendouQMatchStreams>
+	>;
+	visibleLobbies: Awaited<
+		ReturnType<typeof resolveVisibleActiveLobbiesOfFriends>
+	>;
+	upcomingLobbiesOfFriends: Awaited<
+		ReturnType<typeof resolveUpcomingLobbiesOfFriends>
+	>;
+}) {
 	const entries = R.uniqueBy(friendsWithActivity, (f) => f.id).map((row) => {
 		const activity = resolveFriendActivity({
 			friendId: row.id,
@@ -361,6 +390,8 @@ function resolveFriends(
 			teamMemberCount: row.teamMemberCount,
 			tournamentMinTeamSize: row.tournamentMinTeamSize,
 			sendouQMatchStreams: streamedSendouQMatches,
+			visibleLobbies,
+			upcomingLobby: upcomingLobbiesOfFriends.get(row.id),
 		});
 
 		return {
@@ -373,7 +404,11 @@ function resolveFriends(
 	});
 
 	return orderSidebarFriends(entries).map(({ row, activity }) =>
-		rowToSidebarFriend(row, activity),
+		rowToSidebarFriend({
+			row,
+			activity,
+			isInJoinableLobby: isJoinableFriendLobby({ activity, visibleLobbies }),
+		}),
 	);
 }
 
@@ -384,7 +419,10 @@ type OrderableFriend = {
 	activityType: FriendActivityType | null;
 };
 
-/** Pinned friends with activity, the rest with activity, pinned idle friends, the rest, truncated to what fits. Each section keeps its own order of activity type quotas, friends before team members. */
+/**
+ * Pinned friends with activity, the rest with activity, pinned idle friends, the rest, truncated to what fits. Each section keeps its own order of activity type quotas, friends before team members.
+ * @internal
+ */
 export function orderSidebarFriends<T extends OrderableFriend>(entries: T[]) {
 	const friends = entries.filter(({ isFriend }) => isFriend);
 	const teamMembers = entries.filter(({ isFriend }) => !isFriend);
@@ -394,6 +432,10 @@ export function orderSidebarFriends<T extends OrderableFriend>(entries: T[]) {
 	);
 	const tournamentSubFriends = friends.filter(
 		({ activityType }) => activityType === "TOURNAMENT_SUB",
+	);
+	const lobbyFriends = friends.filter(
+		({ activityType }) =>
+			activityType === "LOBBY" || activityType === "LOBBY_UPCOMING",
 	);
 	const inMatchFriends = friends.filter(({ activityType }) =>
 		isInProgressFriendActivity(activityType),
@@ -409,8 +451,10 @@ export function orderSidebarFriends<T extends OrderableFriend>(entries: T[]) {
 	const ordered = [
 		...sendouqFriends.slice(0, SENDOUQ_QUOTA),
 		...tournamentSubFriends.slice(0, TOURNAMENT_SUB_QUOTA),
+		...lobbyFriends.slice(0, LOBBY_QUOTA),
 		...sendouqFriends.slice(SENDOUQ_QUOTA),
 		...tournamentSubFriends.slice(TOURNAMENT_SUB_QUOTA),
+		...lobbyFriends.slice(LOBBY_QUOTA),
 		...inMatchFriends,
 		...activeTeamMembers,
 		...idleFriends,
@@ -423,23 +467,28 @@ export function orderSidebarFriends<T extends OrderableFriend>(entries: T[]) {
 	);
 }
 
-function rowToSidebarFriend(
-	row: FriendWithActivity,
-	activity: FriendActivity,
-): SidebarFriend {
+function rowToSidebarFriend({
+	row,
+	activity,
+	isInJoinableLobby,
+}: {
+	row: FriendWithActivity;
+	activity: FriendActivity;
+	isInJoinableLobby: boolean;
+}): SidebarFriend {
 	return {
 		id: row.id,
 		name: row.username,
-		discordId: row.discordId,
-		discordAvatar: row.discordAvatar,
-		customAvatarUrl: row.customAvatarUrl,
-		url: userPage({ discordId: row.discordId, customUrl: row.customUrl }),
+		avatar: row.avatar,
+		url: userPage({ id: row.id, customUrl: row.customUrl }),
 		subtitle: activity.subtitle ?? "",
-		badge: activity.badge ?? "",
+		badge: activity.badge,
 		activityType: activity.type,
 		matchId: activity.matchId,
 		tournamentId: activity.tournamentId ?? row.tournamentId,
-		streamUrl: activity.streamUrl,
+		lobbyId: activity.lobbyId,
+		isInJoinableLobby,
+		stream: activity.stream,
 	};
 }
 
@@ -524,6 +573,33 @@ export function teamEventToSidebarEvent(
 		user: null,
 		startsAt: event.startsAt,
 		type: "teamEvent" as const,
+	};
+}
+
+/** Unended lobbies the user signed up for (or hosts), running or starting within the window. */
+export function findUpcomingLobbies(userId: number) {
+	return LobbyRepository.findAllUpcomingByUserId({
+		userId,
+		startsBefore: dateToDatabaseTimestamp(
+			addDays(new Date(), UPCOMING_LOBBY_WINDOW_DAYS),
+		),
+	});
+}
+
+const LOBBIES_ICON_URL = `${navIconUrl("lobbies")}.avif`;
+export function lobbyToSidebarEvent(lobby: {
+	id: number;
+	name: string;
+	startsAt: number;
+}): SidebarEvent {
+	return {
+		id: lobby.id,
+		name: lobby.name,
+		url: lobbyPage(lobby.id),
+		logoUrl: LOBBIES_ICON_URL,
+		user: null,
+		startsAt: lobby.startsAt,
+		type: "lobby" as const,
 	};
 }
 

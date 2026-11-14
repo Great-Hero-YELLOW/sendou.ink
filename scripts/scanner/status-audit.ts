@@ -19,13 +19,6 @@ import {
 	type PlayerStatusTimelineSample,
 	statusSpans,
 } from "../../app/components/PlayerStatusTimeline";
-import { formatTime } from "../../app/features/scanner/components/format";
-import {
-	lobbyLabel,
-	mainWeaponLabel,
-	modeLabel,
-	stageLabel,
-} from "../../app/features/scanner/components/labels";
 import {
 	DEATH_EVENT_TYPE,
 	type DeathData,
@@ -49,12 +42,12 @@ import {
 	PLAYER_STATUS_EVENT_TYPE,
 	type PlayerStatusData,
 	type PlayerStatusFlags,
-	type PlayerStatusLayout,
 } from "../../app/features/scanner/core/detectors/objective/player-status";
 import {
 	STRIP_WEAPONS_EVENT_TYPE,
 	type StripWeaponsData,
 } from "../../app/features/scanner/core/detectors/objective/strip-weapons";
+import { QUICK_SCOREBOARD_BATTLE_LOG_EVENT_TYPE } from "../../app/features/scanner/core/detectors/quick-scoreboard-battle-log/index";
 import {
 	SCOREBOARD_EVENT_TYPE,
 	type ScoreboardData,
@@ -63,6 +56,13 @@ import {
 import { SCOREBOARD_BATTLE_LOG_EVENT_TYPE } from "../../app/features/scanner/core/detectors/scoreboard-battle-log/index";
 import { SCOREBOARD_BATTLE_LOG_REPLAY_EVENT_TYPE } from "../../app/features/scanner/core/detectors/scoreboard-battle-log-replay/index";
 import type { DetectedEvent } from "../../app/features/scanner/core/detectors/types";
+import { formatTime } from "../../app/features/scanner/core/format";
+import {
+	lobbyLabel,
+	mainWeaponLabel,
+	modeLabel,
+	stageLabel,
+} from "../../app/features/scanner/core/labels";
 import {
 	type BuiltMatch,
 	buildScannerMatches,
@@ -91,6 +91,7 @@ const SPAN_EPSILON_SECONDS = 0.001;
 const SCOREBOARD_TYPES = new Set([
 	SCOREBOARD_EVENT_TYPE,
 	SCOREBOARD_BATTLE_LOG_EVENT_TYPE,
+	QUICK_SCOREBOARD_BATTLE_LOG_EVENT_TYPE,
 	SCOREBOARD_BATTLE_LOG_REPLAY_EVENT_TYPE,
 ]);
 
@@ -225,7 +226,14 @@ function eventFromRow(type: string, row: string[]): DetectedEvent | null {
 		return { type, ...base, data: parsePlayerStatusCell(players) };
 	}
 	if (type === OBJECTIVE_EVENT_TYPE) {
-		return { type, ...base, data: parseObjectiveCell(players) };
+		return {
+			type,
+			...base,
+			data: parseObjectiveCell(
+				players,
+				MODE_BY_LABEL.get(row[columns.mode] ?? "") ?? null,
+			),
+		};
 	}
 	if (type === STRIP_WEAPONS_EVENT_TYPE) {
 		return { type, ...base, data: parseStripWeaponsCell(players) };
@@ -259,10 +267,10 @@ function parseClock(m: string, s: string): number {
 
 function parsePlayerStatusCell(cell: string): PlayerStatusData {
 	const match = cell.match(
-		/^(?:(\d+):(\d{2}) · )?([✕★·]{4}) vs ([✕★·]{4}) \((even|narrow-right|narrow-left)\)$/u,
+		/^(?:(\d+):(\d{2}) · )?([✕★·]{4}) vs ([✕★·]{4})(?: \((?:even|narrow-right|narrow-left)\))?$/u,
 	);
 	if (!match) throw new Error(`bad PlayerStatus cell: ${cell}`);
-	const [, m, s, left, right, layout] = match;
+	const [, m, s, left, right] = match;
 	const sideFlags = (icons: string) => {
 		const chars = [...icons];
 		return {
@@ -276,36 +284,52 @@ function parsePlayerStatusCell(cell: string): PlayerStatusData {
 		time: m === undefined ? null : parseClock(m, s!),
 		special: [a.special, b.special],
 		dead: [a.dead, b.dead],
-		layout: layout as PlayerStatusLayout,
 		// the CSV carries no camera-badge evidence
 		cast: null,
 	};
 }
 
-function parseObjectiveCell(cell: string): ObjectiveData {
+/** SZ cells carry penalties, TC/RM cells the track position (` @ N`). */
+function parseObjectiveCell(
+	cell: string,
+	mode: ModeShort | null,
+): ObjectiveData {
 	const match = cell.match(
-		/^(?:(\d+):(\d{2}) · )?(\d+|\?)(?: \(\+(\d+)\))?( ctrl)? vs (\d+|\?)(?: \(\+(\d+)\))?( ctrl)?$/u,
+		/^(?:(\d+):(\d{2}) · )?(\d+|\?)(?: \(\+(\d+)\))?( ctrl)? vs (\d+|\?)(?: \(\+(\d+)\))?( ctrl)?(?: @ (-?\d+))?$/u,
 	);
 	if (!match) throw new Error(`bad Objective cell: ${cell}`);
-	const [, m, s, scoreA, penA, ctrlA, scoreB, penB, ctrlB] = match;
+	const [, m, s, scoreA, penA, ctrlA, scoreB, penB, ctrlB, position] = match;
 	const num = (v: string | undefined) =>
 		v === undefined || v === "?" ? null : Number(v);
+	if (
+		mode !== "SZ" &&
+		(position !== undefined || mode === "TC" || mode === "RM")
+	) {
+		return {
+			mode: mode === "TC" || mode === "RM" ? mode : null,
+			time: m === undefined ? null : parseClock(m, s!),
+			score: [num(scoreA), num(scoreB)],
+			control: ctrlA ? 0 : ctrlB ? 1 : null,
+			position: num(position),
+			teamColor: [null, null],
+		};
+	}
 	return {
 		mode: "SZ",
 		time: m === undefined ? null : parseClock(m, s!),
 		score: [num(scoreA), num(scoreB)],
 		penalty: [num(penA), num(penB)],
-		control: [ctrlA !== undefined, ctrlB !== undefined],
+		control: ctrlA ? 0 : ctrlB ? 1 : null,
 		teamColor: [null, null],
 	};
 }
 
 function parseStripWeaponsCell(cell: string): StripWeaponsData {
 	const match = cell.match(
-		/^(?:(\d+):(\d{2}) · )?(.*) vs (.*) \((even|narrow-right|narrow-left)\)$/u,
+		/^(?:(\d+):(\d{2}) · )?(.*) vs (.*?)(?: \((?:even|narrow-right|narrow-left)\))?$/u,
 	);
 	if (!match) throw new Error(`bad StripWeapons cell: ${cell}`);
-	const [, m, s, left, right, layout] = match;
+	const [, m, s, left, right] = match;
 	const side = (text: string) =>
 		text.split(" | ").map((entry) => {
 			if (entry === "✕") return null;
@@ -315,7 +339,6 @@ function parseStripWeaponsCell(cell: string): StripWeaponsData {
 		});
 	return {
 		time: m === undefined ? null : parseClock(m, s!),
-		layout: layout as PlayerStatusLayout,
 		slots: [side(left!), side(right!)],
 	};
 }

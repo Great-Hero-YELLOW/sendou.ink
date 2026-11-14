@@ -46,6 +46,7 @@ export function WeaponPoolFormField({
 	error,
 	maxCount,
 	disableSorting,
+	insertInGameOrder,
 	disableFavorites,
 	disableAltSkinDuplicates,
 	value,
@@ -74,7 +75,13 @@ export function WeaponPoolFormField({
 			isFavorite: false,
 		};
 
-		const newValue = [...value, newWeapon];
+		const inGameOrderIndex = insertInGameOrder
+			? value.findIndex((weapon) => weapon.id > weaponId)
+			: -1;
+		const newValue =
+			inGameOrderIndex === -1
+				? [...value, newWeapon]
+				: value.toSpliced(inGameOrderIndex, 0, newWeapon);
 
 		if (disableSorting) {
 			newValue.sort((a, b) => a.id - b.id);
@@ -210,7 +217,7 @@ function StaticWeaponItem({
 				size={32}
 				className={styles.weaponImage}
 			/>
-			<span className={styles.weaponName}>
+			<span className={clsx(styles.weaponName, "truncate")}>
 				{t(`weapons:MAIN_${weapon.id}`)}
 			</span>
 			<div className={styles.actions}>
@@ -259,6 +266,7 @@ function SortableWeaponItem({
 		attributes,
 		listeners,
 		setNodeRef,
+		setActivatorNodeRef,
 		transform,
 		transition,
 		isDragging,
@@ -274,12 +282,13 @@ function SortableWeaponItem({
 			ref={setNodeRef}
 			style={style}
 			className={clsx(styles.item, { [styles.isDragging]: isDragging })}
-			{...attributes}
 		>
 			<button
+				ref={setActivatorNodeRef}
 				type="button"
 				className={styles.dragHandle}
 				aria-label="Drag to reorder"
+				{...attributes}
 				{...listeners}
 			>
 				☰
@@ -292,7 +301,7 @@ function SortableWeaponItem({
 				size={32}
 				className={styles.weaponImage}
 			/>
-			<span className={styles.weaponName}>
+			<span className={clsx(styles.weaponName, "truncate")}>
 				{t(`weapons:MAIN_${weapon.id}`)}
 			</span>
 			<div className={styles.actions}>

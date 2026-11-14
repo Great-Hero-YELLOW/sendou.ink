@@ -8,6 +8,7 @@ import {
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import type { UserMapModePreferences } from "~/db/tables-json";
+import * as ModAuditLogRepository from "~/features/admin/ModAuditLogRepository.server";
 import { actorId } from "~/features/auth/core/user.server";
 import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
@@ -113,7 +114,7 @@ export async function findCurrentGroups() {
 					vc: eb.ref("User.vc"),
 				}).as("members"),
 			])
-			// != INACTIVE (same set as ACTIVE or PREPARING) so the partial
+			// != INACTIVE (same set as ACTIVE, PREPARING or READY_CHECK) so the partial
 			// group_status_active index applies
 			.where("Group.status", "!=", "INACTIVE")
 			.groupBy("Group.id")
@@ -178,13 +179,10 @@ export async function insert(args: CreateGroupArgs) {
 type CreateGroupFromPreviousGroupArgs = {
 	previousGroupId: number;
 	memberUserIds: number[];
-	status?: Exclude<Tables["Group"]["status"], "INACTIVE">;
 };
 export async function insertFromPrevious(
 	args: CreateGroupFromPreviousGroupArgs,
 ) {
-	const status = args.status ?? "PREPARING";
-
 	return db.transaction().execute(async (trx) => {
 		const previousGroup = await trx
 			.selectFrom("Group")
@@ -225,19 +223,37 @@ export async function insertFromPrevious(
 			.values({
 				chatRoomId,
 				inviteCode: shortNanoid(),
-				status,
+				status: "ACTIVE",
 				matchmade: previousGroup.matchmade,
 			})
 			.returning("id")
 			.executeTakeFirstOrThrow();
 
+		const previousMembers = await trx
+			.selectFrom("GroupMember")
+			.select(["GroupMember.userId", "GroupMember.addedByUserId"])
+			.where("GroupMember.groupId", "=", args.previousGroupId)
+			.execute();
+
 		await trx
 			.insertInto("GroupMember")
 			.values(
-				args.memberUserIds.map((userId) => ({
-					groupId: createdGroup.id,
-					userId,
-				})),
+				args.memberUserIds.map((userId) => {
+					const addedByUserId =
+						previousMembers.find((member) => member.userId === userId)
+							?.addedByUserId ?? null;
+
+					return {
+						groupId: createdGroup.id,
+						userId,
+						// the quick add only holds while the adder is still around
+						addedByUserId:
+							addedByUserId !== null &&
+							args.memberUserIds.includes(addedByUserId)
+								? addedByUserId
+								: null,
+					};
+				}),
 			)
 			.execute();
 
@@ -325,9 +341,9 @@ export async function deleteLikesAndSuggestionsByGroupId(
 	await deleteSuggestionsByGroupId(groupId, trx);
 }
 
-/** Clears what the departing member is responsible for: every challenge the group received (the roster the other group challenged is gone) plus the challenges and suggestions that member made themselves. */
+/** Clears what the departing members are responsible for: every challenge the group received (the roster the other group challenged is gone) plus the challenges and suggestions those members made themselves. */
 async function deleteLikesAndSuggestionsOnLeave(
-	{ groupId, userId }: { groupId: number; userId: number },
+	{ groupId, userIds }: { groupId: number; userIds: number[] },
 	trx: Transaction<DB>,
 ) {
 	await trx
@@ -337,7 +353,7 @@ async function deleteLikesAndSuggestionsOnLeave(
 				eb("GroupLike.targetGroupId", "=", groupId),
 				eb.and([
 					eb("GroupLike.likerGroupId", "=", groupId),
-					eb("GroupLike.createdByUserId", "=", userId),
+					eb("GroupLike.createdByUserId", "in", userIds),
 				]),
 			]),
 		)
@@ -346,7 +362,7 @@ async function deleteLikesAndSuggestionsOnLeave(
 	await trx
 		.deleteFrom("GroupSuggestion")
 		.where("GroupSuggestion.suggesterGroupId", "=", groupId)
-		.where("GroupSuggestion.createdByUserId", "=", userId)
+		.where("GroupSuggestion.createdByUserId", "in", userIds)
 		.execute();
 }
 
@@ -364,18 +380,30 @@ export function morphGroups({
 			.where("Group.id", "=", survivingGroupId)
 			.executeTakeFirst();
 
-		// fresh chat room so neither group's previous messages are visible, and
-		// mark as matchmade
-		const chatRoom = await ChatRepository.insertRoom(
-			{
-				type: "SQ_GROUP",
-				expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
-			},
-			trx,
-		);
+		// the surviving group keeps its room so a voice call in it carries on
+		let chatRoomId = survivingGroup?.chatRoomId ?? null;
+		if (chatRoomId !== null) {
+			await ChatRepository.updateRoomExpiresAt(
+				{
+					roomId: chatRoomId,
+					expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+				},
+				trx,
+			);
+		} else {
+			chatRoomId = (
+				await ChatRepository.insertRoom(
+					{
+						type: "SQ_GROUP",
+						expiresAt: addHours(new Date(), CHAT_ROOM_LIFESPAN_HOURS),
+					},
+					trx,
+				)
+			).id;
+		}
 		await trx
 			.updateTable("Group")
-			.set({ chatRoomId: chatRoom.id, matchmade: 1 })
+			.set({ chatRoomId, matchmade: 1 })
 			.where("Group.id", "=", survivingGroupId)
 			.execute();
 
@@ -388,12 +416,6 @@ export function morphGroups({
 		await syncTeamId(survivingGroupId, trx);
 		await deleteLikesAndSuggestionsByGroupId(survivingGroupId, trx);
 		await refreshGroup(survivingGroupId, trx);
-
-		// replaced rather than deleted with its group, so the trigger doesn't remove it
-		await ChatRepository.deleteRoomsByIds(
-			[survivingGroup?.chatRoomId ?? null],
-			trx,
-		);
 
 		await trx
 			.deleteFrom("Group")
@@ -441,9 +463,13 @@ async function isGroupCorrect(
 	return true;
 }
 
+/** Adds the user to the group. `addedByUserId` is the member who quick added them as their friend, `null` when they joined on their own. */
 export async function insertMember(
 	groupId: number,
-	{ userId }: { userId: number },
+	{
+		userId,
+		addedByUserId = null,
+	}: { userId: number; addedByUserId?: number | null },
 ) {
 	const chatRoomIdToRevalidate = await db.transaction().execute(async (trx) => {
 		await trx
@@ -451,6 +477,7 @@ export async function insertMember(
 			.values({
 				groupId,
 				userId,
+				addedByUserId,
 			})
 			.execute();
 
@@ -469,20 +496,23 @@ export async function insertMember(
 	return { chatRoomIdToRevalidate };
 }
 
-/** Count of pending likes each non-inactive group has received, keyed by group id. */
-export async function findCurrentReceivedLikeCounts() {
+/** Ids of the groups that have pending likes on each non-inactive group, keyed by the liked group's id. */
+export async function findCurrentReceivedLikerGroupIds() {
 	const rows = await db
 		.selectFrom("GroupLike")
 		.innerJoin("Group", "Group.id", "GroupLike.targetGroupId")
-		.select((eb) => [
-			"GroupLike.targetGroupId",
-			eb.fn.countAll<number>().as("count"),
-		])
+		.select(["GroupLike.targetGroupId", "GroupLike.likerGroupId"])
 		.where("Group.status", "!=", "INACTIVE")
-		.groupBy("GroupLike.targetGroupId")
 		.execute();
 
-	return new Map(rows.map((row) => [row.targetGroupId, row.count]));
+	const likerGroupIdsByTarget = new Map<number, number[]>();
+	for (const row of rows) {
+		const likerGroupIds = likerGroupIdsByTarget.get(row.targetGroupId) ?? [];
+		likerGroupIds.push(row.likerGroupId);
+		likerGroupIdsByTarget.set(row.targetGroupId, likerGroupIds);
+	}
+
+	return likerGroupIdsByTarget;
 }
 
 export async function findAllLikesByGroupId(groupId: number) {
@@ -878,8 +908,17 @@ export function deleteAllLikesByGroupId(groupId: number) {
 	return db.transaction().execute((trx) => deleteLikesByGroupId(groupId, trx));
 }
 
-/** Removes the user from their group (deleting it if they were last). A ready check the group was in is called off; returns the ids of the groups that were in it. Challenges the group received and challenges/suggestions the leaver made are cleared. */
-export function leaveGroup(userId: number) {
+/**
+ * Removes the user from their group (deleting it if they were last) along with the members they quick added, and in turn the ones those quick added.
+ * With `keepQuickAddedMembers` only the user is removed, for when they are kicked rather than leave, and the members they quick added stay as regular members.
+ * A ready check the group was in is called off. Challenges the group received and challenges/suggestions the leavers made are cleared.
+ *
+ * @returns the ids of the groups that were in the called off ready check and the ids of the users who left
+ */
+export function leaveGroup(
+	userId: number,
+	{ keepQuickAddedMembers = false }: { keepQuickAddedMembers?: boolean } = {},
+) {
 	return db.transaction().execute(async (trx) => {
 		const userGroup = await trx
 			.selectFrom("GroupMember")
@@ -917,11 +956,31 @@ export function leaveGroup(userId: number) {
 			? [readyCheck.alphaGroupId, readyCheck.bravoGroupId]
 			: [];
 
+		const leftUserIds = keepQuickAddedMembers
+			? [userId]
+			: withQuickAddedMembers(
+					userId,
+					await trx
+						.selectFrom("GroupMember")
+						.select(["GroupMember.userId", "GroupMember.addedByUserId"])
+						.where("GroupMember.groupId", "=", userGroup.id)
+						.execute(),
+				);
+
 		await trx
 			.deleteFrom("GroupMember")
-			.where("userId", "=", userId)
+			.where("userId", "in", leftUserIds)
 			.where("GroupMember.groupId", "=", userGroup.id)
 			.execute();
+
+		if (keepQuickAddedMembers) {
+			await trx
+				.updateTable("GroupMember")
+				.set({ addedByUserId: null })
+				.where("GroupMember.groupId", "=", userGroup.id)
+				.where("GroupMember.addedByUserId", "=", userId)
+				.execute();
+		}
 
 		const remainingMember = await trx
 			.selectFrom("GroupMember")
@@ -931,7 +990,7 @@ export function leaveGroup(userId: number) {
 
 		if (!remainingMember) {
 			await trx.deleteFrom("Group").where("id", "=", userGroup.id).execute();
-			return { abortedReadyCheckGroupIds };
+			return { abortedReadyCheckGroupIds, leftUserIds };
 		}
 
 		const match = await trx
@@ -950,13 +1009,13 @@ export function leaveGroup(userId: number) {
 		}
 
 		await deleteLikesAndSuggestionsOnLeave(
-			{ groupId: userGroup.id, userId },
+			{ groupId: userGroup.id, userIds: leftUserIds },
 			trx,
 		);
 
 		await syncTeamId(userGroup.id, trx);
 
-		return { abortedReadyCheckGroupIds };
+		return { abortedReadyCheckGroupIds, leftUserIds };
 	});
 }
 
@@ -982,6 +1041,13 @@ export function updateOwnMemberNote({
 			.where("groupId", "=", groupId)
 			.where("userId", "=", actorId())
 			.execute();
+
+		if (value) {
+			await ModAuditLogRepository.insert(
+				{ type: "SENDOUQ_PUBLIC_NOTE", text: value },
+				trx,
+			);
+		}
 
 		await refreshGroup(groupId, trx);
 	});
@@ -1230,7 +1296,8 @@ async function deleteReadyCheckInTrx(
 /**
  * Records the user as not continuing with the group they last played a matchmade match with,
  * clearing that group's yes votes: it can no longer continue at the size they were for, so the
- * rest have to vote again. Once the no vote is in, later queue actions leave that group be.
+ * rest have to vote again. Once the no vote is in, or the whole group has voted, later queue
+ * actions leave that group be.
  */
 async function recordImplicitRejoinNoVote(
 	userId: number,
@@ -1250,7 +1317,9 @@ async function recordImplicitRejoinNoVote(
 		.select((eb) => [
 			"Group.id as groupId",
 			"GroupMatch.chatRoomId as matchChatRoomId",
-			hasVotedNo(eb, userId).as("alreadySettled"),
+			eb
+				.or([hasVotedNo(eb, userId), hasEveryMemberVoted(eb)])
+				.as("alreadySettled"),
 		])
 		.where("GroupMember.userId", "=", userId)
 		.where("Group.matchmade", "=", 1)
@@ -1294,6 +1363,18 @@ function hasVotedNo(eb: ExpressionBuilder<DB, "Group">, userId: number) {
 	);
 }
 
+/** Matches the `Group` rows whose continue vote has concluded, every member having voted. */
+function hasEveryMemberVoted(eb: ExpressionBuilder<DB, "Group">) {
+	return eb(
+		eb
+			.selectFrom("GroupMatchContinueVote")
+			.select(({ fn }) => fn.countAll<number>().as("voteCount"))
+			.whereRef("GroupMatchContinueVote.groupId", "=", "Group.id"),
+		">=",
+		FULL_GROUP_SIZE,
+	);
+}
+
 /** Matches the `GroupMember` rows that have no confirmation for the given ready check. */
 function didNotConfirmReadyCheck(
 	eb: ExpressionBuilder<DB, "GroupMember">,
@@ -1312,4 +1393,24 @@ function didNotConfirmReadyCheck(
 				),
 		),
 	);
+}
+
+function withQuickAddedMembers(
+	userId: number,
+	members: Array<{ userId: number; addedByUserId: number | null }>,
+) {
+	const result = [userId];
+
+	for (const leaverId of result) {
+		for (const member of members) {
+			if (
+				member.addedByUserId === leaverId &&
+				!result.includes(member.userId)
+			) {
+				result.push(member.userId);
+			}
+		}
+	}
+
+	return result;
 }

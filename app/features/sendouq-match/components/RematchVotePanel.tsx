@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { Check, Clock, RotateCcw, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { type FetcherWithComponents, Link } from "react-router";
@@ -10,11 +11,10 @@ import * as RejoinVote from "../core/RejoinVote";
 import { matchSchema } from "../q-match-schemas";
 import styles from "./RematchVotePanel.module.css";
 
-export type RematchVoteMember = {
+type RematchVoteMember = {
 	id: number;
 	username: string;
-	discordId: string;
-	discordAvatar: string | null;
+	avatar: string | null;
 	customUrl: string | null;
 };
 
@@ -64,7 +64,9 @@ export function RematchVotePanel({
 					return (
 						<li key={member.id} className={styles.row}>
 							<Avatar user={member} size="xxs" />
-							<span className={styles.username}>{member.username}</span>
+							<span className={clsx(styles.username, "truncate")}>
+								{member.username}
+							</span>
 							<StatusIcon status={status} />
 						</li>
 					);
@@ -120,7 +122,5 @@ function StatusIcon({ status }: { status: boolean | null }) {
 	if (status === false) {
 		return <X size={18} className={styles.iconNo} aria-label="voted no" />;
 	}
-	return (
-		<Clock size={18} className={styles.iconPending} aria-label="pending" />
-	);
+	return <Clock size={18} aria-label="pending" />;
 }

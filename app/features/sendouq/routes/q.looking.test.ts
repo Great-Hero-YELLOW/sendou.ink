@@ -6,7 +6,7 @@ import type { UserMapModePreferences } from "~/db/tables-json";
 import * as Seasons from "~/features/mmr/core/Seasons";
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import { stageIds } from "~/modules/in-game-lists/stage-ids";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { databaseTimestampNow } from "~/utils/dates";
 import { invariant } from "~/utils/invariant";
 import { wrappedAction } from "~/utils/Test";
 import * as ReadyCheck from "../core/ready-check.server";
@@ -14,12 +14,6 @@ import { refreshSendouQInstance } from "../core/SendouQ.server";
 import type { lookingSchema } from "../q-action-schemas";
 import { FULL_GROUP_SIZE } from "../q-constants";
 import { action as rawLookingAction } from "./q.looking";
-
-vi.mock("~/features/chat/ChatSystemMessage.server", () => ({
-	send: vi.fn(),
-	notifyStatusChanged: vi.fn(),
-	notifyNotificationsChanged: vi.fn(),
-}));
 
 const SZ_ONLY_PREFERENCE: UserMapModePreferences["modes"] = [
 	{ mode: "SZ", preference: "PREFER" },
@@ -121,7 +115,7 @@ describe("SendouQ match creation validation", () => {
 			// biome-ignore lint/plugin: no production write reaches this state, it is produced by time passing while the group idles in the queue
 			await db
 				.updateTable("Group")
-				.set({ latestActionAt: dateToDatabaseTimestamp(new Date()) })
+				.set({ latestActionAt: databaseTimestampNow() })
 				.execute();
 			await refreshSendouQInstance();
 

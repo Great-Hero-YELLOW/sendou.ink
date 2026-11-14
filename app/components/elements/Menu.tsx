@@ -6,7 +6,6 @@ import {
 	focusMoveForKey,
 	rovingFocusIndex,
 } from "~/utils/roving-focus";
-import { useTopLayerViewTransitionStyle } from "~/utils/view-transition";
 import { Image } from "../Image";
 import styles from "./Menu.module.css";
 import {
@@ -26,8 +25,6 @@ interface SendouMenuProps {
 	children: React.ReactNode;
 	popoverClassName?: string;
 	placement?: MenuPlacement;
-	/** Render the items while closed too, so they are in the server markup and ready the moment the menu opens. */
-	eager?: boolean;
 }
 
 const MenuContext = React.createContext<{ close: () => void }>({
@@ -41,20 +38,13 @@ export function SendouMenu({
 	scrolling,
 	placement,
 	popoverClassName,
-	eager,
 }: SendouMenuProps) {
 	const popoverId = `${React.useId()}-menu`;
 	const popoverTriggerProps = usePopoverTriggerPropsOnceHydrated(popoverId);
-	const topLayerStyle = useTopLayerViewTransitionStyle();
 
 	const [open, setOpen] = React.useState(false);
 	const popoverRef = React.useRef<HTMLDivElement>(null);
 	const triggerContainerRef = React.useRef<HTMLSpanElement>(null);
-
-	// an eager menu can be open before hydration, its toggle event long gone
-	React.useEffect(() => {
-		if (popoverRef.current?.matches(":popover-open")) setOpen(true);
-	}, []);
 
 	const onBeforeToggle = useShowPopoverOnOpen({
 		popoverRef,
@@ -125,17 +115,16 @@ export function SendouMenu({
 				id={popoverId}
 				popover="auto"
 				tabIndex={-1}
-				className={clsx(styles.popover, "scrollbar", popoverClassName, {
+				className={clsx(styles.popover, popoverClassName, {
 					[styles.scrolling]: scrolling,
 				})}
-				style={topLayerStyle}
 				onBeforeToggle={onBeforeToggle}
 				onToggle={onToggle}
 				onKeyDown={onKeyDown}
 				onBlur={onBlur}
 			>
 				<div className={styles.itemsContainer} role="menu">
-					{open || eager ? (
+					{open ? (
 						<MenuContext
 							value={{ close: () => popoverRef.current?.hidePopover() }}
 						>
@@ -249,7 +238,7 @@ export function SendouMenuItem(props: SendouMenuItemProps) {
 		};
 
 		return props.href.startsWith("/") ? (
-			<Link to={props.href} {...linkProps}>
+			<Link to={props.href} prefetch="intent" {...linkProps}>
 				{content}
 			</Link>
 		) : (

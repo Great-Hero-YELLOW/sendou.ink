@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import * as v from "valibot";
-import { tournamentFromDB } from "~/features/tournament-bracket/core/Tournament.server";
-import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
+import { tournamentSharedCached } from "~/features/tournament-bracket/core/Tournament.server";
+import { notFound, notFoundIfNullish, parseParams } from "~/utils/remix.server";
 import { coerceNumber, id } from "~/utils/schema";
 import type { GetTournamentBracketStandingsResponse } from "../schema";
 
@@ -16,10 +16,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		schema: paramsSchema,
 	});
 
-	const tournament = await tournamentFromDB(tournamentId);
+	const tournament = await tournamentSharedCached(tournamentId);
 
 	const bracket = notFoundIfNullish(tournament.bracketByIdx(bidx));
-	if (bracket.preview) throw new Response(null, { status: 404 });
+	if (bracket.preview) notFound();
 
 	const result: GetTournamentBracketStandingsResponse = {
 		finished: bracket.standingsAreFinal,

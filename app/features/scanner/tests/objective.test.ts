@@ -1,10 +1,12 @@
 /**
- * Golden-file tests for the ObjectiveDetector over every fixture in objective/,
- * plus cross-negative sweeps both ways: the objective gate must stay quiet on
- * every other detector's positives (and the shared negatives), and vice versa.
+ * Golden-file tests for the ObjectiveDetector over every fixture in objective/
+ * (SZ plates and the TC/RM track), plus cross-negative sweeps both ways: the
+ * objective gate must stay quiet on every other detector's positives (and the
+ * shared negatives), and vice versa.
  */
 
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { loadOpenCV } from "../core/cv";
 import { createDeathDetector } from "../core/detectors/death/index";
 import { createMapStartDetector } from "../core/detectors/map-start/index";
@@ -19,8 +21,7 @@ import { createScoreboardOwnDetector } from "../core/detectors/scoreboard-own/in
 import type { DetectedEvent, Detector } from "../core/detectors/types";
 import { hueDistance, hueOf, type InkRgb } from "../core/ink-color";
 import {
-	type Fixture,
-	isFieldSkipped,
+	fieldTestOptions,
 	loadFixtures,
 	runDetectorOnFixture,
 } from "../node/fixtures";
@@ -31,6 +32,8 @@ await loadOpenCV();
 const resources = await loadScoreboardResources();
 const detector = createObjectiveDetector(resources);
 const fixtures = loadFixtures("objective");
+/** A track position is the icon's x in ~4.5px units: a pixel of jitter can round either way. */
+const POSITION_TOLERANCE = 1;
 
 test("objective fixtures exist", () => {
 	assert.ok(fixtures.length > 0, "no fixtures found under objective/");
@@ -68,7 +71,7 @@ for (const fixture of fixtures) {
 
 		await t.test(
 			"mode",
-			{ skip: expected.mode === undefined || skip(fixture, "mode") },
+			fieldTestOptions(fixture, "mode", expected.mode !== undefined),
 			() => {
 				assert.equal(event.data.mode, expected.mode);
 			},
@@ -76,7 +79,7 @@ for (const fixture of fixtures) {
 
 		await t.test(
 			"time",
-			{ skip: expected.time === undefined || skip(fixture, "time") },
+			fieldTestOptions(fixture, "time", expected.time !== undefined),
 			() => {
 				assert.equal(
 					event.data.time,
@@ -89,9 +92,11 @@ for (const fixture of fixtures) {
 		for (const side of [0, 1] as const) {
 			await t.test(
 				`score[${side}]`,
-				{
-					skip: expected.score === undefined || skip(fixture, `score.${side}`),
-				},
+				fieldTestOptions(
+					fixture,
+					`score.${side}`,
+					expected.score !== undefined,
+				),
 				() => {
 					assert.equal(
 						event.data.score[side],
@@ -102,33 +107,49 @@ for (const fixture of fixtures) {
 			);
 			await t.test(
 				`penalty[${side}]`,
-				{
-					skip:
-						expected.penalty === undefined || skip(fixture, `penalty.${side}`),
-				},
+				fieldTestOptions(
+					fixture,
+					`penalty.${side}`,
+					expected.penalty !== undefined,
+				),
 				() => {
 					assert.equal(
-						event.data.penalty[side],
+						event.data.mode === "SZ" ? event.data.penalty[side] : null,
 						expected.penalty![side],
 						`penalty[${side}] mismatch (${debug()})`,
 					);
 				},
 			);
-			await t.test(
-				`control[${side}]`,
-				{
-					skip:
-						expected.control === undefined || skip(fixture, `control.${side}`),
-				},
-				() => {
-					assert.equal(
-						event.data.control[side],
-						expected.control![side],
-						`control[${side}] mismatch (${debug()})`,
-					);
-				},
-			);
 		}
+
+		await t.test(
+			"control",
+			fieldTestOptions(fixture, "control", expected.control !== undefined),
+			() => {
+				assert.equal(
+					event.data.control,
+					expected.control,
+					`control mismatch (${debug()})`,
+				);
+			},
+		);
+
+		await t.test(
+			"position",
+			fieldTestOptions(fixture, "position", expected.position !== undefined),
+			() => {
+				const position =
+					event.data.mode === "SZ" ? undefined : event.data.position;
+				if (expected.position === null || position == null) {
+					assert.equal(position, expected.position, `(${debug()})`);
+					return;
+				}
+				assert.ok(
+					Math.abs(position - expected.position!) <= POSITION_TOLERANCE,
+					`position ${position}, expected ${expected.position} (${debug()})`,
+				);
+			},
+		);
 	});
 }
 
@@ -190,6 +211,26 @@ for (const [dir, eventType] of otherPositiveSets) {
 	}
 }
 
+// Turf War draws the timer and icon strip with no counter: the strip reads
+// (player-status/turf-war-*) come with no Objective event.
+for (const fixture of loadFixtures("player-status").filter((f) =>
+	f.name.startsWith("turf-war-"),
+)) {
+	test(`no Objective event on player-status/${fixture.name}`, async () => {
+		const { gate, events } = await runDetectorOnFixture(
+			createObjectiveDetector(resources),
+			fixture,
+		);
+		assert.ok(gate.pass, "gate did not fire");
+		assert.deepEqual(
+			events
+				.map((event) => event.type)
+				.filter((type) => type !== "StripWeapons"),
+			["PlayerStatus"],
+		);
+	});
+}
+
 // No sweep over death positives: the death overlay rides live gameplay whose
 // counter HUD stays visible (several death fixtures show readable plates), so
 // no quiet can be promised there. Death frames with counters make fine fixtures.
@@ -206,6 +247,14 @@ for (const fixture of loadFixtures("negative")) {
 	});
 }
 
+// a TC/RM frame shared with another detector's fixture (symlinked, e.g. a
+// death overlay over the track) legitimately fires that detector's gate
+const sharedFrames = new Map(
+	["death", "kill"].map((dir) => [
+		dir,
+		new Set(loadFixtures(dir).map((f) => realpathSync(f.framePath))),
+	]),
+);
 const otherDetectors: readonly [string, Detector<unknown>][] = [
 	["scoreboard", createScoreboardDetector(resources) as Detector<unknown>],
 	[
@@ -225,6 +274,9 @@ for (const fixture of fixtures.filter(
 )) {
 	test(`other gates stay quiet on objective/${fixture.name}`, async () => {
 		for (const [name, other] of otherDetectors) {
+			if (sharedFrames.get(name)?.has(realpathSync(fixture.framePath))) {
+				continue;
+			}
 			const { gate } = await runDetectorOnFixture(other, fixture);
 			assert.equal(
 				gate.pass,
@@ -233,8 +285,4 @@ for (const fixture of fixtures.filter(
 			);
 		}
 	});
-}
-
-function skip(fixture: Fixture, field: string): boolean | string {
-	return isFieldSkipped(fixture, field) ? "skipFields" : false;
 }

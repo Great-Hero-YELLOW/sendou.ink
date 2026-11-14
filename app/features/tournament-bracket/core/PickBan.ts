@@ -4,7 +4,6 @@ import type {
 	ActionType,
 	WhoSide,
 } from "~/features/tournament-bracket/tournament-bracket-constants";
-import { isSetOverByResults } from "~/features/tournament-match/tournament-match-utils";
 import type {
 	ModeShort,
 	ModeWithStage,
@@ -15,6 +14,7 @@ import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import { seededRandom } from "~/utils/random";
 import { assertUnreachable } from "~/utils/types";
+import * as Engine from "./engine";
 
 export const types = [
 	"COUNTERPICK",
@@ -56,9 +56,7 @@ export function turnOf({
 	switch (maps.pickBan) {
 		case "BAN_2": {
 			if (!mapList) return null;
-			if (
-				isSetOverByResults({ count: maps.count, results, countType: maps.type })
-			) {
+			if (isSetOver({ results, maps })) {
 				return null;
 			}
 
@@ -87,9 +85,7 @@ export function turnOf({
 			// match was completed without per-game results (e.g. drop-out)
 			if (results.length === 0) return null;
 
-			if (
-				isSetOverByResults({ count: maps.count, results, countType: maps.type })
-			) {
+			if (isSetOver({ results, maps })) {
 				return null;
 			}
 
@@ -123,9 +119,7 @@ function turnOfCustom({
 	pickBanEventCount?: number;
 	matchId: number;
 }): TurnOfResult | null {
-	if (
-		isSetOverByResults({ count: maps.count, results, countType: maps.type })
-	) {
+	if (isSetOver({ results, maps })) {
 		return null;
 	}
 
@@ -206,8 +200,6 @@ function resolveConsecutiveStepInfo({
 		return { current: eventCount - start + 1, total: end - start + 1 };
 	}
 
-	if (postGame.length === 0) return { current: 1, total: 1 };
-
 	const stepIndex = (eventCount - preSet.length) % postGame.length;
 	const currentStep = postGame[stepIndex]!;
 
@@ -259,10 +251,7 @@ export function resolveCurrentStep({
 	});
 
 	// waiting for game result
-	if (completedPostGameCycles > resultsCount) return null;
-	if (completedPostGameCycles === resultsCount && stepInPostGame === 0) {
-		return null;
-	}
+	if (completedPostGameCycles >= resultsCount) return null;
 
 	return postGame[stepInPostGame]!;
 }
@@ -283,6 +272,7 @@ export function postGameCycleIndex({
 	return Math.floor((eventIndex - preSetLength) / postGameLength);
 }
 
+/** @internal */
 export function resolveTeamFromSide({
 	side,
 	teams,
@@ -332,6 +322,7 @@ export function resolveTeamFromSide({
 /**
  * Team index (0 or 1) the "RANDOM" side maps to via a deterministic per-map coin flip. All pre-set
  * steps share one flip, each post-game cycle has its own. "RANDOM_OTHER" is the complement.
+ * @internal
  */
 export function randomWhoTeamIndex({
 	matchId,
@@ -496,6 +487,14 @@ export function isLegal({
 	);
 }
 
+/** Whether the entry at the index of a BAN_2 round's map list can be banned (a map can be listed more than once). */
+export function isMapListIndexLegal({
+	mapListIndex,
+	...rest
+}: MapListWithStatusesArgs & { mapListIndex: number }) {
+	return mapsListWithLegality(rest)[mapListIndex]?.isLegal === true;
+}
+
 export function isModeLegal({
 	mode,
 	...rest
@@ -514,6 +513,7 @@ export function isStageLegal({
 	return pool.some((m) => m.stageId === stageId && m.isLegal);
 }
 
+/** @internal */
 export interface PickBanEvent {
 	type: string;
 	stageId: StageId | null;
@@ -609,7 +609,12 @@ export function mapsListWithLegality(args: MapListWithStatusesArgs) {
 
 	const everythingBanned = result.every((map) => !map.isLegal);
 	if (everythingBanned) {
-		return result.map((map) => ({ ...map, isLegal: true }));
+		return result.map((map) => ({
+			...map,
+			isLegal: !(
+				"bannedByTournamentTeamId" in map && map.bannedByTournamentTeamId
+			),
+		}));
 	}
 
 	return result;
@@ -767,6 +772,7 @@ const MAP_PICK_ACTIONS: ReadonlySet<ActionType> = new Set([
 	"PICK_NO_MODE_REPEAT",
 ]);
 
+/** @internal */
 export const CUSTOM_FLOW_VALIDATION_ERRORS = {
 	STEP_MISSING_ACTION: "STEP_MISSING_ACTION",
 	STEP_MISSING_WHO: "STEP_MISSING_WHO",
@@ -845,4 +851,22 @@ export function validateCustomFlowSection(
 	}
 
 	return errors;
+}
+
+function isSetOver({
+	results,
+	maps,
+}: {
+	results: Array<{ winnerTeamId: number }>;
+	maps: TournamentRoundMaps;
+}) {
+	const [firstWins = 0, secondWins = 0] = Object.values(
+		R.countBy(results, (r) => r.winnerTeamId),
+	);
+
+	return Engine.isSetOverByScore({
+		scores: [firstWins, secondWins],
+		count: maps.count,
+		countType: maps.type,
+	});
 }

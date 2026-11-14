@@ -1,14 +1,7 @@
 import type { UserWithPlusTier } from "~/utils/kysely.server";
 import { userDiscordIdIsAged } from "~/utils/users";
 import type { Role } from "./types";
-import {
-	isAdmin,
-	isDev,
-	isQa,
-	isScannerTester,
-	isStaff,
-	isSupporter,
-} from "./utils";
+import { isAdmin, isDev, isQa, isStaff, isSupporter } from "./utils";
 
 export function userRoles(
 	user: Pick<
@@ -41,10 +34,6 @@ export function userRoles(
 		result.push("QA");
 	}
 
-	if (isScannerTester(user)) {
-		result.push("SCANNER_TESTER");
-	}
-
 	if (typeof user.patronTier === "number") {
 		result.push("MINOR_SUPPORT");
 	}
@@ -67,6 +56,14 @@ export function userRoles(
 
 	if (user.isTournamentOrganizer || isSupporter(user)) {
 		result.push("TOURNAMENT_ADDER");
+	}
+
+	if (isAdmin(user) || isDev(user) || isSupporter(user)) {
+		result.push("LOBBY_ADDER");
+	}
+
+	if (isAdmin(user) || isDev(user)) {
+		result.push("FEED_TESTER");
 	}
 
 	if (userDiscordIdIsAged(user) || isSupporter(user)) {

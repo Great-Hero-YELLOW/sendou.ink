@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Armchair, Edit } from "lucide-react";
+import { Armchair, Edit, LogOut } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -26,6 +26,8 @@ type RosterTabMember = CommonUser & {
 	tier?: { name: TierName; isPlus: boolean } | "CALCULATING";
 	weaponPool?: Array<MainWeaponId>;
 	inGameName?: string | null;
+	/** The member leaves once the set is over, marked with a popover telling so. */
+	leaving?: { label: string; explanation: string };
 };
 
 interface RosterTabTeam {
@@ -39,6 +41,8 @@ interface RosterTabTeam {
 	members: Array<RosterTabMember>;
 	/** users not in the current active roster */
 	subbedOut?: Array<number>;
+	/** Shown to the right of the team's name, e.g. the weapons a weapon randomizer gave the team */
+	headerAside?: React.ReactNode;
 	tier?: { name: TierName; isPlus: boolean };
 	/** tournament only */
 	seed?: number | null;
@@ -127,6 +131,29 @@ function TeamRoster({
 
 	const showEditButton = canEditSubbedOut && team.team && !isEditing;
 
+	const handleToggleMember = (memberId: number) => {
+		setSelectedMemberIds((prev) =>
+			prev.includes(memberId)
+				? prev.filter((id) => id !== memberId)
+				: [...prev, memberId],
+		);
+	};
+
+	const handleSubmit = () => {
+		if (!team.team || !onSubbedOutChange) return;
+
+		const subbedOutIds = team.members
+			.filter((m) => !selectedMemberIds.includes(m.id))
+			.map((m) => m.id);
+		onSubbedOutChange(team.team.id, subbedOutIds);
+		setIsEditing(false);
+	};
+
+	const handleCancel = () => {
+		setSelectedMemberIds(activeMembers.map((m) => m.id));
+		setIsEditing(false);
+	};
+
 	return (
 		<div className={clsx("stack xxs", styles.rosterColumn)}>
 			<TeamHeader team={team} side={side} />
@@ -158,6 +185,7 @@ function TeamRoster({
 											<MemberTierPopover tier={member.tier} />
 										</div>
 										<MemberMeta weaponPool={member.weaponPool} />
+										<LeavingPopover leaving={member.leaving} />
 									</div>
 								</li>
 							))}
@@ -213,29 +241,6 @@ function TeamRoster({
 			) : null}
 		</div>
 	);
-
-	function handleToggleMember(memberId: number) {
-		setSelectedMemberIds((prev) =>
-			prev.includes(memberId)
-				? prev.filter((id) => id !== memberId)
-				: [...prev, memberId],
-		);
-	}
-
-	function handleSubmit() {
-		if (!team.team || !onSubbedOutChange) return;
-
-		const subbedOutIds = team.members
-			.filter((m) => !selectedMemberIds.includes(m.id))
-			.map((m) => m.id);
-		onSubbedOutChange(team.team.id, subbedOutIds);
-		setIsEditing(false);
-	}
-
-	function handleCancel() {
-		setSelectedMemberIds(activeMembers.map((m) => m.id));
-		setIsEditing(false);
-	}
 }
 
 function rosterIdentityKey(team: RosterTabTeam) {
@@ -258,6 +263,10 @@ function TeamHeader({
 		? `${team.tier.name.toLowerCase()}${team.tier.isPlus ? "+" : ""}`
 		: undefined;
 
+	const aside = team.headerAside ? (
+		<div className={styles.teamHeaderAside}>{team.headerAside}</div>
+	) : null;
+
 	const meta = (
 		<div className="stack xs horizontal items-center text-lighter">
 			{typeof team.seed === "number" ? (
@@ -274,37 +283,40 @@ function TeamHeader({
 
 	if (team.team) {
 		return (
-			<Link to={team.team.url} className="stack horizontal sm">
-				<Avatar
-					url={team.team.avatar}
-					identiconInput={team.team.name}
-					size="sm"
-				/>
-				<div
-					className={clsx(
-						"stack justify-center line-height-tight",
-						styles.teamHeaderText,
-					)}
-				>
-					<h2
+			<div className="stack horizontal sm items-center">
+				<Link to={team.team.url} className="stack horizontal sm">
+					<Avatar
+						url={team.team.avatar}
+						identiconInput={team.team.name}
+						size="sm"
+					/>
+					<div
 						className={clsx(
-							"text-main-forced font-bold",
-							styles.teamNameHeading,
+							"stack justify-center line-height-tight",
+							styles.teamHeaderText,
 						)}
-						title={team.team.name}
 					>
-						{team.team.name}
-					</h2>
-					{meta}
-				</div>
-			</Link>
+						<h2
+							className={clsx(
+								"text-main-forced font-bold truncate",
+								styles.teamNameHeading,
+							)}
+							title={team.team.name}
+						>
+							{team.team.name}
+						</h2>
+						{meta}
+					</div>
+				</Link>
+				{aside}
+			</div>
 		);
 	}
 
 	invariant(team.defaultName, "team or defaultName must be provided");
 
 	return (
-		<div className="stack horizontal sm">
+		<div className="stack horizontal sm items-center">
 			<div className={styles.teamAvatar} data-side={side} />
 			<div
 				className={clsx(
@@ -313,13 +325,17 @@ function TeamHeader({
 				)}
 			>
 				<h2
-					className={clsx("text-main-forced font-bold", styles.teamNameHeading)}
+					className={clsx(
+						"text-main-forced font-bold truncate",
+						styles.teamNameHeading,
+					)}
 					title={team.defaultName}
 				>
 					{team.defaultName}
 				</h2>
 				{meta}
 			</div>
+			{aside}
 		</div>
 	);
 }
@@ -388,6 +404,32 @@ function MemberTierPopoverContent({
 				{tier.isPlus ? "+" : ""}
 			</span>
 		</div>
+	);
+}
+
+function LeavingPopover({ leaving }: Pick<RosterTabMember, "leaving">) {
+	if (!leaving) return null;
+
+	return (
+		<SendouPopover
+			trigger={
+				<SendouButton
+					variant="minimal"
+					className={styles.leavingBadge}
+					aria-label={leaving.label}
+				>
+					<LogOut size={14} />
+				</SendouButton>
+			}
+		>
+			<div
+				className={styles.leavingPopover}
+				data-testid="roster-leaving-popover"
+			>
+				<div className={styles.subbedOutHeader}>{leaving.label}</div>
+				{leaving.explanation}
+			</div>
+		</SendouPopover>
 	);
 }
 

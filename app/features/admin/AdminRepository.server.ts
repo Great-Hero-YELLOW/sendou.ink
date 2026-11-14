@@ -4,6 +4,7 @@ import type { DB, Tables, TablesInsertable } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
 import * as BadgeRepository from "~/features/badges/BadgeRepository.server";
 import * as BuildRepository from "~/features/builds/BuildRepository.server";
+import * as PlusSuggestionRepository from "~/features/plus-suggestions/PlusSuggestionRepository.server";
 import * as XRankPlacementRepository from "~/features/top-search/XRankPlacementRepository.server";
 import * as TrophyRepository from "~/features/trophies/TrophyRepository.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
@@ -384,13 +385,14 @@ async function validateMigration(
 	return null;
 }
 
-/** Replaces every `PlusTier` row, also refreshing the build sort values derived from them. */
+/** Replaces every `PlusTier` row, also refreshing the build sort values derived from them and dropping suggestions of the upcoming voting the new tiers made stale. */
 export function replacePlusTiers(
 	plusTiers: Array<{ userId: number; plusTier: number }>,
 ) {
 	invariant(plusTiers.length > 0, "plusTiers must not be empty");
 
 	return db.transaction().execute(async (trx) => {
+		// biome-ignore lint/plugin: replaces every tier with the given ones
 		await trx.deleteFrom("PlusTier").execute();
 		await trx
 			.insertInto("PlusTier")
@@ -399,6 +401,7 @@ export function replacePlusTiers(
 			)
 			.execute();
 
+		await PlusSuggestionRepository.deleteAllOfMembersBeforeVoting(trx);
 		await BuildRepository.recalculateAllSortValues(undefined, trx);
 	});
 }
@@ -476,8 +479,6 @@ export async function forcePatron(args: {
 		})
 		.where("User.id", "=", args.id)
 		.execute();
-
-	await TrophyRepository.syncSpecialTrophies();
 }
 
 export async function findAllBannedUsers() {

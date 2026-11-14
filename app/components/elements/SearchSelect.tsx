@@ -1,5 +1,7 @@
+import clsx from "clsx";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { smallImageUrl } from "~/utils/urls";
 import styles from "./SearchSelect.module.css";
 import { SendouSelect, SendouSelectItem } from "./Select";
 import type { EntitySearch } from "./useEntitySearch";
@@ -27,8 +29,6 @@ const PLACEHOLDER_TEXTS = {
 export interface SearchSelectFieldProps {
 	name?: string;
 	label?: string;
-	bottomText?: string;
-	errorText?: string;
 	isRequired?: boolean;
 	isDisabled?: boolean;
 	className?: string;
@@ -51,8 +51,6 @@ interface SearchSelectProps<TItem extends { id: number; name: string }>
 export function SearchSelect<TItem extends { id: number; name: string }>({
 	name,
 	label,
-	bottomText,
-	errorText,
 	ariaLabel,
 	inputTestId,
 	inputClassName,
@@ -82,12 +80,11 @@ export function SearchSelect<TItem extends { id: number; name: string }>({
 					search.onSelectionChange(Number(key));
 				}
 			}}
+			onOpenChange={search.onOpenChange}
 			aria-label={ariaLabel}
 			searchInputValue={search.filterText}
 			onSearchInputChange={search.setFilterText}
 			search={{ testId: inputTestId, inputClassName: inputClassName ?? "" }}
-			bottomText={bottomText}
-			errorText={errorText}
 			triggerRef={buttonRef}
 			popoverClassName={styles.popover}
 		>
@@ -143,7 +140,7 @@ export function SearchSelectItem({
 		<SendouSelectItem
 			id={id}
 			textValue={textValue}
-			className={styles.item}
+			className={clsx(styles.item, "truncate")}
 			data-testid={testId}
 		>
 			{leading}
@@ -153,7 +150,7 @@ export function SearchSelectItem({
 }
 
 export function SearchSelectItemLogo({ src }: { src: string }) {
-	return <img src={src} alt="" className={styles.logo} />;
+	return <img src={smallImageUrl(src)} alt="" className={styles.logo} />;
 }
 
 export function SearchSelectItemAdditionalText({

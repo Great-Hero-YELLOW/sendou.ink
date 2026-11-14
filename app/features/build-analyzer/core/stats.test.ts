@@ -1,7 +1,7 @@
+import * as R from "remeda";
 import { describe, expect, test } from "vitest";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { mainWeaponIds } from "~/modules/in-game-lists/weapon-ids";
-import { roundToNDecimalPlaces } from "~/utils/number";
 import { damageTypeToWeaponType } from "../analyzer-constants";
 import { buildStats } from "./stats";
 import { mainWeaponParams } from "./utils";
@@ -29,6 +29,30 @@ describe("Analyze build", () => {
 			weaponsWithoutDamage.length,
 			`Weapons without damage set: ${weaponsWithoutDamage.join(", ")}`,
 		).toBe(0);
+	});
+
+	test("Special Power Up increases special damage distances", () => {
+		const REEFSLIDER_WEAPON_ID = 30;
+		const distances = (abilityPoints: Map<"SPU", number>) =>
+			buildStats({
+				weaponSplId: REEFSLIDER_WEAPON_ID,
+				abilityPoints,
+				hasTacticooler: false,
+			}).stats.specialWeaponDamages.map((damage) => ({
+				value: damage.value,
+				distance: damage.distance,
+			}));
+
+		expect(distances(new Map())).toEqual([
+			{ value: 220, distance: 9 },
+			{ value: 70, distance: 14.9 },
+			{ value: 220, distance: undefined },
+		]);
+		expect(distances(new Map([["SPU", 57]]))).toEqual([
+			{ value: 220, distance: 10.8 },
+			{ value: 70, distance: 17.88 },
+			{ value: 220, distance: undefined },
+		]);
 	});
 
 	test("Ninja Squid decreases swim speed", () => {
@@ -170,6 +194,21 @@ describe("Analyze build", () => {
 	});
 
 	test.each([
+		{ why: "Tri-Stringer", weaponSplId: 7010 },
+		{ why: "REEF-LUX 450", weaponSplId: 7020 },
+		{ why: "Wellstring V", weaponSplId: 7030 },
+	] as const)(
+		"Stringer has tap shot ink consumption ($why)",
+		({ weaponSplId }) => {
+			const analyzed = buildStats({ weaponSplId, hasTacticooler: false });
+
+			expect(
+				analyzed.stats.mainWeaponInkConsumptionPercentage_TAP_SHOT,
+			).toBeDefined();
+		},
+	);
+
+	test.each([
 		{ why: "Painbrush", weaponSplId: 1120, expected: 0.833 },
 		{ why: "Splatana Stamper", weaponSplId: 8000, expected: 0.667 },
 		{ why: "Tenta Brella", weaponSplId: 6010, expected: 1.167 },
@@ -298,7 +337,7 @@ describe("Analyze build", () => {
 
 		expect(
 			analyzedJr.stats.mainWeaponInkConsumptionPercentage_NORMAL?.baseValue,
-		).toBe(roundToNDecimalPlaces((jrParams.InkConsume! * 100) / 1.1));
+		).toBe(R.round((jrParams.InkConsume! * 100) / 1.1, 2));
 	});
 
 	test.each([

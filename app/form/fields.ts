@@ -12,10 +12,12 @@ import type {
 	SubWeaponId,
 } from "~/modules/in-game-lists/types";
 import { canonicalWeaponSplId } from "~/modules/in-game-lists/weapon-ids";
+import { dayMonthYearToDate } from "~/utils/dates";
 import type { AnySyncSchema, DayMonthYear } from "~/utils/schema";
 import {
 	coerceNumber,
 	date,
+	dayMonthYear as dayMonthYearSchema,
 	falsyToNull,
 	id,
 	preprocess,
@@ -30,6 +32,7 @@ import {
 import { imageValue } from "./image-field";
 import type {
 	BadgeOption,
+	FieldWithOptionalOptions,
 	FieldWithOptions,
 	FormField,
 	FormFieldArray,
@@ -39,8 +42,10 @@ import type {
 	FormFieldInputGroup,
 	FormFieldItems,
 	FormFieldItemsWithImage,
+	FormFieldRadioGroup,
 	FormFieldSelect,
 	FormsTranslationKey,
+	MapPoolFieldOptions,
 	SelectOption,
 	TeamSearchFieldOptions,
 	TournamentSearchFieldOptions,
@@ -81,6 +86,7 @@ type WithTypedTranslationKeys<T> = Omit<
 type TypedItemLabel<V extends string> = {
 	label: FormsTranslationKey | (() => string);
 	value: V;
+	group?: FormsTranslationKey;
 };
 
 type WithTypedItemLabels<T, V extends string> = Omit<T, "items"> & {
@@ -121,6 +127,7 @@ function prefixItems<V extends string, T extends TypedItemLabel<V>>(
 	return items.map((item) => ({
 		...item,
 		label: typeof item.label === "string" ? `forms:${item.label}` : item.label,
+		group: prefixKey(item.group),
 	}));
 }
 
@@ -130,11 +137,14 @@ export function image(args: {
 	dimensions?: "logo" | "thick-banner" | { width: number; height: number };
 	autoValidate?: boolean;
 }) {
+	const dimensions = args.dimensions ?? "logo";
+
 	return register(imageValue, {
 		label: prefixKey(args.label),
 		bottomText: prefixKey(args.bottomText),
-		dimensions: args.dimensions ?? "logo",
+		dimensions,
 		autoValidate: args.autoValidate ?? false,
+		withSmallCopy: dimensions === "logo",
 		type: "image",
 		initialValue: null,
 	});
@@ -189,6 +199,7 @@ function registerTextField<T extends v.GenericSchema<any, string | null>>(
 		label: prefixKey(args.label),
 		bottomText: prefixKey(args.bottomText),
 		placeholder: prefixKey(args.placeholder),
+		inputMode: args.inputMode ?? (args.validate === "url" ? "url" : undefined),
 		required,
 		type: "text-field",
 		initialValue: "",
@@ -294,6 +305,7 @@ type NumberFieldArgs = WithTypedTranslationKeys<
 		| "required"
 		| "validate"
 		| "inputType"
+		| "inputMode"
 		| "maxLength"
 	>
 > & { maxLength?: number };
@@ -342,6 +354,7 @@ function numberFieldMetadata(args: NumberFieldArgs, required: boolean) {
 		required,
 		type: "text-field" as const,
 		inputType: "number" as const,
+		inputMode: "numeric" as const,
 		initialValue: "",
 		maxLength: args.maxLength ?? 10,
 	};
@@ -562,7 +575,7 @@ export function dualSelectOptional<V extends string>(
 export function radioGroup<V extends string>(
 	args: WithTypedTranslationKeys<
 		WithTypedItemLabelsWithImage<
-			Omit<FormFieldInputGroup<"radio-group", V>, "type" | "initialValue">,
+			Omit<FormFieldRadioGroup<"radio-group", V>, "type" | "initialValue">,
 			V
 		>
 	> & {
@@ -630,18 +643,22 @@ type DateTimeArgs = WithTypedTranslationKeys<
 	maxMessage?: FormsTranslationKey;
 };
 
-function boundedDate(args: DateTimeArgs, schema: v.GenericSchema<Date, Date>) {
+function boundedDate<TSchema extends AnySyncSchema>(
+	args: DateTimeArgs,
+	schema: TSchema,
+	toDate: (value: v.InferOutput<TSchema>) => Date,
+) {
 	const resolveMin = args.min ?? (() => new Date(Date.UTC(2015, 4, 28)));
 	const resolveMax = args.max ?? (() => new Date(Date.UTC(2030, 4, 28)));
 
 	return v.pipe(
 		schema,
 		v.check(
-			(d) => d >= resolveMin(),
+			(value) => toDate(value) >= resolveMin(),
 			`forms:${args.minMessage ?? "errors.dateTooEarly"}`,
 		),
 		v.check(
-			(d) => d <= resolveMax(),
+			(value) => toDate(value) <= resolveMax(),
 			`forms:${args.maxMessage ?? "errors.dateTooLate"}`,
 		),
 	);
@@ -662,7 +679,10 @@ function datetimeMetadata(
 
 export function datetime(args: DateTimeArgs): v.GenericSchema<Date> {
 	return register(
-		preprocess(date, boundedDate(args, v.date("forms:errors.required"))),
+		preprocess(
+			date,
+			boundedDate(args, v.date("forms:errors.required"), R.identity()),
+		),
 		datetimeMetadata(args, { type: "datetime", required: true }),
 	) as never;
 }
@@ -672,22 +692,19 @@ export function datetimeOptional(
 ): v.NullishSchema<v.GenericSchema<Date>, undefined> {
 	// `nullish` stays outermost so `v.object` reads the key as optional (a pipe would hide the wrapper)
 	return register(
-		v.nullish(preprocess(date, boundedDate(args, v.date()))),
+		v.nullish(preprocess(date, boundedDate(args, v.date(), R.identity()))),
 		datetimeMetadata(args, { type: "datetime", required: false }),
 	) as never;
 }
 
 export function dayMonthYear(
 	args: DateTimeArgs,
-): v.GenericSchema<Date, DayMonthYear> {
+): v.GenericSchema<DayMonthYear> {
 	return register(
-		v.pipe(
-			preprocess(date, boundedDate(args, v.date("forms:errors.required"))),
-			v.transform((d) => ({
-				day: d.getDate(),
-				month: d.getMonth(),
-				year: d.getFullYear(),
-			})),
+		boundedDate(
+			args,
+			v.object(dayMonthYearSchema.entries, "forms:errors.required"),
+			dayMonthYearToDate,
 		),
 		datetimeMetadata(args, { type: "date", required: true }),
 	) as never;
@@ -991,6 +1008,22 @@ export function stageSelect(
 		initialValue: 1,
 		required: true,
 	}) as never;
+}
+
+/** Serialized map pool, empty string when no stages are picked. */
+export function mapPoolOptional(
+	args: WithTypedTranslationKeys<
+		Omit<Extract<FormField, { type: "map-pool" }>, "type" | "initialValue">
+	>,
+) {
+	return register(v.optional(v.string()), {
+		...args,
+		label: prefixKey(args.label),
+		bottomText: prefixKey(args.bottomText),
+		type: "map-pool",
+		initialValue: "",
+	}) as unknown as v.OptionalSchema<v.GenericSchema<string>, undefined> &
+		FieldWithOptionalOptions<MapPoolFieldOptions>;
 }
 
 type WeaponSelectArgs = WithTypedTranslationKeys<

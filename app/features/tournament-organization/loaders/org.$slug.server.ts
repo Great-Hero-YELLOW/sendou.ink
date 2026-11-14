@@ -2,9 +2,9 @@ import type { LoaderFunctionArgs } from "react-router";
 import { getUser } from "~/features/auth/core/user.server";
 import { calculateTentativeTier } from "~/features/tournament/core/tiering";
 import * as TrophyRepository from "~/features/trophies/TrophyRepository.server";
-import { canAccessTrophies } from "~/features/trophies/trophies-utils";
 import type { SerializeFrom } from "~/utils/remix";
 import { eventLeaderboards } from "../core/leaderboards.server";
+import * as Series from "../core/Series";
 import * as TournamentOrganizationRepository from "../TournamentOrganizationRepository.server";
 import { TOURNAMENT_SERIES_LEADERBOARD_SIZE } from "../tournament-organization-constants";
 import { tournamentOrganizationSearchParams } from "../tournament-organization-search-params";
@@ -28,9 +28,12 @@ export async function loader({ params, request }: LoaderFunctionArgs) {
 
 	const seriesId =
 		_seriesId ??
-		organization.series.find((s) =>
-			s.substringMatches.some((match) => source?.toLowerCase().includes(match)),
-		)?.id;
+		(source
+			? Series.findByEventName({
+					series: organization.series,
+					eventName: source,
+				})?.id
+			: undefined);
 
 	const seriesInfo = async () => {
 		const series = seriesId
@@ -79,9 +82,7 @@ export async function loader({ params, request }: LoaderFunctionArgs) {
 		series: await seriesInfo(),
 		month,
 		year,
-		trophies: canAccessTrophies(user)
-			? await TrophyRepository.findByOrganizationId(organization.id)
-			: [],
+		trophies: await TrophyRepository.findByOrganizationId(organization.id),
 		bannedUsers:
 			user?.id && organization.permissions.BAN.includes(user.id)
 				? await TournamentOrganizationRepository.findAllBannedUsersByOrganizationId(

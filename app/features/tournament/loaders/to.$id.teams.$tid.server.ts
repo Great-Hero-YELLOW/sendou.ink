@@ -1,4 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
+import * as R from "remeda";
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	tournamentDataCached,
@@ -7,9 +8,10 @@ import {
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { tournamentTeamPageParamsSchema } from "~/features/tournament-bracket/tournament-bracket-schemas";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
+import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import { invariant } from "~/utils/invariant";
 import type { SerializeFrom } from "~/utils/remix";
-import { parseParams } from "~/utils/remix.server";
+import { notFound, parseParams } from "~/utils/remix.server";
 import * as Standings from "../core/Standings";
 import { type AllRoundsItem, tournamentTeamSets } from "../core/sets.server";
 import * as TournamentTeamRepository from "../TournamentTeamRepository.server";
@@ -34,7 +36,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	);
 	const tournamentHasStarted = data.stage.length > 0;
 	if (!team || (tournamentHasStarted && team.checkIns.length === 0)) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	const setHistory =
@@ -61,6 +63,14 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	)?.idx;
 
 	return {
+		...(await UserCardRepository.findAllByUserIdsCached({
+			userIds: R.unique([
+				...team.members.map((member) => member.userId),
+				...sets.flatMap((set) =>
+					set.opponent.roster.map((opponent) => opponent.id),
+				),
+			]),
+		})),
 		tournamentTeamId,
 		team,
 		// the invite link of the add sub popover, only the team's own captain gets it
@@ -81,7 +91,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		})),
 		record:
 			Standings.recordByTeamId(fullTournament).get(tournamentTeamId) ?? null,
-		participatedUsersCount: fullTournament.participatedUserIds?.length ?? 0,
+		participatedUsersCount: fullTournament.participatedUserIds?.size ?? 0,
 		division:
 			standingsResult.type === "multi"
 				? (standingsResult.standings.find((div) =>

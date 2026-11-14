@@ -1,12 +1,12 @@
 import clsx from "clsx";
 import { ChevronsUpDown, Search, X } from "lucide-react";
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { SendouBottomTexts } from "~/components/elements/BottomTexts";
 import { SendouButton } from "~/components/elements/Button";
 import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
+import { useLatestRef } from "~/hooks/useLatestRef";
 import { type FocusMove, rovingFocusIndex } from "~/utils/roving-focus";
-import { useTopLayerViewTransitionStyle } from "~/utils/view-transition";
 import {
 	focusLeftTo,
 	isOwnToggle,
@@ -21,6 +21,8 @@ export type SelectKey = string | number;
 
 /** How long a type-ahead query keeps collecting characters, like the native select. */
 const TYPEAHEAD_RESET_MS = 1000;
+
+const normalizedTextCache = new Map<string, string>();
 
 interface RegisteredItem {
 	element: HTMLElement;
@@ -39,11 +41,24 @@ interface FocusStore {
 	subscribe: (listener: () => void) => () => void;
 }
 
+interface RegisteredContent {
+	textValue: string;
+	getContent: () => React.ReactNode;
+}
+
+/** Content of every option ever registered, kept past unregistration so the trigger can render a filtered-out selection. */
+interface RegisteredContentStore {
+	get: (key: SelectKey) => RegisteredContent | undefined;
+	set: (key: SelectKey, content: RegisteredContent) => void;
+	subscribe: (listener: () => void) => () => void;
+}
+
 /** Stable-identity callbacks items use to wire themselves to the select. */
 interface SelectRegistry {
 	registerItem: (key: SelectKey, item: RegisteredItem) => () => void;
 	select: (key: SelectKey) => void;
 	focus: FocusStore;
+	registeredContent: RegisteredContentStore;
 	optionIdFor: (key: SelectKey) => string;
 }
 
@@ -85,8 +100,6 @@ export interface SendouSelectProps<T extends object> {
 	onSearchInputChange?: (value: string) => void;
 	/** Custom search matcher, replacing the default textValue "contains" filter. */
 	filter?: (textValue: string, searchValue: string) => boolean;
-	errorText?: string;
-	bottomText?: string;
 	onBlur?: () => void;
 	triggerRef?: React.Ref<HTMLButtonElement>;
 	items?: Iterable<T>;
@@ -135,8 +148,6 @@ export function SendouSelect<T extends object>({
 	searchInputValue,
 	onSearchInputChange,
 	filter,
-	errorText,
-	bottomText,
 	onBlur,
 	triggerRef,
 	items,
@@ -144,7 +155,6 @@ export function SendouSelect<T extends object>({
 }: SendouSelectProps<T>) {
 	const { t } = useTranslation(["common"]);
 	const uid = React.useId();
-	const topLayerStyle = useTopLayerViewTransitionStyle();
 	const popoverId = `${uid}-select-popover`;
 	const popoverTriggerProps = usePopoverTriggerPropsOnceHydrated(popoverId);
 	const listboxId = `${uid}-select-listbox`;
@@ -173,23 +183,9 @@ export function SendouSelect<T extends object>({
 	};
 
 	const [open, setOpenState] = React.useState(false);
-	const [, rerenderWithRegisteredContent] = React.useReducer(
-		(count: number) => count + 1,
-		0,
-	);
 
 	const itemsMapRef = React.useRef(new Map<SelectKey, RegisteredItem>());
 	const keyByElementRef = React.useRef(new WeakMap<HTMLElement, SelectKey>());
-	/** Persists past unregistration so the trigger can render a filtered-out selection. */
-	const contentByKeyRef = React.useRef(
-		new Map<
-			SelectKey,
-			{ textValue: string; getContent: () => React.ReactNode }
-		>(),
-	);
-	/** Selection whose content only a wrapped item's registration can provide. */
-	const unresolvedSelectionRef = React.useRef<SelectKey | null>(null);
-	const normalizedTextCacheRef = React.useRef(new Map<string, string>());
 	const typeaheadRef = React.useRef({ query: "", at: 0 });
 
 	const triggerElementRef = React.useRef<HTMLButtonElement | null>(null);
@@ -208,16 +204,6 @@ export function SendouSelect<T extends object>({
 		floatingRef: popoverRef,
 		getAnchor: () => triggerElementRef.current,
 	});
-	// after positioning, so the selection scrolls into the space the list ends up with
-	useIsomorphicLayoutEffect(() => {
-		if (!open) return;
-		if (search) {
-			searchInputRef.current?.focus();
-		} else {
-			listboxRef.current?.focus();
-		}
-		scrollIntoView(currentKey);
-	}, [open]);
 
 	const commitSelection = (key: SelectKey | null) => {
 		if (!isControlled) {
@@ -239,28 +225,29 @@ export function SendouSelect<T extends object>({
 		focusStore.set(currentKey);
 	}
 
-	const commitSelectionRef = React.useRef(commitSelection);
-	commitSelectionRef.current = commitSelection;
+	const commitSelectionRef = useLatestRef(commitSelection);
 
-	const [registry] = React.useState<SelectRegistry>(() => ({
-		registerItem: (key, item) => {
-			itemsMapRef.current.set(key, item);
-			keyByElementRef.current.set(item.element, key);
-			contentByKeyRef.current.set(key, {
-				textValue: item.textValue,
-				getContent: item.getContent,
-			});
-			if (key === unresolvedSelectionRef.current) {
-				rerenderWithRegisteredContent();
-			}
-			return () => {
-				itemsMapRef.current.delete(key);
-			};
-		},
-		select: (key) => commitSelectionRef.current(key),
-		focus: createFocusStore(),
-		optionIdFor: (key) => `${popoverId}-option-${key}`,
-	}));
+	const [registry] = React.useState<SelectRegistry>(() => {
+		const registeredContent = createRegisteredContentStore();
+
+		return {
+			registerItem: (key, item) => {
+				itemsMapRef.current.set(key, item);
+				keyByElementRef.current.set(item.element, key);
+				registeredContent.set(key, {
+					textValue: item.textValue,
+					getContent: item.getContent,
+				});
+				return () => {
+					itemsMapRef.current.delete(key);
+				};
+			},
+			select: (key) => commitSelectionRef.current(key),
+			focus: createFocusStore(),
+			registeredContent,
+			optionIdFor: (key) => `${popoverId}-option-${key}`,
+		};
+	});
 	const focusStore = registry.focus;
 
 	/** Keys of the enabled options in DOM order. */
@@ -288,6 +275,17 @@ export function SendouSelect<T extends object>({
 			?.scrollIntoView({ block: "nearest" });
 	};
 
+	// after positioning, so the selection scrolls into the space the list ends up with
+	useIsomorphicLayoutEffect(() => {
+		if (!open) return;
+		if (search) {
+			searchInputRef.current?.focus();
+		} else {
+			listboxRef.current?.focus();
+		}
+		scrollIntoView(currentKey);
+	}, [open]);
+
 	const moveFocus = (move: FocusMove) => {
 		const keys = orderedKeys();
 		if (keys.length === 0) return;
@@ -299,6 +297,14 @@ export function SendouSelect<T extends object>({
 
 		focusStore.set(targetKey);
 		scrollIntoView(targetKey);
+	};
+
+	// iOS only brings up the keyboard for a focus inside the tap itself, but the native
+	// open is redone a frame later (useShowPopoverOnOpen), so a searchable select opens here
+	const onTriggerClick = (event: React.MouseEvent) => {
+		if (!search || open) return;
+		event.preventDefault();
+		flushSync(() => setOpen(true));
 	};
 
 	const onTriggerKeyDown = (event: React.KeyboardEvent) => {
@@ -375,15 +381,6 @@ export function SendouSelect<T extends object>({
 	};
 
 	const normalizedSearchValue = normalizeForSearch(searchValue);
-	const normalizedTextValue = (textValue: string) => {
-		const cache = normalizedTextCacheRef.current;
-		let normalized = cache.get(textValue);
-		if (normalized === undefined) {
-			normalized = normalizeForSearch(textValue);
-			cache.set(textValue, normalized);
-		}
-		return normalized;
-	};
 
 	/** Focuses the next option starting with what was typed, like the native select. */
 	const typeahead = (character: string) => {
@@ -410,7 +407,7 @@ export function SendouSelect<T extends object>({
 		for (let offset = 0; offset < keys.length; offset++) {
 			const key = keys[(startIndex + offset) % keys.length];
 			const textValue = itemsMapRef.current.get(key)?.textValue;
-			if (textValue && normalizedTextValue(textValue).startsWith(needle)) {
+			if (textValue && normalizeForSearchCached(textValue).startsWith(needle)) {
 				focusStore.set(key);
 				scrollIntoView(key);
 				return;
@@ -422,7 +419,7 @@ export function SendouSelect<T extends object>({
 		if (searchValue === "") return true;
 		if (filter) return filter(textValue, searchValue);
 		if (isSearchControlled || !search) return true;
-		return normalizedTextValue(textValue).includes(normalizedSearchValue);
+		return normalizeForSearchCached(textValue).includes(normalizedSearchValue);
 	};
 
 	// while searching, keep an actionable item focused so Enter commits the top
@@ -453,40 +450,26 @@ export function SendouSelect<T extends object>({
 			? Array.from(items ?? []).map(children)
 			: children;
 
-	let selectedItemContent: React.ReactNode | undefined;
-	let visibleItemCount = 0;
-	forEachItemElement(
+	const { selectedItemContent, visibleItemCount } = scanItems(
 		renderedChildren,
-		(itemProps) => {
-			if (itemProps.id === currentKey) {
-				selectedItemContent = itemProps.children;
-			}
-			if (isItemVisible(state, itemProps.id, resolveTextValue(itemProps))) {
-				visibleItemCount++;
-			}
-		},
-		(element) => {
-			if (currentKey !== null && element.key === String(currentKey)) {
-				selectedItemContent = (
-					<SelectTriggerContext value>{element}</SelectTriggerContext>
-				);
-			}
-			visibleItemCount++;
-		},
+		state,
 	);
 
-	const registeredSelection =
+	const unresolvedSelectionContent = () =>
 		selectedItemContent === undefined && currentKey !== null
-			? contentByKeyRef.current.get(currentKey)
+			? registry.registeredContent.get(currentKey)
 			: undefined;
+	const registeredSelection = React.useSyncExternalStore(
+		registry.registeredContent.subscribe,
+		unresolvedSelectionContent,
+		unresolvedSelectionContent,
+	);
 	const selectedContent =
 		selectedItemContent !== undefined
 			? selectedItemContent
 			: registeredSelection
 				? (registeredSelection.getContent() ?? registeredSelection.textValue)
 				: undefined;
-	unresolvedSelectionRef.current =
-		selectedContent === undefined ? currentKey : null;
 
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: only observes focus leaving the select
@@ -518,11 +501,7 @@ export function SendouSelect<T extends object>({
 				className={styles.button}
 				ref={(element) => {
 					triggerElementRef.current = element;
-					if (typeof triggerRef === "function") {
-						triggerRef(element);
-					} else if (triggerRef) {
-						triggerRef.current = element;
-					}
+					assignRef(triggerRef, element);
 				}}
 				disabled={isDisabled}
 				aria-haspopup="listbox"
@@ -537,11 +516,12 @@ export function SendouSelect<T extends object>({
 				}
 				data-required={isRequired || undefined}
 				{...popoverTriggerProps}
+				onClick={onTriggerClick}
 				onKeyDown={onTriggerKeyDown}
 			>
 				<span
 					id={valueId}
-					className={styles.selectValue}
+					className={clsx(styles.selectValue, "truncate")}
 					data-placeholder={selectedContent === undefined ? "true" : undefined}
 				>
 					{selectedContent !== undefined ? selectedContent : placeholder}
@@ -564,14 +544,12 @@ export function SendouSelect<T extends object>({
 			{name ? (
 				<input type="hidden" name={name} value={currentKey ?? ""} />
 			) : null}
-			<SendouBottomTexts bottomText={bottomText} errorText={errorText} />
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: keydown steers the listbox inside */}
 			<div
 				ref={popoverRef}
 				id={popoverId}
 				popover="auto"
 				className={clsx(styles.popover, popoverClassName)}
-				style={topLayerStyle}
 				onBeforeToggle={onPopoverBeforeToggle}
 				onToggle={onPopoverToggle}
 				onKeyDown={onPopoverKeyDown}
@@ -613,6 +591,14 @@ export function SendouSelect<T extends object>({
 	);
 }
 
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null) {
+	if (typeof ref === "function") {
+		ref(value);
+	} else if (ref) {
+		ref.current = value;
+	}
+}
+
 function createFocusStore(): FocusStore {
 	let focusedKey: SelectKey | null = null;
 	const listeners = new Set<() => void>();
@@ -622,6 +608,25 @@ function createFocusStore(): FocusStore {
 		set: (key) => {
 			if (key === focusedKey) return;
 			focusedKey = key;
+			for (const listener of listeners) {
+				listener();
+			}
+		},
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	};
+}
+
+function createRegisteredContentStore(): RegisteredContentStore {
+	const contentByKey = new Map<SelectKey, RegisteredContent>();
+	const listeners = new Set<() => void>();
+
+	return {
+		get: (key) => contentByKey.get(key),
+		set: (key, content) => {
+			contentByKey.set(key, content);
 			for (const listener of listeners) {
 				listener();
 			}
@@ -727,7 +732,7 @@ function Listbox({
 		<div
 			ref={listboxRef}
 			id={id}
-			className={clsx(styles.listBox, "scrollbar")}
+			className={styles.listBox}
 			role="listbox"
 			tabIndex={-1}
 			aria-labelledby={open ? labelId : undefined}
@@ -743,6 +748,15 @@ function normalizeForSearch(value: string) {
 		.normalize("NFD")
 		.replace(/\p{Diacritic}/gu, "")
 		.toLowerCase();
+}
+
+function normalizeForSearchCached(value: string) {
+	let normalized = normalizedTextCache.get(value);
+	if (normalized === undefined) {
+		normalized = normalizeForSearch(value);
+		normalizedTextCache.set(value, normalized);
+	}
+	return normalized;
 }
 
 /** Case- and diacritic-insensitive "contains" matcher, the select's default search filter. */
@@ -804,6 +818,34 @@ function forEachItemElement(
 	}
 }
 
+function scanItems(node: React.ReactNode, state: SelectState) {
+	let selectedItemContent: React.ReactNode | undefined;
+	let visibleItemCount = 0;
+	forEachItemElement(
+		node,
+		(itemProps) => {
+			if (itemProps.id === state.selectedKey) {
+				selectedItemContent = itemProps.children;
+			}
+			if (isItemVisible(state, itemProps.id, resolveTextValue(itemProps))) {
+				visibleItemCount++;
+			}
+		},
+		(element) => {
+			if (
+				state.selectedKey !== null &&
+				element.key === String(state.selectedKey)
+			) {
+				selectedItemContent = (
+					<SelectTriggerContext value>{element}</SelectTriggerContext>
+				);
+			}
+			visibleItemCount++;
+		},
+	);
+	return { selectedItemContent, visibleItemCount };
+}
+
 function hasVisibleItems(state: SelectState, node: React.ReactNode) {
 	let found = false;
 	forEachItemElement(
@@ -852,7 +894,9 @@ function SelectOption(props: SendouSelectItemProps) {
 	);
 
 	const childrenRef = React.useRef(children);
-	childrenRef.current = children;
+	useIsomorphicLayoutEffect(() => {
+		childrenRef.current = children;
+	});
 	const elementRef = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
@@ -882,7 +926,7 @@ function SelectOption(props: SendouSelectItemProps) {
 			data-disabled={isDisabled ? "true" : undefined}
 			data-testid={testId}
 			data-status={dataStatus}
-			className={clsx(styles.item, className, {
+			className={clsx(styles.item, "truncate", className, {
 				[styles.itemFocused]: isFocused,
 				[styles.itemSelected]: isSelected,
 			})}

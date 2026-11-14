@@ -2,7 +2,7 @@ import { hasPermission } from "~/modules/permissions/utils";
 import { logger } from "~/utils/logger";
 import * as ChatRepository from "./ChatRepository.server";
 import * as ChatRoomResolver from "./ChatRoomResolver.server";
-import { roomListItem } from "./chat-room-list.server";
+import { findParticipantsById, roomListItem } from "./chat-room-list.server";
 import type { RouteChatRoom, RouteChatRoomInput } from "./chat-types";
 
 /**
@@ -26,6 +26,7 @@ export async function resolve(
 		user.id,
 		viewableRooms.map((room) => room.roomId),
 	);
+	const participantsById = await findParticipantsById(viewableRooms);
 	const statsByRoomId = new Map(stats.map((row) => [row.roomId, row]));
 	const roomsById = new Map(viewableRooms.map((room) => [room.roomId, room]));
 
@@ -39,7 +40,11 @@ export async function resolve(
 
 		result.push({
 			...input,
-			room: roomListItem(room, statsByRoomId.get(roomId), user),
+			room: roomListItem(room, {
+				stats: statsByRoomId.get(roomId),
+				participantsById,
+				user,
+			}),
 			messages: input.autoOpen
 				? await ChatRepository.findAllMessagesByRoomId(roomId)
 				: null,

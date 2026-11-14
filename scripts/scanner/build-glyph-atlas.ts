@@ -32,6 +32,7 @@ import {
 	ALL_STAGE_ENTRIES,
 	RESULT_TAG_ENTRIES,
 } from "../../app/features/scanner/core/localized";
+import { LANGUAGE_ENTRIES } from "../../app/features/scanner/core/localized-entries";
 import { SCANNER_ASSETS_DIR } from "../../app/features/scanner/node/assets-dir";
 import { readImage, writePng } from "../../app/features/scanner/node/image-io";
 import { readFontCoverage } from "./otf-cmap";
@@ -100,20 +101,30 @@ function nameCharset(): string[] {
  * few narrow glyphs shift an atlas's median width enough to change
  * wide-segment splitting, so it stays out of the death-tag charset until attested.
  */
-const NAME_GREEK = "ια"; // ι: "Rιppιng_H", α: "◇Dαrz™" (special-symbols fixture)
+const NAME_GREEK = "ιαβψΞ"; // ι: "Rιppιng_H", α: "◇Dαrz™" (special-symbols fixture), β: "エキヒヒリヨβノ、" (quick log manta-maria), Ξ: "BΞ Bagel!" (anarchy-series-tower-control-double-eight)
 
 /**
  * The rest of the in-game name editor's symbol pickers (sendou.ink's
  * IN_GAME_NAME_CHARACTER_CATEGORIES "symbols" + "cjk-symbols"), minus what
  * nameCharset() already carries and chars the Blitz cmap doesn't map
- * (ˊˋ𝑓⁀⚪⚫◻◼⍑; nameSymbols() re-checks at build time). "•" stays out: BlitzMain's
+ * (nameExtras() checks at build time). "•" stays out: BlitzMain's
  * bullet is a 4px dot, the on-screen circle comes from "●" via RENDER_ALIASES.
  * Only the fullwidth "～" (U+FF5E), the form fixture labels attest — the wave
- * dash "〜" (U+301C) is a pixel-identical homoglyph that would duel it.
+ * dash "〜" (U+301C) is a pixel-identical homoglyph that would duel it. Of the
+ * other fullwidth symbols only those unlike their ASCII twin. "“" and "▲" are
+ * not in the picker but fixture labels attest them.
  * Scoreboard-names only (not death-tag) until attested, like NAME_GREEK.
  */
 const NAME_SYMBOLS =
-	"′‘’‚‛…″“”„←→↑↓⇒⇔˜€∞√∀⊂⊃∴∵∂№♭♀♂◎◇◆△▲▽▼†※™『』【】〈〉《》〔〕々〆〇〃～";
+	"′‘’…“”‐―←→↑↓⇒⇔˜€ƒ∞√∀⊂⊃∴∵∂⌒№♭♀♂○◎□■◇◆△▲▽†※™【】々〆〒仝～＋＜＞＾＿";
+
+/**
+ * The name editor's accented letters beyond Latin-1, minus those that read as
+ * a Latin-1 twin at capture fidelity (ā~ä, ń~ó, ő~ò, œ~æ, Ŕ~Á…): duelling
+ * twins flip correct reads on ranking noise, the twin is the better guess.
+ */
+const NAME_LATIN_EXTENDED =
+	"ăćċčďǆǳğġģħĳķļľłņňŕřšśşťțųźżžĊČĞĠĢĦĪĮİĲĶĹĻĽŁŅŒŘŠŚŞŤȚŲŸŹŻŽ";
 
 /**
  * Render the key char but emit it as the value: in-game names show "•" as a
@@ -291,10 +302,12 @@ async function build(
 	writeAtlas(name, height, glyphs);
 }
 
-/** NAME_SYMBOLS chars the font actually maps (see the constant's comment). */
-function nameSymbols(family: string): string[] {
+/** NAME_SYMBOLS and NAME_LATIN_EXTENDED chars the font actually maps. */
+function nameExtras(family: string): string[] {
 	const covers = fontCoverage[family]!;
-	return [...NAME_SYMBOLS].filter((ch) => covers(ch.codePointAt(0)!));
+	return [...NAME_SYMBOLS, ...NAME_LATIN_EXTENDED].filter((ch) =>
+		covers(ch.codePointAt(0)!),
+	);
 }
 
 /** Unique non-space characters across a set of known strings. */
@@ -316,7 +329,7 @@ await build("scoreboard-names", 17, [
 	{
 		family: "BlitzMain",
 		pxs: [19, 20],
-		chars: [...nameCharset(), ...NAME_GREEK, ...nameSymbols("BlitzMain")],
+		chars: [...nameCharset(), ...NAME_GREEK, ...nameExtras("BlitzMain")],
 	},
 ]);
 /**
@@ -359,6 +372,42 @@ await build("scoreboard-header-line", 24, [
 		family: "BlitzMain",
 		pxs: [22, 23],
 		chars: localizedChars(stageTexts, "BlitzMain"),
+	},
+]);
+// JA header: the same Blitz faces, whose kana the Latin atlases leave out
+// (see localizedChars). A separate pair the header falls back to when the
+// Latin read doesn't snap, like death-weapon-ja. The Blitz cuts have no kanji
+// (stage names like ヤガラ市場 still snap on their kana). The bold mode kana
+// render smaller than the Latin mode text: 30-31px peaked in a sweep against
+// the -I23PqqYtHQ VoD (ガ's dakuten still splits off, the rest of the
+// mode reads exact and snaps).
+const jaEntries = LANGUAGE_ENTRIES.find((l) => l.lang === "JPja")!;
+await build("scoreboard-header-lobby-ja", 19, [
+	{
+		family: "BlitzMain",
+		pxs: [23, 24],
+		chars: coveredChars(
+			jaEntries.lobbies.map((e) => e.text),
+			"BlitzMain",
+		),
+	},
+]);
+await build("scoreboard-header-line-ja", 24, [
+	{
+		family: "BlitzBold",
+		pxs: [30, 31],
+		chars: coveredChars(
+			jaEntries.modes.map((e) => e.text),
+			"BlitzBold",
+		),
+	},
+	{
+		family: "BlitzMain",
+		pxs: [22, 23],
+		chars: coveredChars(
+			jaEntries.stages.map((e) => e.text),
+			"BlitzMain",
+		),
 	},
 ]);
 // replay browser: the code line and the VICTORY/DEFEAT panel tags render in
@@ -468,7 +517,7 @@ await build("kill-feed", KILL_TEXT_HEIGHT, [
 		chars: [
 			...nameCharset(),
 			...NAME_GREEK,
-			...nameSymbols("BlitzMain"),
+			...nameExtras("BlitzMain"),
 			...localizedChars(killFeedTexts, "BlitzMain"),
 		],
 	},

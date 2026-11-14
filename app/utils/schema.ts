@@ -74,6 +74,30 @@ export function superRefineAsync<TValue>(
 	});
 }
 
+/** Async transformation of the parsed value whose `fn` reports issues like {@link superRefine}, any issue failing the parse. */
+export function superTransformAsync<TInput, TOutput>(
+	fn: (value: TInput, ctx: ValidationCtx) => Promise<TOutput>,
+) {
+	return v.rawTransformAsync<TInput, TOutput>(
+		async ({ dataset, addIssue, NEVER }) => {
+			let hasIssues = false;
+			const output = await fn(dataset.value, {
+				addIssue: (issue) => {
+					hasIssues = true;
+					addIssue({
+						message: issue.message,
+						path: issue.path?.length
+							? toIssuePath(dataset.value, issue.path)
+							: undefined,
+					});
+				},
+			});
+
+			return hasIssues ? NEVER : output;
+		},
+	);
+}
+
 function toIssuePath(
 	root: unknown,
 	keys: PropertyKey[],
@@ -414,9 +438,19 @@ const EMPTY_CHARACTERS = [
 	"\u2060",
 	"[\\uFE00-\\uFE0F]",
 ];
-const EMPTY_CHARACTERS_REGEX = new RegExp(EMPTY_CHARACTERS.join("|"), "g");
+const EMOJI_PART = "\\p{Extended_Pictographic}(?:\\uFE0F|\\p{Emoji_Modifier})?";
+const EMOJI_SEQUENCE = `${EMOJI_PART}(?:\\u200D${EMOJI_PART})*`;
+const KEYCAP_SEQUENCE = "[0-9#*]\\uFE0F?\\u20E3";
+const EMOJI_SEQUENCE_OR_EMPTY_CHARACTER_REGEX = new RegExp(
+	`(${EMOJI_SEQUENCE}|${KEYCAP_SEQUENCE})|${EMPTY_CHARACTERS.join("|")}`,
+	"gu",
+);
 
 const zalgoRe = /%CC%/;
+/**
+ *
+ * @internal
+ */
 export const hasZalgo = (txt: string) => zalgoRe.test(encodeURIComponent(txt));
 
 /** Non-empty string that has the given length (max and optionally min). Prevents z͎͗ͣḁ̵̑l̉̃ͦg̐̓̒o͓̔ͥ text as well as filters out characters that have no width. */
@@ -451,11 +485,19 @@ export const safeNullableStringSchema = ({
 		),
 	);
 
-/** Non-empty string with invisible characters cleaned out, or null. */
+/**
+ * Non-empty string with invisible characters cleaned out, or null.
+ * @internal
+ */
 export function actuallyNonEmptyStringOrNull(value: unknown) {
 	if (typeof value !== "string") return value;
 
-	const trimmed = value.replace(EMPTY_CHARACTERS_REGEX, "").trim();
+	const trimmed = value
+		.replace(
+			EMOJI_SEQUENCE_OR_EMPTY_CHARACTER_REGEX,
+			(_, emojiSequence?: string) => emojiSequence ?? "",
+		)
+		.trim();
 
 	return trimmed === "" ? null : trimmed;
 }

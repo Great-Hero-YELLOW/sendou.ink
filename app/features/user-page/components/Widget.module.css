@@ -277,6 +277,13 @@
 	padding: 1px;
 }
 
+.placementResultsContainer {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--s-3);
+}
+
 .placementResults {
 	display: flex;
 	gap: var(--s-4);
@@ -293,8 +300,11 @@
 }
 
 .builds {
-	display: flex;
-	gap: var(--s-3);
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 240px;
+	grid-template-rows: repeat(3, auto);
+	gap: 0 var(--s-3);
 	overflow-x: auto;
 	padding-block: var(--s-2);
 }
@@ -394,9 +404,27 @@
 	font-size: var(--font-sm);
 	font-weight: var(--weight-body);
 
+	&:is(button) {
+		background: none;
+		border: none;
+		cursor: pointer;
+		text-align: start;
+	}
+
 	&:is(a, button):hover {
 		background-color: var(--color-bg-high);
 	}
+}
+
+.socialLinkActionIcon {
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+	color: var(--color-text-high);
+}
+
+.socialLinkActionIconSuccess {
+	color: var(--color-success);
 }
 
 .socialLinkName {
@@ -446,7 +474,12 @@
 	color: var(--color-text);
 }
 
+.liveStreamThumbnailLink {
+	display: block;
+}
+
 .liveStreamThumbnail {
+	display: block;
 	width: 100%;
 	aspect-ratio: 16 / 9;
 	object-fit: cover;
@@ -478,9 +511,17 @@
 .liveStreamName {
 	margin-inline-start: auto;
 	color: var(--color-text-high);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+}
+
+.liveStreamLinks {
+	margin-inline-start: auto;
+}
+
+.liveStreamPlatformIcon {
+	width: 1em;
+	height: 1em;
+	margin-inline-end: var(--s-1);
+	vertical-align: middle;
 }
 
 .countdownTitle {

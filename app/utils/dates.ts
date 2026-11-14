@@ -8,21 +8,12 @@ import type { DayMonthYear } from "./schema";
 
 // en-US ships with date-fns core as the default locale, so it costs no extra bytes
 const LOCALE_LOADERS: Record<LanguageCode, () => Promise<Locale>> = {
-	da: () => import("date-fns/locale/da").then((module) => module.da),
 	de: () => import("date-fns/locale/de").then((module) => module.de),
 	en: () => Promise.resolve(enUS),
 	"es-ES": () => import("date-fns/locale/es").then((module) => module.es),
 	"es-US": () => import("date-fns/locale/es").then((module) => module.es),
-	"fr-CA": () => import("date-fns/locale/fr-CA").then((module) => module.frCA),
 	"fr-EU": () => import("date-fns/locale/fr").then((module) => module.fr),
-	he: () => import("date-fns/locale/he").then((module) => module.he),
-	it: () => import("date-fns/locale/it").then((module) => module.it),
 	ja: () => import("date-fns/locale/ja").then((module) => module.ja),
-	ko: () => import("date-fns/locale/ko").then((module) => module.ko),
-	nl: () => import("date-fns/locale/nl").then((module) => module.nl),
-	pl: () => import("date-fns/locale/pl").then((module) => module.pl),
-	"pt-BR": () => import("date-fns/locale/pt-BR").then((module) => module.ptBR),
-	ru: () => import("date-fns/locale/ru").then((module) => module.ru),
 	zh: () => import("date-fns/locale/zh-CN").then((module) => module.zhCN),
 };
 
@@ -87,30 +78,39 @@ export function dayMonthYearToDate({ day, month, year }: DayMonthYear) {
 	return new Date(Date.UTC(year, month, day, 12));
 }
 
+/** Day/month/year to a Date at local midnight. */
+export function dayMonthYearToLocalDate({ day, month, year }: DayMonthYear) {
+	return new Date(year, month, day);
+}
+
+/** The local calendar day of a Date as day/month/year. */
+export function localDateToDayMonthYear(date: Date): DayMonthYear {
+	return {
+		day: date.getDate(),
+		month: date.getMonth(),
+		year: date.getFullYear(),
+	};
+}
+
 /** Day/month/year to a database timestamp, noon UTC. */
 export function dayMonthYearToDatabaseTimestamp(args: DayMonthYear) {
 	return dateToDatabaseTimestamp(dayMonthYearToDate(args));
 }
 
 // https://stackoverflow.com/a/71336659
+/** @internal */
 export function weekNumberToDate({
 	week,
 	year,
-	position = "start",
 }: {
 	week: number;
 	year: number;
-	/** start = Date of Monday, end = Date of Sunday */
-	position?: "start" | "end";
 }) {
 	const result = new Date(Date.UTC(year, 0, 4));
 
 	result.setUTCDate(
 		result.getUTCDate() - (result.getUTCDay() || 7) + 1 + 7 * (week - 1),
 	);
-	if (position === "end") {
-		result.setUTCDate(result.getUTCDate() + 6);
-	}
 	return result;
 }
 
@@ -131,25 +131,6 @@ export function weekNumberToDateRange({
 	endTime.setUTCDate(endTime.getUTCDate() + 7);
 
 	return { startTime, endTime };
-}
-
-export function isValidDate(date: Date) {
-	return !Number.isNaN(date.getTime());
-}
-
-export function getDateAtNextFullHour(date: Date) {
-	const copiedDate = new Date(date.getTime());
-	if (
-		date.getMinutes() > 0 ||
-		date.getSeconds() > 0 ||
-		date.getMilliseconds() > 0
-	) {
-		copiedDate.setHours(date.getHours() + 1);
-		copiedDate.setMinutes(0);
-	}
-	copiedDate.setSeconds(0);
-	copiedDate.setMilliseconds(0);
-	return copiedDate;
 }
 
 export function dateToYYYYMMDD(date: Date) {

@@ -7,12 +7,18 @@ export type GlobalStatusState =
 	| "TO_CHECKIN"
 	| "TO_MATCH"
 	| "TO_WAITING_FOR_MATCH"
-	| "TO_WAITING_FOR_CAST";
+	| "TO_WAITING_FOR_CAST"
+	| "LOBBY_WAITING"
+	| "LOBBY_READY_CHECK"
+	| "LOBBY_IN_ROOM"
+	| "LOBBY_MATCH";
 
 export interface GlobalStatus {
 	state: GlobalStatusState;
 	/** Page the indicator links to e.g. the SendouQ match page. */
 	url: string;
+	/** Bracket match the brackets page `url` scrolls to, e.g. the one the team is waiting on. */
+	scrollToMatchId?: number;
 	/** Logo shown instead of the default state icon, e.g. the tournament's logo. */
 	logoUrl?: string;
 	/** Current SendouQ group fill shown after the state text, e.g. 2/4 members. */
@@ -25,4 +31,14 @@ export interface GlobalStatus {
 	groupId?: number;
 	/** When the queued group drops out of the looking pool, flipping the status to `SQ_EXPIRED`. */
 	expiresAt?: number;
+	/** Tournament a `TO_` state is about. */
+	tournamentName?: string;
+	/** Round of the tournament match being played or waited on, e.g. "Winners Round 3". */
+	roundName?: string;
+	/** When the check-in closes (ms timestamp), known for the registration check-in only. */
+	checkInClosesAt?: number;
+	/** SendouQ match of the `SQ_MATCH` state. */
+	sqMatchId?: number;
+	/** Game of the SendouQ match being played, starting from 1. */
+	gameNumber?: number;
 }

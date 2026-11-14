@@ -34,10 +34,7 @@
 
 .teamName {
 	font-weight: var(--weight-semi);
-	white-space: nowrap;
 	max-width: 10rem;
-	overflow: hidden;
-	text-overflow: ellipsis;
 }
 
 .checkInTrigger {
@@ -87,6 +84,5 @@
 
 .noResults {
 	text-align: center;
-	color: var(--color-text-lighter);
 	padding-block: var(--s-6);
 }

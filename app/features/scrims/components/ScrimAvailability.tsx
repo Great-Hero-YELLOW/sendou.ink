@@ -1,9 +1,11 @@
+import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 import { useLoaderData } from "react-router";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouPopover } from "~/components/elements/Popover";
 import {
 	AvailabilityMemberRow,
+	AvailabilityMemberRows,
 	type AvailabilityPanelUser,
 	AvailabilityStatusDots,
 	AvailabilitySummary,
@@ -78,7 +80,9 @@ export function ScrimFitStripe({ post }: { post: ScrimPost }) {
 					className={styles.stripe}
 					testId="scrim-fit-indicator"
 				>
-					<span className={styles.stripeTeam}>{fit.team.name}</span>
+					<span className={clsx(styles.stripeTeam, "truncate")}>
+						{fit.team.name}
+					</span>
 					<AvailabilityStatusDots statuses={rosterStatuses(fit)} />
 					<span className={styles.stripeCount}>
 						{t("schedule:scrims.availableOfRoster", {
@@ -105,7 +109,7 @@ export function ScrimAvailabilityRows({ fit }: { fit: ScrimRosterFit }) {
 
 	return (
 		<div className={styles.rowsSection}>
-			<ul className={styles.rows}>
+			<AvailabilityMemberRows>
 				{fit.roster.map((member) => (
 					<AvailabilityMemberRow
 						key={member.id}
@@ -113,7 +117,7 @@ export function ScrimAvailabilityRows({ fit }: { fit: ScrimRosterFit }) {
 						entry={entryByUserId.get(member.id)}
 					/>
 				))}
-			</ul>
+			</AvailabilityMemberRows>
 			<AvailabilitySummary
 				statuses={fit.roster.map((member) =>
 					availabilityRowStatus(entryByUserId.get(member.id)),

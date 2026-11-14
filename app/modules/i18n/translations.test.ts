@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { DEFAULT_LANGUAGE, languages } from "./config";
+import { DEFAULT_LANGUAGE, gameLanguages } from "./config";
 
 const LOCALES_DIR = path.join(process.cwd(), "locales");
 
@@ -22,10 +22,10 @@ const readNamespace = (language: string, file: string) => {
 const interpolatedVariables = (value: string) =>
 	Array.from(value.matchAll(/\{\{\s*([a-zA-Z0-9_.]+)\s*(?:,[^}]*)?\}\}/g))
 		.map((match) => match[1])
-		.sort();
+		.sort((a, b) => a.localeCompare(b));
 
 describe("translations", () => {
-	test.each(languages.filter(({ code }) => code !== DEFAULT_LANGUAGE))(
+	test.each(gameLanguages.filter(({ code }) => code !== DEFAULT_LANGUAGE))(
 		"$code interpolates the same variables as English",
 		({ code }) => {
 			const mismatches: string[] = [];

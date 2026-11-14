@@ -54,6 +54,15 @@ const RESOLUTION_TRIGGERS = {
 		"accepts or declines the request, or the sender cancels it",
 	TEAM_EVENT_ADDED: "visits the team's schedule page",
 	SCHEDULE_TEAM_REMINDER: "saves any week of their own schedule",
+	CHAT_MENTION:
+		"reads the room, or is active on the site as the mention arrives (heard the mention sound)",
+	LOBBY_CHECK_IN_OPENED: "visits the lobby's page",
+	LOBBY_STARTED: "visits the lobby's page",
+	LOBBY_PROMOTED: "visits the lobby's page",
+	LOBBY_HOST: "visits the lobby's page",
+	LOBBY_READY_CHECK: "confirms being ready, or visits the lobby's page",
+	LOBBY_APPLICATION_RECEIVED: "visits the lobby's page",
+	LOBBY_APPLICATION_APPROVED: "visits the lobby's page",
 } as const satisfies Record<Notification["type"], string | null>;
 
 type ResolvableNotificationType = {

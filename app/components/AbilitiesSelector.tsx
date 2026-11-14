@@ -14,41 +14,22 @@ import {
 	useSensors,
 } from "@dnd-kit/core";
 import clsx from "clsx";
-import { Layers } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
-import { abilities } from "~/modules/in-game-lists/abilities";
 import type {
 	Ability as AbilityName,
-	AbilityType,
 	AbilityWithUnknown,
 	BuildAbilitiesTupleWithUnknown,
 } from "~/modules/in-game-lists/types";
 import { abilityImageUrl } from "~/utils/urls";
 import styles from "./AbilitiesSelector.module.css";
 import { Ability } from "./Ability";
+import { AbilityPalette, AbilityPaletteButton } from "./AbilityPalette";
 import * as AbilitySlots from "./AbilitySlots";
 import { Image } from "./Image";
 
 const SLOTS_DROPPABLE_ID = "slots";
 const PREVIEW_SHOW_DELAY_MS = 150;
 const PREVIEW_HIDE_DELAY_MS = 100;
-
-const STACKABLE_GROUP: PaletteGroup = {
-	type: "STACKABLE",
-	label: "Stackable abilities",
-};
-
-const MAIN_ONLY_GROUPS: PaletteGroup[] = [
-	{ type: "HEAD_MAIN_ONLY", label: "Headgear-only abilities" },
-	{ type: "CLOTHES_MAIN_ONLY", label: "Clothing-only abilities" },
-	{ type: "SHOES_MAIN_ONLY", label: "Shoes-only abilities" },
-];
-
-interface PaletteGroup {
-	type: AbilityType;
-	label: string;
-}
 
 interface DragData {
 	ability: AbilityName;
@@ -164,34 +145,6 @@ export function AbilitiesSelector({
 		});
 	};
 
-	const renderPaletteGroup = (group: PaletteGroup, marker: React.ReactNode) => (
-		<fieldset
-			key={group.type}
-			aria-label={group.label}
-			className={styles.paletteGroup}
-		>
-			<span aria-hidden className={styles.rowMarker}>
-				{marker}
-			</span>
-			{abilities
-				.filter((ability) => ability.type === group.type)
-				.map((ability) => (
-					<PaletteButton
-						key={ability.name}
-						ability={ability.name}
-						isUnplaceable={
-							!AbilitySlots.firstEmptyValidSlot(selectedAbilities, ability.name)
-						}
-						isDragging={!dragging?.from && dragging?.ability === ability.name}
-						onClick={() => handlePaletteClick(ability.name)}
-						onPreviewChange={(isPreviewing) =>
-							schedulePreview(isPreviewing ? ability.name : null)
-						}
-					/>
-				))}
-		</fieldset>
-	);
-
 	return (
 		<DndContext
 			sensors={sensors}
@@ -231,13 +184,22 @@ export function AbilitiesSelector({
 						}),
 					)}
 				</SlotGrid>
-				<div className={styles.palette}>
-					{renderPaletteGroup(
-						STACKABLE_GROUP,
-						<Layers size={22} strokeWidth={2.5} />,
+				<AbilityPalette
+					renderAbility={(ability) => (
+						<PaletteButton
+							key={ability}
+							ability={ability}
+							isUnplaceable={
+								!AbilitySlots.firstEmptyValidSlot(selectedAbilities, ability)
+							}
+							isDragging={!dragging?.from && dragging?.ability === ability}
+							onClick={() => handlePaletteClick(ability)}
+							onPreviewChange={(isPreviewing) =>
+								schedulePreview(isPreviewing ? ability : null)
+							}
+						/>
 					)}
-					{MAIN_ONLY_GROUPS.map((group, i) => renderPaletteGroup(group, i + 1))}
-				</div>
+				/>
 			</div>
 			<DragOverlay dropAnimation={null}>
 				{dragging ? (
@@ -336,26 +298,18 @@ function PaletteButton({
 	onClick: () => void;
 	onPreviewChange: (isPreviewing: boolean) => void;
 }) {
-	const { t } = useTranslation(["game-misc"]);
 	const { setNodeRef, listeners } = useDraggable({
 		id: `palette-${ability}`,
 		data: { ability } satisfies DragData,
 	});
 
-	const name = t(`game-misc:ABILITY_${ability}`);
-
 	return (
-		<button
+		<AbilityPaletteButton
 			ref={setNodeRef}
-			className={clsx(styles.abilityButton, {
-				[styles.isDragging]: isDragging,
-				[styles.unplaceable]: isUnplaceable,
-			})}
-			type="button"
-			aria-label={name}
+			ability={ability}
+			className={clsx({ [styles.isDragging]: isDragging })}
 			aria-disabled={isUnplaceable || undefined}
-			title={name}
-			onClick={isUnplaceable ? undefined : onClick}
+			onClick={onClick}
 			onPointerEnter={(event) => {
 				if (event.pointerType === "mouse") onPreviewChange(true);
 			}}
@@ -366,11 +320,8 @@ function PaletteButton({
 				}
 			}}
 			onBlur={() => onPreviewChange(false)}
-			data-testid={`${ability}-ability-button`}
 			{...listeners}
-		>
-			<Image alt="" path={abilityImageUrl(ability)} width={32} height={32} />
-		</button>
+		/>
 	);
 }
 

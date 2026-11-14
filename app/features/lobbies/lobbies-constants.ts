@@ -1,0 +1,86 @@
+import type { MainWeaponId } from "~/modules/in-game-lists/types";
+
+/** Event bus channel that every user on the lobbies list subscribes to. */
+export const LOBBIES_CHANNEL = "lobbies";
+
+export const LOBBY_LABELS = ["CASUAL", "FOCUSED", "TRYHARD"] as const;
+export type LobbyLabel = (typeof LOBBY_LABELS)[number];
+
+/**
+ * - `OFF`: everyone plays what they want
+ * - `CHAOTIC`: each side gets 4 random weapons as the set starts
+ * - `BALANCED`: random weapons too, but rolled so the sides are even, see `WeaponRoll`
+ */
+export const LOBBY_WEAPON_RANDOMIZERS = ["OFF", "CHAOTIC", "BALANCED"] as const;
+export type LobbyWeaponRandomizer = (typeof LOBBY_WEAPON_RANDOMIZERS)[number];
+
+/**
+ * Where a set's maps come from: the players' match profile preferences among ranked modes, Splat Zones or every mode,
+ * or a map pool, a tournament's or a custom one, played in rotation
+ */
+export type LobbyMaps = "RANKED" | "SZ" | "ALL" | "TOURNAMENT" | "CUSTOM";
+
+export const LOBBY_BEST_OFS = [1, 3, 5, 7, 9] as const;
+export type LobbyBestOf = (typeof LOBBY_BEST_OFS)[number];
+
+export const LOBBY_INDEX_TABS = ["running", "upcoming", "ended"] as const;
+export type LobbyIndexTab = (typeof LOBBY_INDEX_TABS)[number];
+
+export const LOBBY_SPECTATOR_COUNTS = [0, 1, 2] as const;
+export type LobbyRoomSize = 8 | 9 | 10;
+
+/** Players needed for a set, 4v4 */
+export const PLAYERS_PER_SET = 8;
+export const PLAYERS_PER_TEAM = 4;
+
+export const LOBBY_NAME_MAX_LENGTH = 50;
+export const LOBBY_DESCRIPTION_MAX_LENGTH = 500;
+
+/** How long before the start check-in opens */
+export const CHECK_IN_LEAD_MINUTES = 10;
+
+/** How long the waitlist has priority (by queue order) on a vacant slot before it's first come, first served */
+export const SLOT_FILL_PRIORITY_MINUTES = 3;
+
+/** An active lobby with no map reported, or a pending one after its start, closes after this long */
+export const AUTO_CLOSE_MINUTES = 120;
+
+/** How long the lobby chat rooms stay open after the lobby's start time */
+export const CHAT_ROOM_LIFESPAN_HOURS = 24;
+
+/** How long after choosing to stay before "Leave after this set" can be picked again, so the chat messages can't be spammed */
+export const DROP_AFTER_SET_COOLDOWN_MS = 30_000;
+export const DROP_AFTER_SET_COOLDOWN_KEY = "lobby-drop-after-set";
+
+export const LOBBY_SIDES = ["ALPHA", "BRAVO"] as const;
+export type LobbySide = (typeof LOBBY_SIDES)[number];
+
+/** Which side's players had a map in their pool, `DEFAULT` when neither did. */
+export type LobbyMapSource = LobbySide | "BOTH" | "DEFAULT";
+
+/** The 4 weapons each side of a set got from the weapon randomizer, its players deciding who plays which. */
+export type LobbyRolledWeapons = Record<LobbySide, MainWeaponId[]>;
+
+/** Value the sides of a lobby game stand in for a team id with, e.g. in ingested scoreboards. */
+export const LOBBY_SIDE_TEAM_ID = {
+	ALPHA: 1,
+	BRAVO: 2,
+} as const satisfies Record<LobbySide, number>;
+
+/**
+ * - `REGISTERED`: has a spot (within the room size), not checked in
+ * - `WAITLISTED`: past the room size, or after the start not present in the room
+ * - `CHECKED_IN`: present and waiting for a spot in the room
+ * - `IN_ROOM`: playing or spectating in the room
+ */
+export type LobbyParticipantStatus =
+	| "REGISTERED"
+	| "WAITLISTED"
+	| "CHECKED_IN"
+	| "IN_ROOM";
+
+/** Of an application to a lobby requiring one: `PENDING` until the host approves (making a participant of the applicant, the application gone) or denies it */
+export type LobbyApplicationState = "PENDING" | "DENIED";
+
+/** Error data of a link-only lobby opened without its share key */
+export const LOBBY_LINK_ONLY_ERROR = "LINK_ONLY";

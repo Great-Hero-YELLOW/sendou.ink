@@ -19,6 +19,7 @@ import {
 	textArea,
 	textAreaOptional,
 	textField,
+	toggle,
 	weaponPool,
 	weaponSelect,
 } from "~/form/fields";
@@ -123,14 +124,15 @@ export const customKitsSchema = v.object({
 	}),
 });
 
-const CONTROLLERS = [
-	"s1-pro-con",
-	"s2-pro-con",
-	"grip",
-	"s2-grip",
-	"s1-split-joycon",
-	"s2-split-joycon",
-	"handheld",
+const CONTROLLER_GROUPS = [
+	{
+		group: "s1",
+		controllers: ["s1-pro-con", "grip", "s1-split-joycon", "handheld"],
+	},
+	{
+		group: "s2",
+		controllers: ["s2-pro-con", "s2-grip", "s2-split-joycon", "s2-handheld"],
+	},
 ] as const;
 
 const sensValueSchema = v.nullable(v.picklist(SENS_OPTIONS));
@@ -138,10 +140,13 @@ const sensValueSchema = v.nullable(v.picklist(SENS_OPTIONS));
 export const sensSchema = v.object({
 	controller: select({
 		label: "labels.controller",
-		items: CONTROLLERS.map((controller) => ({
-			value: controller,
-			label: `options.controller.${controller}` as const,
-		})),
+		items: CONTROLLER_GROUPS.flatMap(({ group, controllers }) =>
+			controllers.map((controller) => ({
+				value: controller,
+				label: `options.controller.${controller}` as const,
+				group: `options.controllerGroup.${group}` as const,
+			})),
+		),
 	}),
 	motionSens: customField({ initialValue: null }, sensValueSchema),
 	stickSens: customField({ initialValue: null }, sensValueSchema),
@@ -173,6 +178,7 @@ export const tierListSchema = v.object({
 	searchParams: textField({
 		label: "labels.tierListUrl",
 		leftAddon: "/tier-list-maker?",
+		inputMode: "url",
 		maxLength: USER.TIER_LIST_WIDGET_MAX_LENGTH,
 		transformValue: pastedTierListUrlToSearchParams,
 		validate: {
@@ -230,6 +236,14 @@ export const markdownSchema = v.object({
 	}),
 });
 
+export const placementResultsSchema = v.object({
+	showTotal: toggle({ label: "labels.showTournamentsPlayed" }),
+});
+
+export const lobbyResultsSchema = v.object({
+	showTotal: toggle({ label: "labels.showLobbiesPlayed", initialValue: true }),
+});
+
 const WIDGET_FORM_SCHEMAS: Record<string, FormObjectSchema> = {
 	bio: bioSchema,
 	"bio-md": bioMdSchema,
@@ -249,6 +263,8 @@ const WIDGET_FORM_SCHEMAS: Record<string, FormObjectSchema> = {
 	"game-badges-small": gameBadgesSmallSchema,
 	countdown: countdownSchema,
 	markdown: markdownSchema,
+	"placement-results": placementResultsSchema,
+	"lobby-results": lobbyResultsSchema,
 };
 
 export function getWidgetFormSchema(widgetId: string) {

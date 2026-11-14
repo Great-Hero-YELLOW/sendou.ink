@@ -1,43 +1,31 @@
-import type { ActionFunction } from "react-router";
 import { redirect } from "react-router";
 import { requireUser } from "~/features/auth/core/user.server";
-import { parseFormData } from "~/form/parse.server";
+import { defineAction } from "~/form/define-action.server";
 import { errorToastIfFalsy } from "~/utils/remix.server";
 import { teamPage } from "~/utils/urls";
 import * as TeamRepository from "../TeamRepository.server";
-import { TEAM } from "../team-constants";
 import { createTeamSchemaServer } from "../team-schemas.server";
+import { maxTeamCount } from "../team-utils";
 
-export const action: ActionFunction = async ({ request }) => {
-	const user = requireUser();
-	const result = await parseFormData({
-		request,
-		schema: createTeamSchemaServer,
-	});
+export const action = defineAction(
+	{ body: createTeamSchemaServer },
+	async ({ body }) => {
+		const user = requireUser();
 
-	if (!result.success) {
-		return { fieldErrors: result.fieldErrors };
-	}
+		const currentTeamCount = (
+			await TeamRepository.findAllMemberOfByUserId(user.id)
+		).length;
+		errorToastIfFalsy(
+			currentTeamCount < maxTeamCount(user),
+			"Already in max amount of teams",
+		);
 
-	const data = result.data;
+		const team = await TeamRepository.insert({
+			ownerUserId: user.id,
+			name: body.name,
+			isMainTeam: currentTeamCount === 0,
+		});
 
-	const currentTeamCount = (
-		await TeamRepository.findAllMemberOfByUserId(user.id)
-	).length;
-	const maxTeamCount = user.roles.includes("SUPPORTER")
-		? TEAM.MAX_TEAM_COUNT_PATRON
-		: TEAM.MAX_TEAM_COUNT_NON_PATRON;
-
-	errorToastIfFalsy(
-		currentTeamCount < maxTeamCount,
-		"Already in max amount of teams",
-	);
-
-	const team = await TeamRepository.insert({
-		ownerUserId: user.id,
-		name: data.name,
-		isMainTeam: currentTeamCount === 0,
-	});
-
-	throw redirect(teamPage(team.customUrl));
-};
+		throw redirect(teamPage(team.customUrl));
+	},
+);

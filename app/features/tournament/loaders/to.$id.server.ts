@@ -1,6 +1,7 @@
 import { isAfter, subDays } from "date-fns";
 import type { LoaderFunctionArgs } from "react-router";
 import { getUser } from "~/features/auth/core/user.server";
+import * as LiveStream from "~/features/live-streams/core/LiveStream";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import { TOURNAMENT } from "~/features/tournament/tournament-constants";
 import {
@@ -15,7 +16,6 @@ import { hasPermission } from "~/modules/permissions/utils";
 import { databaseTimestampToDate } from "~/utils/dates";
 import { parseParams } from "~/utils/remix.server";
 import { idObject } from "~/utils/schema";
-import { serializeTournamentLoaderData } from "../core/layout-payload";
 
 export type TournamentLoaderData = {
 	tournament: TournamentLayoutData;
@@ -32,7 +32,9 @@ export type TournamentLoaderData = {
 	vods: TournamentMatchVodRepository.VodsByTournamentId | undefined;
 };
 
-export const loader = async ({ params }: LoaderFunctionArgs) => {
+export const loader = async ({
+	params,
+}: LoaderFunctionArgs): Promise<TournamentLoaderData> => {
 	const user = getUser();
 	const { id: tournamentId } = parseParams({
 		params,
@@ -54,12 +56,12 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			subDays(new Date(), TOURNAMENT.VOD_VISIBILITY_DAYS),
 		);
 
-	return serializeTournamentLoaderData({
+	return {
 		tournament: {
 			ctx: tournament.ctx,
 			bracketsMeta: await bracketsMetaCached(tournamentId),
 		},
-		streamsCount: tournament.streams.length,
+		streamsCount: LiveStream.groupByStreamer(tournament.streams).length,
 		friendCodes: showFriendCodes
 			? await TournamentRepository.findFriendCodesByTournamentId(tournamentId)
 			: undefined,
@@ -71,5 +73,5 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		vods: showVods
 			? await TournamentMatchVodRepository.findVodsByTournamentId(tournamentId)
 			: undefined,
-	});
+	};
 };

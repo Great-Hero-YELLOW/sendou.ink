@@ -8,7 +8,7 @@ description: Run, debug, and manage Playwright e2e tests. Use when running e2e t
 ## Architecture overview
 
 - Tests live in `e2e/*.spec.ts`, config in `playwright.config.ts`
-- Page objects live in `e2e/pages/<feature>/` — every spec uses them; conventions in `docs/dev/e2e-page-objects.md`, gotchas in `docs/dev/e2e-page-objects-migration.md`
+- Page objects live in `e2e/pages/<feature>/` — every spec uses them. One class per page (e.g. `e2e/pages/builds/builds-page.ts`): a `goto()` wrapping `navigate()`, locator methods, and action methods named after what the user does (with JSDoc, they become the living docs' step names, see `docs/site/src/content/docs/dev/living-docs.mdx`)
 - Global setup (`e2e/global-setup.ts`) builds the app (skipped when no build input changed since the last e2e build — tracked via `.e2e-build-marker`), creates/migrates per-worker databases (via `scripts/ensure-test-db.ts`: pending migrations are applied, drifted databases are rebuilt), and starts one server per worker
 - Port calculation: `E2E_BASE_PORT = PORT (from .env) + 500`. Worker N uses port base+N, except ports on the WHATWG fetch bad port list (e.g. 6679) are skipped — see `e2eWorkerPort` in `e2e/helpers/playwright.ts`
 - Worker count: `E2E_WORKERS` env, defaulting to `min(8, max(4, cores - 2))`
@@ -51,7 +51,7 @@ pnpm run test:e2e:flaky-detect
 ```bash
 E2E_FORCE_BUILD=true pnpm run test:e2e
 ```
-Global setup reuses the previous build when nothing under `app/`, `public/`, the lockfile, or the vite/react-router configs changed. Use this override if you suspect a stale build (e.g. after changing env-dependent build behavior).
+Global setup reuses the previous build when nothing under `app/`, `public/`, `package.json`, the lockfile or `vite.config.ts` changed. Use this override if you suspect a stale build (e.g. after changing env-dependent build behavior).
 
 ## Debugging failures
 
@@ -83,14 +83,15 @@ pnpm exec playwright show-trace test-results/<test-folder>/trace.zip
 When a failure needs full DOM snapshots to understand, re-run just that test with `--trace retain-on-failure` (the CLI flag records complete traces).
 
 ### Re-render races
-Live events run on an in-process event bus per worker server (SSE, see `app/features/events`), so cross-worker crosstalk cannot cause flakes. Google Fonts are also blocked at the context level so font swaps never reflow the page mid-test. Re-renders from the test's own action revalidations can still swallow a React Aria press (press start registers, press end never fires — no POST); `waitForPOSTResponse` retries for this, so route flows through it rather than adding sleeps.
+Live events run on an in-process event bus per worker server (SSE, see `app/features/events`), so cross-worker crosstalk cannot cause flakes. Google Fonts are also blocked (DNS level, `--host-resolver-rules` in `playwright.config.ts`) so font swaps never reflow the page mid-test.
 
 Other known sources, each handled once in the helpers or page objects:
-- YouTube is stubbed at the context level (a fake `iframe_api`, everything else aborted): the real player loads from the internet at its own pace and, arriving mid-test, closed an open select on the VoD form
+- YouTube is stubbed (a fake `window.YT` init script, its hosts cut off at DNS): the real player loads from the internet at its own pace and, arriving mid-test, closed an open select on the VoD form
+- Never block or stub with a context-wide `context.route`: any route turns off the browser's HTTP cache, so every navigation refetches all ~200 script chunks and hydration crawls under load. Keep routes to the page and test that needs them
 - dnd-kit stops every click in the document for 50ms after a drop; drag helpers end with `waitForDropToSettle` so the next click lands
 - A tab or link clicked before hydration (after a raw `page.reload()`, say) loads the target as a new document and the click after it is lost; reload through the page object's `reload()` which waits for hydration
 - Popovers close on navigation in a passive effect, so for a frame the old panel and the new page both show the same names; scope locators to `main` where a name can appear in both
-- React Router drops a fetcher's redirect when a navigation (a revalidation included) started after the submission; broadcast revalidations are jittered up to 1.5s after a live event, so one could land mid-submission and the action silently did nothing. `holdRevalidationsDuring` (used by `useActionSubmit` and `SendouForm`) defers them until the submission settles
+- React Router drops a fetcher's redirect when a navigation (a revalidation included) started after the submission; broadcast revalidations are jittered up to 1.5s after a live event, so one could land mid-submission and the action silently did nothing. `holdRevalidationsDuring` (used by `useActionSubmit` and `SendouForm`) defers them until the submission settles, and `useHoldRevalidationsDuringSubmissions` (mounted in `ChatProvider`) does the same for any other submission, e.g. a plain `<fetcher.Form>`
 
 ## Test pattern reference
 
@@ -115,7 +116,7 @@ test.describe("Feature", () => {
 
 Key rules:
 - The database starts each test holding only the admin and N-ZAP; the `factories` worker fixture (see `e2e/helpers/factories.ts` for the registry) creates everything else
-- Locators live in page objects under `e2e/pages/` — specs contain no raw `getByTestId`/`getByRole` calls; see `docs/dev/e2e-page-objects.md`
+- Locators live in page objects under `e2e/pages/` — specs contain no raw `getByTestId`/`getByRole` calls
 - Use `navigate()` instead of `page.goto()` — it waits for hydration (page objects' `goto()` methods wrap it)
 - Use `submit()` instead of clicking submit buttons directly — it waits for the POST response
 - Use `impersonate(page, userId?)` to authenticate. Default is admin (ADMIN_ID); prefer N-ZAP (`NZAP_TEST_ID`) when the flow doesn't need admin rights

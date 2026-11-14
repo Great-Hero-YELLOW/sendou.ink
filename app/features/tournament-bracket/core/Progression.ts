@@ -7,6 +7,7 @@ import {
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
 import { invariant } from "../../../utils/invariant";
+import * as SkippedRounds from "./SkippedRounds";
 
 export interface DBSource {
 	bracketIdx: number;
@@ -16,7 +17,7 @@ export interface DBSource {
 	rest?: boolean;
 }
 
-export interface EditableSource {
+interface EditableSource {
 	/** Frontend-only id while editing, replaced by an index once set. See DBSource.bracketIdx. */
 	bracketId: string;
 	/** User editable, "1-3" and "1,2,3" mean the same. See DBSource.placements for the validated version. */
@@ -48,10 +49,6 @@ export type ValidationError =
 	| {
 			type: "PLACEMENTS_PARSE_ERROR";
 			bracketIdx: number;
-	  }
-	// tournament ends with a format that does not resolve a winner e.g. round robin or grouped swiss
-	| {
-			type: "NOT_RESOLVING_WINNER";
 	  }
 	// from each bracket one placement can lead to only one bracket
 	| {
@@ -132,6 +129,16 @@ export type ValidationError =
 	| {
 			type: "MERGED_STARTING_BRACKETS";
 			bracketIdx: number;
+	  }
+	// skipped rounds must belong to the bracket's format and every round depending on a skipped one must be skipped too
+	| {
+			type: "INVALID_SKIPPED_ROUNDS";
+			bracketIdx: number;
+	  }
+	// elimination brackets can be split into a limited number of groups
+	| {
+			type: "INVALID_GROUP_COUNT";
+			bracketIdx: number;
 	  };
 
 /** Validated brackets in the format ready for user input. */
@@ -160,15 +167,16 @@ export function validatedBracketsToInputFormat(
 }
 
 /** [1, 2, 3] -> "1-3", [5, 6] with rest -> "5,6+" */
-export function placementsToString(placements: number[], rest = false): string {
-	if (placements.length === 0) return "";
-
-	placements.sort((a, b) => a - b);
-
-	if (placements.some((p) => p < 0)) {
-		placements.sort((a, b) => b - a);
-		return placements.join(",");
+export function placementsToString(
+	unsortedPlacements: number[],
+	rest = false,
+): string {
+	if (unsortedPlacements.some((p) => p < 0)) {
+		return unsortedPlacements.toSorted((a, b) => b - a).join(",");
 	}
+
+	const placements = unsortedPlacements.toSorted((a, b) => a - b);
+	if (placements.length === 0) return "";
 
 	const highest = placements[placements.length - 1];
 	const allButHighest = rest ? placements.slice(0, -1) : placements;
@@ -244,12 +252,6 @@ export function bracketsToValidationError(
 		return {
 			type: "MERGED_STARTING_BRACKETS",
 			bracketIdx: mergedStartingBracketsIdx,
-		};
-	}
-
-	if (!resolvesWinner(brackets)) {
-		return {
-			type: "NOT_RESOLVING_WINNER",
 		};
 	}
 
@@ -369,6 +371,22 @@ export function bracketsToValidationError(
 		};
 	}
 
+	faultyBracketIdx = invalidSkippedRounds(brackets);
+	if (typeof faultyBracketIdx === "number") {
+		return {
+			type: "INVALID_SKIPPED_ROUNDS",
+			bracketIdx: faultyBracketIdx,
+		};
+	}
+
+	faultyBracketIdx = invalidEliminationGroupCount(brackets);
+	if (typeof faultyBracketIdx === "number") {
+		return {
+			type: "INVALID_GROUP_COUNT",
+			bracketIdx: faultyBracketIdx,
+		};
+	}
+
 	return null;
 }
 
@@ -424,14 +442,15 @@ function toOutputBracketFormat(brackets: InputBracket[]): ParsedBracket[] {
 			(bracket) =>
 				!bracket.sources ||
 				bracket.sources.every((source) => source.bracketIdx >= 0),
-			"Bracket source not found",
 		),
+		"Bracket source not found",
 	);
 
 	return result;
 }
 
-function parsePlacements(
+/** "1-3,5+" -> { placements: [1, 2, 3, 5], rest: true }, null if not valid placements syntax. Empty input is the Swiss early advance case. */
+export function parsePlacements(
 	placements: string,
 ): { placements: number[]; rest: boolean } | null {
 	if (placements.trim() === "") {
@@ -455,7 +474,7 @@ function parsePlacements(
 
 		const restMatch = part.match(/^(\d+)(?:-(\d+))?\+$/);
 		if (restMatch) {
-			if (!isLast || part === "0+") return null;
+			if (!isLast) return null;
 			rest = true;
 
 			const start = Number(restMatch[1]);
@@ -467,7 +486,7 @@ function parsePlacements(
 			continue;
 		}
 
-		const isValid = part.match(/^\d+(-\d+)?$/) && part !== "0";
+		const isValid = part.match(/^\d+(-\d+)?$/);
 		if (!isValid) return null;
 
 		if (part.includes("-")) {
@@ -482,21 +501,9 @@ function parsePlacements(
 		}
 	}
 
+	if (result.includes(0)) return null;
+
 	return { placements: result, rest };
-}
-
-function resolvesWinner(brackets: ParsedBracket[]) {
-	const finals = brackets.find((_, idx) => isFinals(idx, brackets));
-
-	if (!finals) return false;
-	if (
-		finals.type === "swiss" &&
-		(finals.settings.groupCount ?? TOURNAMENT.SWISS_DEFAULT_GROUP_COUNT) > 1
-	) {
-		return false;
-	}
-
-	return true;
 }
 
 function samePlacementToMultipleBrackets(brackets: ParsedBracket[]) {
@@ -759,6 +766,48 @@ function abDivisionsOddTeamsPerGroup(brackets: ParsedBracket[]) {
 	return null;
 }
 
+function invalidSkippedRounds(brackets: ParsedBracket[]) {
+	for (const [bracketIdx, bracket] of brackets.entries()) {
+		const skipped = bracket.settings.skippedRounds;
+		if (!skipped) continue;
+
+		if (
+			bracket.type !== "single_elimination" &&
+			bracket.type !== "double_elimination"
+		) {
+			return bracketIdx;
+		}
+
+		if (!SkippedRounds.isValid(bracket.type, skipped)) return bracketIdx;
+	}
+
+	return null;
+}
+
+function invalidEliminationGroupCount(brackets: ParsedBracket[]) {
+	for (const [bracketIdx, bracket] of brackets.entries()) {
+		if (
+			bracket.type !== "single_elimination" &&
+			bracket.type !== "double_elimination"
+		) {
+			continue;
+		}
+
+		const groupCount = bracket.settings.groupCount;
+		if (groupCount === undefined) continue;
+
+		if (
+			!(
+				TOURNAMENT.ELIMINATION_GROUP_COUNT_OPTIONS as readonly number[]
+			).includes(groupCount)
+		) {
+			return bracketIdx;
+		}
+	}
+
+	return null;
+}
+
 function swissEarlyAdvanceWithoutDestination(brackets: ParsedBracket[]) {
 	for (const [bracketIdx, bracket] of brackets.entries()) {
 		if (bracket.type === "swiss" && bracket.settings.advanceThreshold) {
@@ -902,7 +951,15 @@ export function isError(
 export function isFinals(idx: number, brackets: ParsedBracket[]) {
 	invariant(idx < brackets.length, "Bracket index out of bounds");
 
-	return resolveMainBracketProgression(brackets).at(-1) === idx;
+	return finalsBracketIdx(brackets) === idx;
+}
+
+/** Index of the last bracket of the main progression starting from `startBracketIdx`, e.g. a division's top cut. */
+export function finalsBracketIdx(
+	brackets: ParsedBracket[],
+	startBracketIdx = 0,
+): number {
+	return resolveMainBracketProgression(brackets, startBracketIdx).at(-1)!;
 }
 
 /** Whether the finals bracket is an A/B divisions round robin. */
@@ -1038,6 +1095,16 @@ export function changedBracketProgressionFormat(
 	oldProgression: ParsedBracket[],
 	newProgression: ParsedBracket[],
 ): boolean {
+	return changedFormatBracketIdxs(oldProgression, newProgression).length > 0;
+}
+
+/** Indexes of the old progression's brackets that were removed or had a field affecting the format changed. */
+export function changedFormatBracketIdxs(
+	oldProgression: ParsedBracket[],
+	newProgression: ParsedBracket[],
+): number[] {
+	const changed: number[] = [];
+
 	for (let i = 0; i < oldProgression.length; i++) {
 		const oldBracket = oldProgression[i];
 		const newBracket = newProgression.at(i);
@@ -1049,11 +1116,11 @@ export function changedBracketProgressionFormat(
 			newBracket.type !== oldBracket.type ||
 			!R.isDeepEqual(newBracket.settings, oldBracket.settings)
 		) {
-			return true;
+			changed.push(i);
 		}
 	}
 
-	return false;
+	return changed;
 }
 
 /** Returns true if the set of brackets that teams can start in changed */
@@ -1071,10 +1138,17 @@ export function changedStartingBrackets(
  * Bracket order for standings: a participant's standing comes from the first bracket in this order they
  * are in. Finals first; a bracket always comes after every bracket it advances teams to, so teams it
  * eliminated end up below those that advanced. Underground brackets are omitted as they only break
- * ties within their source bracket, see `tiebrokenByUndergroundBrackets`.
+ * ties within their source bracket, see `tiebrokenByUndergroundBrackets`. Considers the brackets
+ * reachable from `startingBracketIdx`, for tournaments with many starting brackets (divisions).
  */
-export function bracketIdxsForStandings(progression: ParsedBracket[]) {
-	const bracketsToConsider = bracketsReachableFrom(0, progression);
+export function bracketIdxsForStandings(
+	progression: ParsedBracket[],
+	startingBracketIdx = 0,
+) {
+	const bracketsToConsider = bracketsReachableFrom(
+		startingBracketIdx,
+		progression,
+	);
 
 	const ordered = destinationsFirstOrder(bracketsToConsider, progression);
 

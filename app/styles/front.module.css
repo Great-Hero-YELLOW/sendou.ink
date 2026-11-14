@@ -140,6 +140,7 @@
 	margin-block-start: -6px;
 	margin-inline-start: -6px;
 	overflow-x: auto;
+	overflow-y: hidden;
 }
 
 .tournamentCardsViewAllCard {
@@ -238,7 +239,6 @@
 .seasonCardDates {
 	font-size: var(--font-xs);
 	font-weight: var(--weight-semi);
-	color: var(--color-text-lighter);
 }
 
 .seasonCardImg {
@@ -276,10 +276,7 @@
 .leaderboardName {
 	font-size: var(--font-sm);
 	font-weight: var(--weight-bold);
-	white-space: nowrap;
 	max-width: 140px;
-	text-overflow: ellipsis;
-	overflow: hidden;
 }
 
 .leaderboardViewAll {
@@ -327,27 +324,6 @@
 	display: flex;
 	gap: var(--s-2);
 	flex-wrap: wrap;
-}
-
-.weaponPills {
-	display: flex;
-	gap: var(--s-2);
-	justify-content: center;
-	flex-wrap: wrap;
-}
-
-.weaponPill {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	background-color: var(--color-bg-higher);
-	border-radius: var(--radius-full);
-	padding: var(--s-1);
-	transition: background-color 0.15s ease-out;
-
-	&:hover {
-		background-color: var(--color-bg-high);
-	}
 }
 
 .discoverGrid {

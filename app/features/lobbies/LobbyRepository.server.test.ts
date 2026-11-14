@@ -1,0 +1,549 @@
+import { subMinutes } from "date-fns";
+import { beforeEach, describe, expect, test } from "vitest";
+import * as AssociationFactory from "~/db/seed/factories/AssociationFactory";
+import * as FriendshipFactory from "~/db/seed/factories/FriendshipFactory";
+import * as LobbyFactory from "~/db/seed/factories/LobbyFactory";
+import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
+import * as UserFactory from "~/db/seed/factories/UserFactory";
+import * as CalendarRepository from "~/features/calendar/CalendarRepository.server";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { withNoUser, withUserId } from "~/utils/Test";
+import * as LobbySet from "./core/LobbySet";
+// preloaded: LobbyFactory imports it lazily, which would count against a test's timeout
+import "./core/LobbyProgression.server";
+import * as LobbyMatchRepository from "./LobbyMatchRepository.server";
+import * as LobbyRepository from "./LobbyRepository.server";
+import { editArgs } from "./tests/fixtures";
+
+const users = UserFactory.pool();
+
+const hostId = () => users.id(1);
+const memberId = () => users.id(2);
+const outsiderId = () => users.id(3);
+
+describe("LobbyRepository visibility", () => {
+	beforeEach(async () => {
+		await users.create(3);
+	});
+
+	const associationLobby = async () => {
+		const association = await AssociationFactory.create(
+			{ userId: hostId() },
+			{ memberUserIds: [memberId()] },
+		);
+
+		return LobbyFactory.create({
+			hostUserId: hostId(),
+			visibility: { forAssociation: association.id },
+		});
+	};
+
+	test.each([
+		{ why: "a member sees it", viewer: memberId, expected: true },
+		{ why: "an outsider doesn't", viewer: outsiderId, expected: false },
+		{ why: "the host does", viewer: hostId, expected: true },
+	])("$why", async ({ viewer, expected }) => {
+		const lobby = await associationLobby();
+
+		const found = await withUserId(viewer(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+		const listed = await withUserId(viewer(), () =>
+			LobbyRepository.findAllForIndex(),
+		);
+
+		expect(Boolean(found)).toBe(expected);
+		expect(
+			listed.upcoming.some((listedLobby) => listedLobby.id === lobby.id),
+		).toBe(expected);
+	});
+
+	test("logged out see public lobbies only", async () => {
+		const publicLobby = await LobbyFactory.create({ hostUserId: hostId() });
+		await associationLobby();
+
+		const listed = await withNoUser(() => LobbyRepository.findAllForIndex());
+
+		expect(listed.upcoming.map((lobby) => lobby.id)).toEqual([publicLobby.id]);
+	});
+
+	test("a signed up participant always sees the lobby", async () => {
+		const lobby = await associationLobby();
+		await LobbyRepository.insertParticipant({
+			lobbyId: lobby.id,
+			userId: outsiderId(),
+			status: "REGISTERED",
+		});
+
+		const found = await withUserId(outsiderId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+
+		expect(found?.id).toBe(lobby.id);
+	});
+
+	test.each([
+		{ why: "an outsider with the key sees it", withKey: true, expected: true },
+		{
+			why: "an outsider without the key doesn't",
+			withKey: false,
+			expected: false,
+		},
+	])("link-only: $why", async ({ withKey, expected }) => {
+		const lobby = await LobbyFactory.create({
+			hostUserId: hostId(),
+			visibility: "LINK_ONLY",
+		});
+		const shareKey = (
+			await withUserId(hostId(), () => LobbyRepository.findById(lobby.id))
+		)?.shareKey;
+
+		const found = await withUserId(outsiderId(), () =>
+			LobbyRepository.findById(lobby.id, {
+				shareKey: withKey ? shareKey : "wrongKey12",
+			}),
+		);
+		const listed = await withUserId(outsiderId(), () =>
+			LobbyRepository.findAllForIndex(),
+		);
+
+		expect(Boolean(found)).toBe(expected);
+		expect(listed.upcoming).toEqual([]);
+	});
+
+	test.each([
+		{ why: "one who left before playing doesn't see it", isKicked: false },
+		{ why: "one who was kicked doesn't see it", isKicked: true },
+	])("link-only: $why", async ({ isKicked }) => {
+		const lobby = await LobbyFactory.create(
+			{ hostUserId: hostId(), visibility: "LINK_ONLY" },
+			{ signedUpUserIds: [memberId()] },
+		);
+		const removal = {
+			lobbyId: lobby.id,
+			userId: memberId(),
+			unfinishedSetId: null,
+		};
+		if (isKicked) {
+			await LobbyRepository.kickParticipant(removal);
+		} else {
+			await LobbyRepository.removeParticipant(removal);
+		}
+
+		const found = await withUserId(memberId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+
+		expect(found).toBeUndefined();
+	});
+
+	test("link-only: a participant other than the host gets the share key", async () => {
+		const lobby = await LobbyFactory.create(
+			{ hostUserId: hostId(), visibility: "LINK_ONLY" },
+			{ signedUpUserIds: [memberId()] },
+		);
+
+		const asHost = await withUserId(hostId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+		const asParticipant = await withUserId(memberId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+
+		expect(asHost?.shareKey).toEqual(expect.any(String));
+		expect(asParticipant?.shareKey).toBe(asHost?.shareKey);
+	});
+
+	test.each([
+		{ why: "a link-only lobby is", visibility: "LINK_ONLY", expected: true },
+		{ why: "a public lobby isn't", visibility: null, expected: false },
+	] as const)("isLinkOnlyById: $why", async ({ visibility, expected }) => {
+		const lobby = await LobbyFactory.create({
+			hostUserId: hostId(),
+			visibility,
+		});
+
+		expect(await LobbyRepository.isLinkOnlyById(lobby.id)).toBe(expected);
+	});
+
+	test("isLinkOnlyById: a missing lobby isn't", async () => {
+		expect(await LobbyRepository.isLinkOnlyById(999_999)).toBe(false);
+	});
+
+	test.each([
+		{ why: "the host gets it", viewer: hostId, hasKey: true },
+		{ why: "a member doesn't", viewer: memberId, hasKey: false },
+	])(
+		"share key of a lobby with visibility: $why",
+		async ({ viewer, hasKey }) => {
+			const lobby = await associationLobby();
+
+			const found = await withUserId(viewer(), () =>
+				LobbyRepository.findById(lobby.id),
+			);
+
+			expect(typeof found?.shareKey === "string").toBe(hasKey);
+		},
+	);
+
+	test.each([
+		{ why: "an outsider with the key sees it", withKey: true, expected: true },
+		{
+			why: "an outsider without the key doesn't",
+			withKey: false,
+			expected: false,
+		},
+	])("limited to an association: $why", async ({ withKey, expected }) => {
+		const lobby = await associationLobby();
+		const shareKey = await hostShareKeyOf(lobby.id);
+
+		const found = await withUserId(outsiderId(), () =>
+			LobbyRepository.findById(lobby.id, {
+				shareKey: withKey ? shareKey : "wrongKey12",
+			}),
+		);
+
+		expect(Boolean(found)).toBe(expected);
+	});
+
+	test("edit: opening a lobby to everyone shows it to outsiders", async () => {
+		const lobby = await associationLobby();
+
+		await LobbyRepository.edit(
+			editArgs({ id: lobby.id, ownerId: hostId(), visibility: null }),
+		);
+
+		const found = await withUserId(outsiderId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+		expect(found?.isPrivate).toBe(false);
+	});
+
+	test("edit: making a lobby link-only keeps its share key", async () => {
+		const lobby = await LobbyFactory.create({ hostUserId: hostId() });
+		const shareKey = await hostShareKeyOf(lobby.id);
+
+		await LobbyRepository.edit(
+			editArgs({ id: lobby.id, ownerId: hostId(), visibility: "LINK_ONLY" }),
+		);
+
+		expect(await LobbyRepository.isLinkOnlyById(lobby.id)).toBe(true);
+		expect(await hostShareKeyOf(lobby.id)).toBe(shareKey);
+		expect(
+			await withUserId(outsiderId(), () => LobbyRepository.findById(lobby.id)),
+		).toBeUndefined();
+	});
+
+	test("resetShareKey: the old key stops working", async () => {
+		const lobby = await LobbyFactory.create({
+			hostUserId: hostId(),
+			visibility: "LINK_ONLY",
+		});
+		const oldShareKey = await hostShareKeyOf(lobby.id);
+
+		await LobbyRepository.resetShareKey(lobby.id);
+
+		const found = await withUserId(outsiderId(), () =>
+			LobbyRepository.findById(lobby.id, { shareKey: oldShareKey }),
+		);
+		expect(found).toBeUndefined();
+		expect(await hostShareKeyOf(lobby.id)).not.toBe(oldShareKey);
+	});
+
+	test("findVisibilityRowsById: lists the steps in order with association names", async () => {
+		const association = await AssociationFactory.create({
+			userId: hostId(),
+			name: "Night owls",
+		});
+		const widensAt = dateToDatabaseTimestamp(new Date()) + 600;
+		const lobby = await LobbyFactory.create({
+			hostUserId: hostId(),
+			visibility: {
+				forAssociation: association.id,
+				notFoundInstructions: [{ at: widensAt, forAssociation: null }],
+			},
+		});
+
+		const rows = await LobbyRepository.findVisibilityRowsById(lobby.id);
+
+		expect(
+			rows.map((row) => [row.associationName, row.isPublic, row.visibleFrom]),
+		).toEqual([
+			["Night owls", 0, expect.any(Number)],
+			[null, 1, widensAt],
+		]);
+	});
+});
+
+async function hostShareKeyOf(lobbyId: number) {
+	const lobby = await withUserId(hostId(), () =>
+		LobbyRepository.findById(lobbyId),
+	);
+
+	return lobby?.shareKey ?? null;
+}
+
+describe("LobbyRepository.findAllForIndex", () => {
+	beforeEach(async () => {
+		await users.create(9);
+	});
+
+	test("lists ended lobbies the viewer was in only", async () => {
+		const lobby = await LobbyFactory.create(
+			{ hostUserId: hostId() },
+			{ signedUpUserIds: [memberId()], isEnded: true },
+		);
+
+		const memberListed = await withUserId(memberId(), () =>
+			LobbyRepository.findAllForIndex(),
+		);
+		const outsiderListed = await withUserId(outsiderId(), () =>
+			LobbyRepository.findAllForIndex(),
+		);
+
+		expect(memberListed.ended.map((listed) => listed.id)).toEqual([lobby.id]);
+		expect(outsiderListed.ended).toEqual([]);
+	});
+
+	test("tells apart spectating from playing in the room", async () => {
+		const lobby = await LobbyFactory.create(
+			{
+				hostUserId: hostId(),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+				roomSize: 9,
+			},
+			{
+				signedUpUserIds: users.ids(9).slice(1),
+				checkedInUserIds: users.ids(9),
+				reportedMapCount: 1,
+			},
+		);
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id);
+		const spectatorId = set.participants.find(
+			(participant) => participant.side === null,
+		)!.userId;
+		const playerId = LobbySet.playersOf(set, "ALPHA")[0];
+
+		const statusOf = async (userId: number) => {
+			const listed = await withUserId(userId, () =>
+				LobbyRepository.findAllForIndex(),
+			);
+			return listed.running.find((listedLobby) => listedLobby.id === lobby.id)
+				?.viewerStatus;
+		};
+
+		expect(await statusOf(spectatorId)).toBe("SPECTATING");
+		expect(await statusOf(playerId)).toBe("IN_ROOM");
+	});
+
+	test("a player who left after a set still sees the ended private lobby", async () => {
+		const association = await AssociationFactory.create({ userId: hostId() });
+		const lobby = await LobbyFactory.create(
+			{
+				hostUserId: hostId(),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+				visibility: { forAssociation: association.id },
+			},
+			{
+				signedUpUserIds: users.ids(8).slice(1),
+				checkedInUserIds: users.ids(8),
+				playedSetCount: 1,
+			},
+		);
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id);
+		const leaverId = LobbySet.playersOf(set, "ALPHA").find(
+			(userId) => userId !== hostId(),
+		)!;
+		await LobbyRepository.removeParticipant({
+			lobbyId: lobby.id,
+			userId: leaverId,
+			unfinishedSetId: null,
+		});
+		await LobbyRepository.end(lobby.id);
+
+		const listed = await withUserId(leaverId, () =>
+			LobbyRepository.findAllForIndex(),
+		);
+		const found = await withUserId(leaverId, () =>
+			LobbyRepository.findById(lobby.id),
+		);
+
+		expect(listed.ended.map((listedLobby) => listedLobby.id)).toEqual([
+			lobby.id,
+		]);
+		expect(found?.id).toBe(lobby.id);
+	});
+
+	test("an applicant's lobby lists as applied, the applicant taking no spot", async () => {
+		const lobby = await LobbyFactory.create(
+			{ hostUserId: hostId(), isApplicationRequired: true },
+			{ appliedUserIds: [memberId()] },
+		);
+
+		const listed = await withUserId(memberId(), () =>
+			LobbyRepository.findAllForIndex(),
+		);
+		const listedLobby = listed.upcoming.find(
+			(candidate) => candidate.id === lobby.id,
+		);
+
+		expect(listedLobby).toMatchObject({
+			isApplicationRequired: true,
+			hasViewerApplied: true,
+			viewerStatus: null,
+			playerCount: 1,
+		});
+	});
+});
+
+describe("LobbyRepository.removeParticipant", () => {
+	beforeEach(async () => {
+		await users.create(9);
+	});
+
+	const startedLobby = () =>
+		LobbyFactory.create(
+			{
+				hostUserId: hostId(),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+			},
+			{
+				signedUpUserIds: users.ids(9).slice(1),
+				checkedInUserIds: users.ids(8),
+				playedSetCount: 1,
+			},
+		);
+
+	const leftUserIdsOf = async (lobbyId: number) =>
+		(
+			await withUserId(hostId(), () => LobbyRepository.findById(lobbyId))
+		)?.leftUsers.map((user) => user.id);
+
+	test("a player who played a set is listed as having left", async () => {
+		const lobby = await startedLobby();
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id);
+		const leaverId = LobbySet.playersOf(set, "ALPHA").find(
+			(userId) => userId !== hostId(),
+		)!;
+
+		await LobbyRepository.removeParticipant({
+			lobbyId: lobby.id,
+			userId: leaverId,
+			unfinishedSetId: null,
+		});
+
+		expect(await leftUserIdsOf(lobby.id)).toEqual([leaverId]);
+	});
+
+	test("one who never played isn't listed as having left", async () => {
+		const lobby = await startedLobby();
+
+		await LobbyRepository.removeParticipant({
+			lobbyId: lobby.id,
+			userId: users.id(9),
+			unfinishedSetId: null,
+		});
+
+		expect(await leftUserIdsOf(lobby.id)).toEqual([]);
+	});
+});
+
+describe("LobbyRepository.end", () => {
+	beforeEach(async () => {
+		await users.create(9);
+	});
+
+	const endedLobby = () =>
+		LobbyFactory.create(
+			{
+				hostUserId: hostId(),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+			},
+			{
+				signedUpUserIds: users.ids(9).slice(1),
+				checkedInUserIds: users.ids(8),
+				playedSetCount: 1,
+				isEnded: true,
+			},
+		);
+
+	test("saves the leaderboard placements of those who played", async () => {
+		const lobby = await endedLobby();
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id);
+
+		const placementOf = async (userId: number) =>
+			(await LobbyRepository.findResultPlacementsByUserId(userId)).map(
+				(result) => result.placement,
+			);
+
+		expect(await placementOf(LobbySet.playersOf(set, "ALPHA")[0])).toEqual([1]);
+		expect(await placementOf(LobbySet.playersOf(set, "BRAVO")[0])).toEqual([5]);
+		expect(await placementOf(users.id(9))).toEqual([]);
+	});
+
+	test("ending again doesn't save the results twice", async () => {
+		const lobby = await endedLobby();
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id);
+
+		await LobbyRepository.end(lobby.id);
+
+		expect(
+			await LobbyRepository.findResultPlacementsByUserId(
+				LobbySet.playersOf(set, "ALPHA")[0],
+			),
+		).toHaveLength(1);
+	});
+});
+
+describe("LobbyRepository.findAllUpcomingOfFriendsByUserId", () => {
+	beforeEach(async () => {
+		await users.create(3);
+	});
+
+	test("lists a friend's upcoming lobby the viewer isn't in", async () => {
+		await FriendshipFactory.create({
+			userOneId: Math.min(hostId(), memberId()),
+			userTwoId: Math.max(hostId(), memberId()),
+		});
+		const lobby = await LobbyFactory.create({ hostUserId: hostId() });
+
+		const rows = await LobbyRepository.findAllUpcomingOfFriendsByUserId(
+			memberId(),
+		);
+
+		expect(rows.map((row) => [row.friendId, row.lobbyId])).toEqual([
+			[hostId(), lobby.id],
+		]);
+	});
+});
+
+describe("LobbyRepository.findById maps tournament", () => {
+	beforeEach(async () => {
+		await users.create(1);
+	});
+
+	test("a deleted tournament leaves the lobby its copy of the map pool", async () => {
+		const mapPool = [{ mode: "SZ" as const, stageId: 1 as const }];
+		const tournament = await TournamentFactory.create({
+			authorId: hostId(),
+			mapPoolMaps: mapPool,
+		});
+		const lobby = await LobbyFactory.create({
+			hostUserId: hostId(),
+			modes: ["SZ"],
+			mapPool,
+			mapsTournamentId: tournament.id,
+		});
+
+		await CalendarRepository.deleteById(tournament.eventId);
+
+		const found = await withUserId(hostId(), () =>
+			LobbyRepository.findById(lobby.id),
+		);
+		expect(found).toMatchObject({
+			mapPool,
+			mapsTournamentId: null,
+			mapsTournamentName: null,
+		});
+	});
+});

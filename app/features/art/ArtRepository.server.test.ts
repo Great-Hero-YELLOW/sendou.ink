@@ -20,7 +20,7 @@ describe("findShowcaseArts", () => {
 		const result = await ArtRepository.findShowcaseArts();
 
 		expect(result).toHaveLength(3);
-		const authorIds = result.map((art) => art.author?.discordId);
+		const authorIds = result.map((art) => art.author?.id);
 		expect(new Set(authorIds).size).toBe(3);
 	});
 
@@ -320,7 +320,7 @@ describe("update", () => {
 			description: "Updated",
 			linkedUsers: [users.id(3)],
 			tags: [{ name: "Weapon" }],
-			isShowcase: 1,
+			isShowcase: true,
 		});
 
 		const result = await ArtRepository.findArtsByUserId(users.id(1));
@@ -341,7 +341,7 @@ describe("update", () => {
 			description: null,
 			linkedUsers: [],
 			tags: [],
-			isShowcase: 1,
+			isShowcase: true,
 		});
 
 		const result = await ArtRepository.findArtsByUserId(users.id(1));

@@ -9,6 +9,7 @@ import {
 	groupNumberToLetters,
 	tournamentTeamToActiveRosterUserIds,
 } from "~/features/tournament-bracket/tournament-bracket-utils";
+import * as LeagueScheduling from "./core/LeagueScheduling";
 import type { TournamentMatchLoaderData } from "./loaders/to.$id.matches.$mid.server";
 import { matchIsLocked, resolveHostingTeam } from "./tournament-match-utils";
 
@@ -130,6 +131,7 @@ export function MatchPageProvider({
 			tournament,
 			user,
 			teams,
+			isParticipant,
 			matchIsOver: data.matchIsOver,
 			waitingForPreviousMatch,
 		}),
@@ -145,8 +147,7 @@ export function MatchPageProvider({
 		leagueBlocksPlay,
 		hasScheduleBoard:
 			data.schedule.canSeeBoard &&
-			data.schedule.phase !== "CLOSED" &&
-			data.schedule.phase !== "NOT_OPEN",
+			LeagueScheduling.isBoardOpen(data.schedule.phase),
 		lockedForCast,
 		waitingForPreviousMatch,
 	});
@@ -244,21 +245,20 @@ function resolveCanReportScore({
 	tournament,
 	user,
 	teams,
+	isParticipant,
 	matchIsOver,
 	waitingForPreviousMatch,
 }: {
 	tournament: ReturnType<typeof useTournament>;
 	user: ReturnType<typeof useUser>;
 	teams: [MatchPageTeam | null, MatchPageTeam | null];
+	isParticipant: boolean;
 	matchIsOver: boolean;
 	waitingForPreviousMatch: boolean;
 }) {
 	const [teamOne, teamTwo] = teams;
 	if (!teamOne || !teamTwo) return false;
 	if (waitingForPreviousMatch || matchIsOver) return false;
-
-	const userTeamId = tournament.teamMemberOfByUser(user)?.id;
-	const isParticipant = userTeamId === teamOne.id || userTeamId === teamTwo.id;
 
 	return isParticipant || tournament.isOrganizer(user);
 }

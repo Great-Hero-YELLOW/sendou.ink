@@ -1,29 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import {
-	getDateAtNextFullHour,
-	weekNumberToDate,
-	weekNumberToDateRange,
-} from "./dates";
-
-describe("getDateAtNextFullHour", () => {
-	test("returns a date sitting exactly on a full hour (no leftover minutes/seconds/milliseconds)", () => {
-		const result = getDateAtNextFullHour(new Date(2024, 0, 1, 14, 30, 0, 500));
-
-		expect(result).toEqual(new Date(2024, 0, 1, 15, 0, 0, 0));
-	});
-
-	test("advances to the next hour when only seconds/milliseconds are past the hour", () => {
-		const result = getDateAtNextFullHour(new Date(2024, 0, 1, 14, 0, 30, 0));
-
-		expect(result).toEqual(new Date(2024, 0, 1, 15, 0, 0, 0));
-	});
-
-	test("keeps the same hour when already exactly on a full hour", () => {
-		const result = getDateAtNextFullHour(new Date(2024, 0, 1, 14, 0, 0, 0));
-
-		expect(result).toEqual(new Date(2024, 0, 1, 14, 0, 0, 0));
-	});
-});
+import { weekNumberToDate, weekNumberToDateRange } from "./dates";
 
 describe("weekNumberToDate", () => {
 	// the bug only manifests west of UTC
@@ -40,13 +16,6 @@ describe("weekNumberToDate", () => {
 		const start = weekNumberToDate({ week: 1, year: 2024 });
 
 		expect(start.toISOString().slice(0, 10)).toBe("2024-01-01");
-	});
-
-	test("returns the Sunday of the ISO week regardless of server timezone", () => {
-		// ISO week 1 of 2024 ends on Sunday 2024-01-07
-		const end = weekNumberToDate({ week: 1, year: 2024, position: "end" });
-
-		expect(end.toISOString().slice(0, 10)).toBe("2024-01-07");
 	});
 });
 

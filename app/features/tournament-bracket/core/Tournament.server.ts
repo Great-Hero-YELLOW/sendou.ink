@@ -1,4 +1,4 @@
-import { isAfter, sub, subDays } from "date-fns";
+import { isAfter, minutesToMilliseconds, sub, subDays } from "date-fns";
 import { type Params, redirect } from "react-router";
 import { ServerConfig } from "~/config.server";
 import {
@@ -14,13 +14,13 @@ import * as BracketRepository from "~/features/tournament-bracket/BracketReposit
 import { getTentativeTier } from "~/features/tournament-organization/core/tentativeTiers.server";
 import { LRUCache } from "~/modules/cache";
 import { hasPermission } from "~/modules/permissions/utils";
-import { IN_MILLISECONDS } from "~/utils/cache.server";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
 import {
 	errorToastIfFalsy,
+	notFound,
 	notFoundIfNullish,
 	parseParams,
 } from "~/utils/remix.server";
@@ -84,27 +84,29 @@ export async function fetchTournamentStreams(
 		await TournamentRepository.findStreamsByTournamentId(tournamentId);
 
 	const memberStreams = participantStreams.map((stream) => ({
+		platform: stream.platform,
+		account: stream.account,
+		videoId: stream.videoId,
 		thumbnailUrl: stream.thumbnailUrl,
-		twitchUserName: stream.twitch,
 		viewerCount: stream.viewerCount,
 		userId: stream.userId as number | null,
-		teamName: stream.teamName as string | null,
+		teamId: stream.teamId as number | null,
 		user: {
 			id: stream.id,
 			username: stream.username,
-			discordId: stream.discordId,
-			discordAvatar: stream.discordAvatar,
 			customUrl: stream.customUrl,
-			customAvatarUrl: stream.customAvatarUrl,
+			avatar: stream.avatar,
 		},
 	}));
 
 	const casts = castStreams.map((stream) => ({
+		platform: stream.platform,
+		account: stream.account,
+		videoId: stream.videoId,
 		thumbnailUrl: stream.thumbnailUrl,
-		twitchUserName: stream.twitch!,
 		viewerCount: stream.viewerCount,
 		userId: null,
-		teamName: null,
+		teamId: null,
 		user: null,
 	}));
 
@@ -155,13 +157,15 @@ export function requireTournamentVisible({
 	if (!ctx.settings.isDraft) return;
 	if (hasPermission(ctx, "ORGANIZE", user)) return;
 
-	throw new Response(null, { status: 404 });
+	notFound();
 }
 
 type TournamentFriendCodeCtx = Pick<
 	TournamentData["ctx"],
-	"permissions" | "settings" | "startsAt"
->;
+	"permissions" | "settings"
+> & {
+	startsAt: number | Date;
+};
 
 /** Organizers see the participants' friend codes only for a while after the start. Leagues run for many weeks, so theirs stay visible for longer. */
 export function canSeeTournamentFriendCodes({
@@ -172,8 +176,12 @@ export function canSeeTournamentFriendCodes({
 	user: OptionalIdObject;
 }) {
 	const friendCodeVisibilityDays = ctx.settings.isLeague ? 120 : 30;
+	const startsAt =
+		ctx.startsAt instanceof Date
+			? ctx.startsAt
+			: databaseTimestampToDate(ctx.startsAt);
 	const tournamentStartedRecently = isAfter(
-		databaseTimestampToDate(ctx.startsAt),
+		startsAt,
 		subDays(new Date(), friendCodeVisibilityDays),
 	);
 
@@ -288,12 +296,23 @@ export async function notifyTournamentStatusChanged(
 ) {
 	if (userIds.length === 0) return;
 
-	syncTournamentToRegistry(await tournamentSharedCached(tournamentId));
+	await refreshTournamentCache(tournamentId);
 	ChatSystemMessage.notifyStatusChanged(userIds);
 }
 
+/**
+ * Rebuilds the tournament after a write into the (just cleared) cache and syncs the registry from it,
+ * so the revalidation that follows the action finds a warm cache instead of building it again.
+ */
+export async function refreshTournamentCache(tournamentId: number) {
+	const tournament = await tournamentSharedCached(tournamentId);
+	syncTournamentToRegistry(tournament);
+
+	return tournament;
+}
+
 const TOURNAMENT_DATA_CACHE_MAX_ENTRIES = 250;
-const TOURNAMENT_DATA_CACHE_TTL_MS = IN_MILLISECONDS.HALF_HOUR;
+const TOURNAMENT_DATA_CACHE_TTL_MS = minutesToMilliseconds(30);
 
 type TournamentDataCacheEntry = {
 	storedAt: number;
@@ -365,7 +384,7 @@ export function serializeBracket(
 		teamsPendingCheckIn: bracket.teamsPendingCheckIn,
 		createdAt: bracket.createdAt ?? null,
 		sources: bracket.sources,
-		seeding: bracket.seeding,
+		previewSeeding: bracket.previewSeeding,
 		settings: bracket.settings,
 		requiresCheckIn: bracket.requiresCheckIn,
 		startTime: bracket.startTime
@@ -427,7 +446,7 @@ export async function tournamentTeamsFullCached({
 	user?: { id: number };
 	tournamentId: number;
 }) {
-	const ctx = notFoundIfNullish(await tournamentDataCached(tournamentId));
+	const ctx = await tournamentDataCached(tournamentId);
 
 	const revealInfo = isTournamentTeamInfoRevealed({ tournament: ctx, user });
 
@@ -517,9 +536,15 @@ function censoredTeams({
 	});
 }
 
-export function clearTournamentDataCache(tournamentId: number) {
+/** `keepRosters` for writes that leave every team's members, check-ins, active roster and map pool as they were e.g. score reports. */
+export function clearTournamentDataCache(
+	tournamentId: number,
+	{ keepRosters = false }: { keepRosters?: boolean } = {},
+) {
 	tournamentDataCache.delete(tournamentId);
-	tournamentTeamsCache.delete(tournamentId);
+	if (!keepRosters) {
+		tournamentTeamsCache.delete(tournamentId);
+	}
 }
 
 export function clearAllTournamentDataCache() {
@@ -553,7 +578,7 @@ function mostRecentStartTime(tournament: Tournament) {
 
 /** A scheduled bracket the tournament is about to resume with, e.g. day 2 of a two day event once its check-in opens. */
 function hasImminentBracket(tournament: Tournament) {
-	const opensAt = new Date(Date.now() + TOURNAMENT.REGULAR_CHECK_IN_WINDOW_MS);
+	const opensAt = new Date(Date.now() + TOURNAMENT.BRACKET_CHECK_IN_WINDOW_MS);
 
 	return tournament.ctx.settings.bracketProgression.some((bracket) => {
 		if (!bracket.startTime) return false;
@@ -565,6 +590,7 @@ function hasImminentBracket(tournament: Tournament) {
 }
 
 function isTournamentLive(tournament: Tournament) {
+	if (tournament.isTest) return false;
 	if (!tournament.hasStarted || tournament.everyBracketOver) return false;
 	if (hasImminentBracket(tournament)) return true;
 

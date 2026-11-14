@@ -2,7 +2,6 @@ import {
 	ADMIN_ID,
 	DEV_IDS,
 	QA_IDS,
-	SCANNER_TESTER_IDS,
 	STAFF_IDS,
 } from "~/features/admin/admin-constants";
 import { IS_E2E_TEST_RUN } from "~/utils/e2e";
@@ -49,12 +48,11 @@ export function isQa(user?: { id: number }) {
 	return QA_IDS.includes(user.id);
 }
 
-export function isScannerTester(user?: { id: number }) {
-	if (!user) return false;
-
-	return SCANNER_TESTER_IDS.includes(user.id);
-}
+export const SUPPORTER_MIN_PATRON_TIER = 2;
 
 export function isSupporter(user?: { patronTier: number | null }) {
-	return typeof user?.patronTier === "number" && user.patronTier >= 2;
+	return (
+		typeof user?.patronTier === "number" &&
+		user.patronTier >= SUPPORTER_MIN_PATRON_TIER
+	);
 }

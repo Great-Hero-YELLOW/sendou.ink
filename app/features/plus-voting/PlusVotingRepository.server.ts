@@ -1,15 +1,16 @@
 import { type InferResult, sql } from "kysely";
 import * as R from "remeda";
 import { db } from "~/db/sql";
-import type { Tables, TablesInsertable } from "~/db/tables";
+import type { TablesInsertable } from "~/db/tables";
 import * as PlusSuggestionRepository from "~/features/plus-suggestions/PlusSuggestionRepository.server";
 import {
 	type MonthYear,
 	nextNonCompletedVoting,
 	rangeToMonthYear,
 } from "~/features/plus-voting/core";
+import { databaseTimestampNow } from "~/utils/dates";
 import { invariant } from "~/utils/invariant";
-import { commonUserSelect } from "~/utils/kysely.server";
+import { type CommonUser, commonUserSelect } from "~/utils/kysely.server";
 import type { Unwrapped } from "~/utils/types";
 import * as PlusVoting from "./core/PlusVoting";
 
@@ -36,7 +37,7 @@ export async function findAllPlusTiersFromLatestVoting() {
 	const latestVoting = await db
 		.selectFrom("PlusVote")
 		.select(["PlusVote.year", "PlusVote.month"])
-		.where("PlusVote.becomesValidAt", "<", sql<number>`strftime('%s', 'now')`)
+		.where("PlusVote.becomesValidAt", "<", databaseTimestampNow())
 		.orderBy("PlusVote.year", "desc")
 		.orderBy("PlusVote.month", "desc")
 		.limit(1)
@@ -127,10 +128,9 @@ function groupPlusVotingResults(rows: EnrichedRow[]) {
 type Bio = { text: string; markdown: boolean };
 
 export type UsersForVoting = {
-	user: Pick<
-		Tables["User"],
-		"id" | "discordId" | "username" | "discordAvatar"
-	> & { customAvatarUrl: string | null; bio: Bio | null };
+	user: Pick<CommonUser, "id" | "username" | "avatar"> & {
+		bio: Bio | null;
+	};
 	suggestion?: PlusSuggestionRepository.FindAllByMonthItem;
 }[];
 
@@ -165,10 +165,8 @@ export async function findAllUsersForVoting(loggedInUser: {
 		result.push({
 			user: {
 				id: member.id,
-				discordId: member.discordId,
 				username: member.username,
-				discordAvatar: member.discordAvatar,
-				customAvatarUrl: member.customAvatarUrl,
+				avatar: member.avatar,
 				bio: bios.get(member.id) ?? null,
 			},
 		});
@@ -178,10 +176,8 @@ export async function findAllUsersForVoting(loggedInUser: {
 		result.push({
 			user: {
 				id: suggestion.suggested.id,
-				discordId: suggestion.suggested.discordId,
 				username: suggestion.suggested.username,
-				discordAvatar: suggestion.suggested.discordAvatar,
-				customAvatarUrl: suggestion.suggested.customAvatarUrl,
+				avatar: suggestion.suggested.avatar,
 				bio: bios.get(suggestion.suggested.id) ?? null,
 			},
 			suggestion,

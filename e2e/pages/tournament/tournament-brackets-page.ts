@@ -58,9 +58,21 @@ export class TournamentBracketsPage {
 		return this.page.getByText(name);
 	}
 
+	/** A team's name in the bracket, "Team 1" not matching "Team 10". */
+	bracketTeamName(name: string) {
+		return this.locators.bracketsViewer.getByText(name, { exact: true });
+	}
+
 	/** The tab labels drop the "bracket" suffix of the bracket's name. */
 	bracketTab(name: string) {
 		return this.page.getByRole("tab", { name });
+	}
+
+	/** Switching loads the bracket, the previous one staying up (and its buttons pressable) until it has. */
+	async selectBracket(name: string) {
+		const tab = this.bracketTab(name);
+		await tab.click();
+		await expect(tab).toHaveAttribute("aria-selected", "true");
 	}
 
 	roundLabel(roundNumber: number) {
@@ -74,6 +86,48 @@ export class TournamentBracketsPage {
 
 	match(matchId: number) {
 		return this.page.locator(`[data-match-id="${matchId}"]`);
+	}
+
+	/**
+	 * Scrolls the match close to the top left of the bracket's own scroll container, or of the page below the header
+	 * when the bracket has none: a spot no automatic scroll lands on.
+	 */
+	async scrollMatchNearTopLeft(matchId: number) {
+		await this.match(matchId).evaluate((element) => {
+			const rect = element.getBoundingClientRect();
+			const scroller = element.closest("[data-bracket-scroller]");
+			if (!scroller) {
+				window.scrollTo(0, rect.top + window.scrollY - 150);
+				return;
+			}
+
+			const scrollerRect = scroller.getBoundingClientRect();
+			scroller.scrollTop += rect.top - scrollerRect.top - 50;
+			scroller.scrollLeft += rect.left - scrollerRect.left - 50;
+		});
+	}
+
+	/** Scrolls the page and the bracket's own scroll container back to their start. */
+	async scrollToStart() {
+		await this.page.evaluate(() => {
+			window.scrollTo(0, 0);
+			document.querySelector("[data-bracket-scroller]")?.scrollTo(0, 0);
+		});
+	}
+
+	/** Where the match is on the screen. */
+	matchViewportPosition(matchId: number) {
+		return this.match(matchId).evaluate((element) => {
+			const { top, left } = element.getBoundingClientRect();
+			return { top, left };
+		});
+	}
+
+	/** Id of the match rendered last, i.e. furthest from the top left. */
+	async lastMatchId() {
+		return Number(
+			await this.locators.matches.last().getAttribute("data-match-id"),
+		);
 	}
 
 	/** Both sides' scores of the match, top to bottom. */
@@ -167,6 +221,18 @@ export class TournamentBracketsPage {
 		return submit(this.page, "check-in-bracket-button");
 	}
 
+	groupButton(letter: string) {
+		return this.page.getByTestId(`group-${letter}-button`);
+	}
+
+	/** Label next to a match telling where its winner or loser goes, e.g. "Top Cut [W]". */
+	exitLabel(text: string) {
+		return this.locators.bracketsViewer
+			.getByTestId("match-exits")
+			.getByText(text, { exact: true })
+			.first();
+	}
+
 	async openGroup(letter: string) {
 		await this.page.getByTestId(`group-${letter}-button`).click();
 	}
@@ -198,6 +264,7 @@ class BracketMapListDialog {
 			),
 			linkFinalsButton: page.getByTestId("link-finals-3rd-place-match-button"),
 			beforeSetText: page.getByText("Before set"),
+			preparedByText: page.getByText(/^Prepared by/),
 			pickBanToggles: page.getByTitle("Toggle counterpick/ban"),
 		};
 	}
@@ -272,6 +339,11 @@ class FinalizeTournamentDialog {
 		this.locators = {
 			assignBadgesLaterSwitch: page.getByTestId("assign-badges-later-switch"),
 		};
+	}
+
+	/** Heading of a 1st place team's trophy receiver picker, shown when there are co-winners. */
+	trophyTeamHeading(teamName: string) {
+		return this.page.getByRole("heading", { name: teamName });
 	}
 
 	async selectBadgeReceiver(nth: number, tournamentTeamId: number) {

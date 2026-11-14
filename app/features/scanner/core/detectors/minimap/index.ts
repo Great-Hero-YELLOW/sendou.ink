@@ -19,29 +19,35 @@ import type {
 	StageId,
 } from "~/modules/in-game-lists/types";
 import { toAbilityWithUnknown, toMainWeaponId } from "../../../scanner-types";
-import { getCV, type Mat } from "../../cv";
+import type { Mat } from "../../cv";
 import { type GlyphSet, scaleGlyphSet } from "../../glyphs";
 import {
 	copyRoi,
 	cropRoi,
+	frameGray,
+	frameHsv,
+	frameRgb,
 	laplacianAbs,
 	maxBrightness,
 	meanBrightness,
 	type Roi,
 } from "../../image";
 import { type InkRgb, meanInkColor } from "../../ink-color";
+import { all, done, type MatchSteps, runSync } from "../../match-steps";
 import type { ScoreboardResources } from "../scoreboard/index";
-import { type ParsedName, parseName } from "../scoreboard/names";
+import { type ParsedName, parseNameSteps } from "../scoreboard/names";
 import {
 	disambiguateWeaponBySub,
-	matchSpecial,
+	matchSpecialSteps,
 	tiedWeaponsWithDistinctSubs,
 } from "../scoreboard/specials";
-import { matchWeapon, type WeaponMatch } from "../scoreboard/weapons";
+import { matchWeaponSteps, type WeaponMatch } from "../scoreboard/weapons";
 import type { DetectedEvent, Detector, GateResult } from "../types";
 import {
 	badgeRoi,
 	CARD_LAYOUTS,
+	CROSS_BLEED_MIN_FRACTION,
+	CROSS_BLEED_MIN_LAPLACIAN,
 	CROSS_MIN_FRACTION,
 	CROSS_MIN_LAPLACIAN,
 	CROSS_SATURATION_MIN,
@@ -53,6 +59,7 @@ import {
 	enemyWeaponRoi,
 	GATE_BRIGHT_MIN_MAX,
 	GATE_CLOSE_DARK_PROBES,
+	GATE_CLOSE_RING_MAX_BRIGHT_PROBES,
 	GATE_CLOSE_X_BRIGHT,
 	GATE_CLOSE_X_DARK,
 	GATE_DARK_MAX_MEAN,
@@ -64,10 +71,13 @@ import {
 	GATE_SPECTATOR_X_MIRRORED_DARK,
 	MINIMAP_ABILITY_INK_THRESHOLD,
 	MINIMAP_WEAPON_INK_THRESHOLD,
+	NAME_BIN_SURFACE_MARGIN,
 	NAME_BIN_THRESHOLD,
+	NAME_PLAIN_TIE_MARGIN,
 	NAME_TEXT_HEIGHT,
 	PRESENCE_MIN_LAPLACIAN,
 	SPECIAL_READY_INK_THRESHOLD,
+	SPECIAL_READY_MAX_CORNER_MEAN,
 	SPECIAL_READY_MAX_CORNER_SATURATION,
 	SPECIAL_READY_MIN_CORNER_MEAN,
 	SPECIAL_READY_WEAPON_MIN_SCORE,
@@ -128,6 +138,8 @@ export interface MinimapData {
 
 export const MINIMAP_EVENT_TYPE = "Minimap";
 
+export const MINIMAP_DETECTOR_ID = "minimap";
+
 /**
  * Timeline content guard: frames in the merge window collapse only while every
  * card/row keeps its dead/special state, so each flip stays its own event.
@@ -153,17 +165,28 @@ export function sameMinimapStatusData(a: unknown, b: unknown): boolean {
 /** Badge match below this is reported as null (kept in debug). */
 const ABILITY_MIN_SCORE = 0.45;
 
+const SUFFICIENT_CONFIDENCE = 0.69;
+
 /**
- * Light-camo probe: brightness and saturation of the dimmer 8x8 top corner of
- * the weapon box. Camo brightens both corners (140-165) and is unsaturated; a
- * dark card keeps one corner dark despite bleed or a cross-out stroke, and
- * scene bleed lights both but stays colored.
+ * Cap for a spectator read with a present card's weapon unread (the screen's
+ * opening wipe still crossing it): under SUFFICIENT_CONFIDENCE so the scheduler
+ * reads on, over the timeline floor so it stands if nothing better follows.
  */
-function minTopCorner(
-	gray: Mat,
-	hsv: Mat,
-	roi: Roi,
-): { mean: number; saturation: number } {
+const UNSETTLED_SPECTATOR_MAX_CONFIDENCE = 0.65;
+
+/**
+ * Light-camo probe: brightness of both 8x8 top corners of the weapon box and
+ * saturation of the dimmer one. Camo brightens both corners (140-165) and is
+ * unsaturated; a dark card keeps one corner dark despite bleed or a cross-out
+ * stroke, and scene bleed lights both but stays colored.
+ */
+interface CornerProbe {
+	mean: number;
+	brighterMean: number;
+	saturation: number;
+}
+
+function minTopCorner(gray: Mat, hsv: Mat, roi: Roi): CornerProbe {
 	const corners: Roi[] = [
 		{ x: roi.x, y: roi.y, w: 8, h: 8 },
 		{ x: roi.x + roi.w - 8, y: roi.y, w: 8, h: 8 },
@@ -175,7 +198,42 @@ function minTopCorner(
 	let satSum = 0;
 	for (let i = 0; i < n; i++) satSum += crop.data[i * 3 + 1]!;
 	crop.delete();
-	return { mean: Math.min(...means), saturation: satSum / n };
+	return {
+		mean: Math.min(...means),
+		brighterMean: Math.max(...means),
+		saturation: satSum / n,
+	};
+}
+
+function onLightSurface(corner: CornerProbe): boolean {
+	return (
+		corner.mean >= SPECIAL_READY_MIN_CORNER_MEAN &&
+		corner.brighterMean <= SPECIAL_READY_MAX_CORNER_MEAN &&
+		corner.saturation <= SPECIAL_READY_MAX_CORNER_SATURATION
+	);
+}
+
+/** the cross probe's saturated strokes are crisp enough to be the X, not scene bleed */
+function crossedOut(crossFraction: number, crossLap: number): boolean {
+	if (crossFraction < CROSS_MIN_FRACTION) return false;
+	return (
+		crossLap >=
+		(crossFraction > CROSS_BLEED_MIN_FRACTION
+			? CROSS_BLEED_MIN_LAPLACIAN
+			: CROSS_MIN_LAPLACIAN)
+	);
+}
+
+function medianBrightness(gray: Mat): number {
+	const histogram = new Uint32Array(256);
+	const n = gray.rows * gray.cols;
+	for (let i = 0; i < n; i++) histogram[gray.data[i]!]!++;
+	let seen = 0;
+	for (let v = 0; v < 256; v++) {
+		seen += histogram[v]!;
+		if (seen * 2 >= n) return v;
+	}
+	return 255;
 }
 
 /** fraction of the probe that is saturated-and-bright (cross-out strokes) */
@@ -199,8 +257,6 @@ function saturatedFraction(hsv: Mat, roi: Roi): number {
 export function createMinimapDetector(
 	resources: ScoreboardResources,
 ): Detector<MinimapData> {
-	const cv = getCV();
-
 	const nameGlyphs: GlyphSet | null = resources.nameGlyphs
 		? scaleGlyphSet(
 				resources.nameGlyphs,
@@ -217,14 +273,12 @@ export function createMinimapDetector(
 						),
 			)
 		: [];
-	const cardWeapons = resources.minimapCardWeapons ?? null;
-	const lightWeapons = resources.minimapLightWeapons ?? null;
-	const badges = resources.minimapAbilities ?? null;
-	const subWeapons = resources.minimapSubWeapons ?? null;
-	const plannerStages = resources.plannerStages ?? null;
+	// template sets and the stage signatures build on first use (the resource
+	// getters memoize them)
 
 	/** Identify the stage from the drawn map; contributes to confidence. */
 	function detectStage(frame: Mat, confidences: number[]): StageMatch | null {
+		const plannerStages = resources.plannerStages ?? null;
 		if (!plannerStages?.length) return null;
 		const sig = plannerSignature(frame);
 		const match = matchStage(sig, plannerStages);
@@ -251,17 +305,38 @@ export function createMinimapDetector(
 		};
 	}
 
-	/** POV overlay chrome: close-button disc + Spawn Point pill. */
+	/**
+	 * POV overlay chrome: close-button disc + Spawn Point pill. The disc's top
+	 * (its top gap and the ring above it) may be covered, as a streamer's name
+	 * pill in the corner does, when the rest of the disc and ring hold.
+	 */
 	function overlayGate(gray: Mat): GateResult {
-		return probeGate(
+		const isDark = (roi: Roi) =>
+			meanBrightness(gray, roi) <= GATE_DARK_MAX_MEAN;
+		const [topGap, ...otherGaps] = GATE_CLOSE_X_DARK;
+		const [topRing, ...otherRing] = GATE_CLOSE_DARK_PROBES;
+		const chrome = probeGate(
 			gray,
-			[
-				...GATE_CLOSE_DARK_PROBES,
-				...GATE_CLOSE_X_DARK,
-				...GATE_SPAWN_DARK_PROBES,
-			],
+			[...GATE_CLOSE_X_DARK, ...GATE_SPAWN_DARK_PROBES],
 			[...GATE_CLOSE_X_BRIGHT, GATE_SPAWN_BRIGHT],
 		);
+		const darkRing = GATE_CLOSE_DARK_PROBES.filter(isDark).length;
+		const score = (chrome.score + darkRing / GATE_CLOSE_DARK_PROBES.length) / 2;
+		if (!isDark(topGap!) && !isDark(topRing!)) {
+			const uncovered = probeGate(
+				gray,
+				[...otherGaps, ...GATE_SPAWN_DARK_PROBES],
+				[...GATE_CLOSE_X_BRIGHT, GATE_SPAWN_BRIGHT],
+			);
+			return { pass: uncovered.pass && otherRing.every(isDark), score };
+		}
+		return {
+			pass:
+				chrome.pass &&
+				darkRing >=
+					GATE_CLOSE_DARK_PROBES.length - GATE_CLOSE_RING_MAX_BRIGHT_PROBES,
+			score,
+		};
 	}
 
 	/** Spectator screen: the X jump-button disc beside the 8th player card, in whichever column carries the face buttons. */
@@ -281,11 +356,9 @@ export function createMinimapDetector(
 	}
 
 	function gate(frame: Mat): GateResult {
-		const gray = new cv.Mat();
-		cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+		const gray = frameGray(frame);
 		const overlay = overlayGate(gray);
 		const spectator = spectatorGate(gray);
-		gray.delete();
 		return {
 			pass: overlay.pass || spectator.pass,
 			score: Math.max(overlay.score, spectator.score),
@@ -293,18 +366,30 @@ export function createMinimapDetector(
 		};
 	}
 
-	function matchBadges(
+	/** Badge matches in `centers` order (null when no badge templates), read in one lockstep. */
+	function* matchBadgesSteps(
 		rgb: Mat,
 		centers: readonly (readonly [number, number])[],
 		inkThreshold: number,
+	): MatchSteps<WeaponMatch[] | null> {
+		const badges = resources.minimapAbilities ?? null;
+		if (!badges) return null;
+		const crops = centers.map(([cx, cy]) => cropRoi(rgb, badgeRoi(cx, cy)));
+		const matches = yield* all(
+			crops.map((crop) => matchWeaponSteps(crop, badges, { inkThreshold })),
+		);
+		for (const crop of crops) crop.delete();
+		return matches;
+	}
+
+	/** Badge matches as abilities, their confidences and debug appended in order. */
+	function badgeAbilities(
+		matches: WeaponMatch[] | null,
 		confidences: number[],
 		debugRow: (WeaponMatch | null)[],
 	): (AbilityWithUnknown | null)[] {
-		if (!badges) return [null, null, null];
-		return centers.map(([cx, cy]) => {
-			const crop = cropRoi(rgb, badgeRoi(cx, cy));
-			const match = matchWeapon(crop, badges, { inkThreshold });
-			crop.delete();
+		if (!matches) return [null, null, null];
+		return matches.map((match) => {
 			debugRow.push(match);
 			confidences.push(Math.max(0, match.score));
 			return match.score >= ABILITY_MIN_SCORE
@@ -316,13 +401,20 @@ export function createMinimapDetector(
 	/**
 	 * Weapon match against the composite set for the surface behind it; on a
 	 * bright-bleed surface (WEAPON_BLEED_MIN_CORNER_MEAN) both sets, better wins.
+	 * Near-tied icons whose kits differ by sub (plain vs Custom Dualie Squelchers)
+	 * are then re-decided by the sub tile (`tile`); shape-only matching survives
+	 * tint, camo and cross-out.
 	 */
-	function matchSurfaceWeapon(
+	function* matchSurfaceWeaponSteps(
 		rgb: Mat,
 		roi: Roi,
+		tile: Roi,
 		lightSurface: boolean,
 		cornerMin: number,
-	): WeaponMatch | null {
+	): MatchSteps<WeaponMatch | null> {
+		const cardWeapons = resources.minimapCardWeapons ?? null;
+		const lightWeapons = resources.minimapLightWeapons ?? null;
+		const subWeapons = resources.minimapSubWeapons ?? null;
 		const darkThreshold = Math.max(
 			MINIMAP_WEAPON_INK_THRESHOLD,
 			Math.round(cornerMin) + 50,
@@ -331,23 +423,32 @@ export function createMinimapDetector(
 		let match: WeaponMatch | null = null;
 		if (lightSurface) {
 			match = lightWeapons
-				? matchWeapon(crop, lightWeapons, {
+				? yield* matchWeaponSteps(crop, lightWeapons, {
 						inkThreshold: SPECIAL_READY_INK_THRESHOLD,
 					})
 				: null;
 		} else {
-			match = cardWeapons
-				? matchWeapon(crop, cardWeapons, { inkThreshold: darkThreshold })
-				: null;
-			if (lightWeapons && cornerMin >= WEAPON_BLEED_MIN_CORNER_MEAN) {
-				const bleed = matchWeapon(crop, lightWeapons, {
-					inkThreshold: SPECIAL_READY_INK_THRESHOLD,
-				});
-				if (match === null || bleed.score > match.score) match = bleed;
-			}
+			const [card, bleed] = yield* all([
+				cardWeapons
+					? matchWeaponSteps(crop, cardWeapons, { inkThreshold: darkThreshold })
+					: done(null),
+				lightWeapons && cornerMin >= WEAPON_BLEED_MIN_CORNER_MEAN
+					? matchWeaponSteps(crop, lightWeapons, {
+							inkThreshold: SPECIAL_READY_INK_THRESHOLD,
+						})
+					: done(null),
+			]);
+			match = card;
+			if (bleed && (match === null || bleed.score > match.score)) match = bleed;
 		}
 		crop.delete();
-		return match;
+		if (!match || !subWeapons?.length || !tiedWeaponsWithDistinctSubs(match)) {
+			return match;
+		}
+		const tileCrop = cropRoi(rgb, tile);
+		const sub = yield* matchSpecialSteps(tileCrop, subWeapons);
+		tileCrop.delete();
+		return disambiguateWeaponBySub(match, sub);
 	}
 
 	/** The score floor for the surface the weapon was matched over. */
@@ -357,45 +458,65 @@ export function createMinimapDetector(
 			: WEAPON_MIN_SCORE;
 	}
 
-	/**
-	 * Near-tied icons whose kits differ by sub (plain vs Custom Dualie Squelchers):
-	 * the sub tile breaks the tie; shape-only matching survives tint, camo and cross-out.
-	 */
-	function resolveTieBySubTile(
-		rgb: Mat,
-		weapon: WeaponMatch,
-		tile: Roi,
-	): WeaponMatch {
-		if (!subWeapons?.length || !tiedWeaponsWithDistinctSubs(weapon))
-			return weapon;
-		const crop = cropRoi(rgb, tile);
-		const sub = matchSpecial(crop, subWeapons);
-		crop.delete();
-		return disambiguateWeaponBySub(weapon, sub);
+	function* readCardName(
+		gray: Mat,
+		roi: Roi,
+		glyphs: GlyphSet,
+		speculative: boolean,
+	): MatchSteps<ParsedName> {
+		const band = copyRoi(gray, roi);
+		const parsed = yield* parseNameSteps(
+			band,
+			glyphs,
+			{
+				binThreshold: Math.max(
+					NAME_BIN_THRESHOLD,
+					medianBrightness(band) + NAME_BIN_SURFACE_MARGIN,
+				),
+			},
+			speculative,
+		);
+		band.delete();
+		return parsed;
 	}
 
-	/** Try the name band at each spectator glyph height; best read wins. */
-	function bestNameRead(gray: Mat, roi: Roi): ParsedName | null {
+	/** Try the name band at each spectator glyph height (in lockstep); best read wins. */
+	function* bestNameRead(
+		gray: Mat,
+		roi: Roi,
+		speculative: boolean,
+	): MatchSteps<ParsedName | null> {
+		const band = copyRoi(gray, roi);
+		const reads = yield* all(
+			spectatorNameGlyphs.map((set) =>
+				parseNameSteps(
+					band,
+					set,
+					{
+						binThreshold: NAME_BIN_THRESHOLD,
+						plainTieMargin: NAME_PLAIN_TIE_MARGIN,
+					},
+					speculative,
+				),
+			),
+		);
+		band.delete();
 		let best: ParsedName | null = null;
-		for (const set of spectatorNameGlyphs) {
-			const band = copyRoi(gray, roi);
-			const parsed = parseName(band, set, { binThreshold: NAME_BIN_THRESHOLD });
-			band.delete();
+		for (const parsed of reads) {
 			if (!best || parsed.confidence > best.confidence) best = parsed;
 		}
 		return best;
 	}
 
-	/** The spectator 8-card grid has its own ROIs (the overlay parse reads phantom cards on it). */
-	function parseSpectator(
+	/** The spectator 8-card grid has its own ROIs (the overlay parse reads phantom cards on it); every card reads in one lockstep. */
+	function* parseSpectatorSteps(
 		frame: Mat,
 		gray: Mat,
 		t: number,
-	): DetectedEvent<MinimapData>[] {
-		const rgb = new cv.Mat();
-		cv.cvtColor(frame, rgb, cv.COLOR_RGBA2RGB);
-		const hsv = new cv.Mat();
-		cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+		speculative: boolean,
+	): MatchSteps<DetectedEvent<MinimapData>[]> {
+		const rgb = frameRgb(frame);
+		const hsv = frameHsv(frame);
 		const lap = laplacianAbs(gray);
 
 		const confidences: number[] = [];
@@ -405,87 +526,123 @@ export function createMinimapDetector(
 		const enemies: MinimapEnemy[] = [];
 		const sideSubTiles: [Roi[], Roi[]] = [[], []];
 		const cardDebug: Record<string, unknown>[] = [];
-		for (const dx of [0, SPECTATOR_ENEMY_DX]) {
-			const isTeammate = dx === 0;
-			for (let row = 0; row < 4; row++) {
+		let weaponUnread = false;
+		const cards = [0, SPECTATOR_ENEMY_DX].flatMap((dx) =>
+			[0, 1, 2, 3].map((row) => {
 				const layout = spectatorCardLayout(row, dx);
 				const presence = meanBrightness(lap, layout.name);
 				if (presence < PRESENCE_MIN_LAPLACIAN) {
-					cardDebug.push({ dx, row, presence, skipped: true });
-					continue;
+					return { dx, row, layout, presence, probes: null };
 				}
-				sideSubTiles[isTeammate ? 0 : 1].push(layout.subTile);
 				const crossFraction = saturatedFraction(hsv, layout.cross);
 				const crossLap = meanBrightness(lap, layout.cross);
-				const occluded =
-					crossFraction >= CROSS_MIN_FRACTION &&
-					crossLap >= CROSS_MIN_LAPLACIAN;
+				const occluded = crossedOut(crossFraction, crossLap);
 				const corner = minTopCorner(gray, hsv, layout.weapon);
-				const cornerMin = corner.mean;
-				const lightSurface =
-					corner.mean >= SPECIAL_READY_MIN_CORNER_MEAN &&
-					corner.saturation <= SPECIAL_READY_MAX_CORNER_SATURATION;
-
-				let name: string | null = null;
-				let nameRaw = "";
-				let weapon: WeaponMatch | null = null;
-				const badgeDebug: (WeaponMatch | null)[] = [];
-				let abilities: (AbilityWithUnknown | null)[] = [];
-				// the spectator cross-out sits clear of the weapon ROI, so it stays readable when struck
-				weapon = matchSurfaceWeapon(
-					rgb,
-					layout.weapon,
-					lightSurface,
-					cornerMin,
-				);
-				if (weapon) {
-					weapon = resolveTieBySubTile(rgb, weapon, layout.subTile);
-					confidences.push(Math.max(0, weapon.score));
-				}
-				if (!occluded) {
-					const parsed = bestNameRead(gray, layout.name);
-					if (parsed) {
-						nameRaw = parsed.raw.text;
-						if (parsed.name.length > 0) name = parsed.name;
-						confidences.push(parsed.confidence);
-					}
-					abilities = matchBadges(
-						rgb,
-						layout.badges,
-						Math.max(MINIMAP_ABILITY_INK_THRESHOLD, Math.round(cornerMin) + 50),
-						confidences,
-						badgeDebug,
-					);
-				}
-				cardDebug.push({
+				const lightSurface = onLightSurface(corner);
+				return {
 					dx,
 					row,
+					layout,
 					presence,
-					crossFraction,
-					crossLap,
-					occluded,
-					cornerMin,
-					lightSurface,
-					nameRaw,
-					weapon,
-					badges: badgeDebug,
-				});
-
-				const floor = weaponScoreFloor(lightSurface, cornerMin);
-				const matched =
-					weapon !== null && weapon.score >= floor ? weapon : null;
-				const fields = {
-					name,
-					weaponId: matched ? toMainWeaponId(matched.id) : null,
-					abilities,
-					dead: occluded,
-					specialReady: lightSurface,
+					probes: {
+						crossFraction,
+						crossLap,
+						occluded,
+						cornerMin: corner.mean,
+						cornerMax: corner.brighterMean,
+						lightSurface,
+					},
 				};
-				if (isTeammate) {
-					teammates.push({ self: false, ...fields });
-				} else {
-					enemies.push(fields);
+			}),
+		);
+		const reads = yield* all(
+			cards.map(({ layout, probes }) =>
+				all([
+					// the spectator cross-out sits clear of the weapon ROI, so it stays readable when struck
+					probes
+						? matchSurfaceWeaponSteps(
+								rgb,
+								layout.weapon,
+								layout.subTile,
+								probes.lightSurface,
+								probes.cornerMin,
+							)
+						: done(null),
+					probes && !probes.occluded
+						? bestNameRead(gray, layout.name, speculative)
+						: done(null),
+					probes && !probes.occluded
+						? matchBadgesSteps(
+								rgb,
+								layout.badges,
+								Math.max(
+									MINIMAP_ABILITY_INK_THRESHOLD,
+									Math.round(probes.cornerMin) + 50,
+								),
+							)
+						: done(null),
+				]),
+			),
+		);
+		for (const [i, { dx, row, layout, presence, probes }] of cards.entries()) {
+			if (!probes) {
+				cardDebug.push({ dx, row, presence, skipped: true });
+				continue;
+			}
+			const isTeammate = dx === 0;
+			sideSubTiles[isTeammate ? 0 : 1].push(layout.subTile);
+			const {
+				crossFraction,
+				crossLap,
+				occluded,
+				cornerMin,
+				cornerMax,
+				lightSurface,
+			} = probes;
+			const [weapon, parsed, badgeMatches] = reads[i]!;
+
+			let name: string | null = null;
+			let nameRaw = "";
+			const badgeDebug: (WeaponMatch | null)[] = [];
+			let abilities: (AbilityWithUnknown | null)[] = [];
+			if (weapon) confidences.push(Math.max(0, weapon.score));
+			if (!occluded) {
+				if (parsed) {
+					nameRaw = parsed.raw.text;
+					if (parsed.name.length > 0) name = parsed.name;
+					confidences.push(parsed.confidence);
 				}
+				abilities = badgeAbilities(badgeMatches, confidences, badgeDebug);
+			}
+			cardDebug.push({
+				dx,
+				row,
+				presence,
+				crossFraction,
+				crossLap,
+				occluded,
+				cornerMin,
+				cornerMax,
+				lightSurface,
+				nameRaw,
+				weapon,
+				badges: badgeDebug,
+			});
+
+			const floor = weaponScoreFloor(lightSurface, cornerMin);
+			const matched = weapon !== null && weapon.score >= floor ? weapon : null;
+			if (!matched) weaponUnread = true;
+			const fields = {
+				name,
+				weaponId: matched ? toMainWeaponId(matched.id) : null,
+				abilities,
+				dead: occluded,
+				specialReady: lightSurface,
+			};
+			if (isTeammate) {
+				teammates.push({ self: false, ...fields });
+			} else {
+				enemies.push(fields);
 			}
 		}
 		debug.cards = cardDebug;
@@ -498,14 +655,15 @@ export function createMinimapDetector(
 		const stageMatch = detectStage(frame, confidences);
 		debug.stage = stageMatch;
 
-		rgb.delete();
-		hsv.delete();
 		lap.delete();
 
-		const confidence =
+		const meanConfidence =
 			confidences.length > 0
 				? confidences.reduce((a, b) => a + b, 0) / confidences.length
 				: 0;
+		const confidence = weaponUnread
+			? Math.min(meanConfidence, UNSETTLED_SPECTATOR_MAX_CONFIDENCE)
+			: meanConfidence;
 
 		return [
 			{
@@ -524,91 +682,151 @@ export function createMinimapDetector(
 		];
 	}
 
-	function parse(
+	function* parseSteps(
 		frame: Mat,
 		t: number,
-		gateResult?: GateResult,
-	): DetectedEvent<MinimapData>[] {
-		const gray = new cv.Mat();
-		cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+		gateResult: GateResult | undefined,
+		speculative: boolean,
+	): MatchSteps<DetectedEvent<MinimapData>[]> {
+		const gray = frameGray(frame);
 
 		const isSpectator = gateResult?.variant
 			? gateResult.variant === "spectator"
 			: spectatorGate(gray).pass;
 		if (isSpectator) {
-			const events = parseSpectator(frame, gray, t);
-			gray.delete();
+			const events = yield* parseSpectatorSteps(frame, gray, t, speculative);
 			return events;
 		}
 
-		const rgb = new cv.Mat();
-		cv.cvtColor(frame, rgb, cv.COLOR_RGBA2RGB);
-		const hsv = new cv.Mat();
-		cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+		const rgb = frameRgb(frame);
+		const hsv = frameHsv(frame);
 		const lap = laplacianAbs(gray);
 
 		const confidences: number[] = [];
 		const debug: Record<string, unknown> = {};
 
-		// 1. own-team callout cards
-		const teammates: MinimapTeammate[] = [];
-		const sideSubTiles: [Roi[], Roi[]] = [[], []];
-		const cardDebug: Record<string, unknown>[] = [];
-		for (const layout of CARD_LAYOUTS) {
+		// 1. own-team callout cards and 2. enemy panel rows, probed first, then
+		// every field of every card in one lockstep
+		const cards = CARD_LAYOUTS.map((layout) => {
 			// presence: the card is crisp UI, an absent card shows blurred scene
 			const presence = meanBrightness(lap, layout.name);
 			if (presence < PRESENCE_MIN_LAPLACIAN) {
-				cardDebug.push({ self: layout.self, presence, skipped: true });
-				continue;
+				return { layout, presence, probes: null };
 			}
 			const crossFraction = saturatedFraction(hsv, layout.cross);
 			const crossLap = meanBrightness(lap, layout.cross);
-			const occluded =
-				crossFraction >= CROSS_MIN_FRACTION && crossLap >= CROSS_MIN_LAPLACIAN;
+			const occluded = crossedOut(crossFraction, crossLap);
 			const corner = minTopCorner(gray, hsv, layout.weapon);
+			const lightSurface = onLightSurface(corner);
+			return {
+				layout,
+				presence,
+				probes: { crossFraction, crossLap, occluded, corner, lightSurface },
+			};
+		});
+		const rows = ENEMY_ROW_CYS.map((cy) => {
+			const weaponRoi = enemyWeaponRoi(cy);
+			const presence = meanBrightness(lap, weaponRoi);
+			if (presence < PRESENCE_MIN_LAPLACIAN) {
+				return { cy, weaponRoi, presence, probes: null };
+			}
+			const crossFraction = saturatedFraction(hsv, enemyCrossRoi(cy));
+			const crossLap = meanBrightness(lap, enemyCrossRoi(cy));
+			const occluded = crossedOut(crossFraction, crossLap);
+			// light camo rows: pick template variant by corner brightness, raise ink threshold past it
+			const corner = minTopCorner(gray, hsv, weaponRoi);
+			const lightSurface = onLightSurface(corner);
+			return {
+				cy,
+				weaponRoi,
+				presence,
+				probes: { crossFraction, crossLap, occluded, corner, lightSurface },
+			};
+		});
+		const [cardReads, rowReads] = yield* all([
+			all(
+				cards.map(({ layout, probes }) =>
+					probes && !probes.occluded
+						? all([
+								nameGlyphs
+									? readCardName(gray, layout.name, nameGlyphs, speculative)
+									: done(null),
+								matchSurfaceWeaponSteps(
+									rgb,
+									layout.weapon,
+									layout.subTile,
+									probes.lightSurface,
+									probes.corner.mean,
+								),
+								matchBadgesSteps(
+									rgb,
+									layout.badges,
+									probes.lightSurface
+										? Math.max(
+												MINIMAP_ABILITY_INK_THRESHOLD,
+												Math.round(probes.corner.mean) + 50,
+											)
+										: MINIMAP_ABILITY_INK_THRESHOLD,
+								),
+							])
+						: done(null),
+				),
+			),
+			all(
+				rows.map(({ cy, weaponRoi, probes }) =>
+					probes
+						? all([
+								matchSurfaceWeaponSteps(
+									rgb,
+									weaponRoi,
+									enemySubTileRoi(cy),
+									probes.lightSurface,
+									probes.corner.mean,
+								),
+								probes.occluded
+									? done(null)
+									: matchBadgesSteps(
+											rgb,
+											ENEMY_BADGE_XS.map((cx) => [cx, cy] as const),
+											Math.max(
+												MINIMAP_ABILITY_INK_THRESHOLD,
+												Math.round(probes.corner.mean) + 50,
+											),
+										),
+							])
+						: done(null),
+				),
+			),
+		]);
+
+		const teammates: MinimapTeammate[] = [];
+		const sideSubTiles: [Roi[], Roi[]] = [[], []];
+		const cardDebug: Record<string, unknown>[] = [];
+		for (const [i, { layout, presence, probes }] of cards.entries()) {
+			if (!probes) {
+				cardDebug.push({ self: layout.self, presence, skipped: true });
+				continue;
+			}
+			const { crossFraction, crossLap, occluded, corner, lightSurface } =
+				probes;
 			const cornerMin = corner.mean;
-			const lightSurface =
-				corner.mean >= SPECIAL_READY_MIN_CORNER_MEAN &&
-				corner.saturation <= SPECIAL_READY_MAX_CORNER_SATURATION;
 
 			let name: string | null = null;
 			let nameRaw = "";
 			let weapon: WeaponMatch | null = null;
 			const badgeDebug: (WeaponMatch | null)[] = [];
 			let abilities: (AbilityWithUnknown | null)[] = [];
-			if (!occluded) {
-				if (nameGlyphs) {
-					const band = copyRoi(gray, layout.name);
-					const parsed = parseName(band, nameGlyphs, {
-						binThreshold: NAME_BIN_THRESHOLD,
-					});
-					band.delete();
+			const read = cardReads[i];
+			if (read) {
+				const [parsed, matchedWeapon, badgeMatches] = read;
+				if (parsed) {
 					nameRaw = parsed.raw.text;
 					if (parsed.name.length > 0) name = parsed.name;
 					confidences.push(parsed.confidence);
 				}
-				weapon = matchSurfaceWeapon(
-					rgb,
-					layout.weapon,
-					lightSurface,
-					cornerMin,
-				);
-				if (weapon) {
-					weapon = resolveTieBySubTile(rgb, weapon, layout.subTile);
-					confidences.push(Math.max(0, weapon.score));
-				}
-				abilities = matchBadges(
-					rgb,
-					layout.badges,
-					lightSurface
-						? Math.max(
-								MINIMAP_ABILITY_INK_THRESHOLD,
-								Math.round(cornerMin) + 50,
-							)
-						: MINIMAP_ABILITY_INK_THRESHOLD,
-					confidences,
-					badgeDebug,
-				);
+				weapon = matchedWeapon;
+				if (weapon) confidences.push(Math.max(0, weapon.score));
+				abilities = badgeAbilities(badgeMatches, confidences, badgeDebug);
 			}
 			cardDebug.push({
 				self: layout.self,
@@ -617,6 +835,7 @@ export function createMinimapDetector(
 				crossLap,
 				occluded,
 				cornerMin,
+				cornerMax: corner.brighterMean,
 				cornerSaturation: corner.saturation,
 				lightSurface,
 				nameRaw,
@@ -645,42 +864,23 @@ export function createMinimapDetector(
 		}
 		debug.cards = cardDebug;
 
-		// 2. enemy panel rows
 		const enemies: MinimapEnemy[] = [];
 		const enemyDebug: Record<string, unknown>[] = [];
-		for (const cy of ENEMY_ROW_CYS) {
-			const weaponRoi = enemyWeaponRoi(cy);
-			const presence = meanBrightness(lap, weaponRoi);
-			if (presence < PRESENCE_MIN_LAPLACIAN) {
+		for (const [i, { cy, presence, probes }] of rows.entries()) {
+			const read = rowReads[i];
+			if (!probes || !read) {
 				enemyDebug.push({ cy, presence, skipped: true });
 				continue;
 			}
-			const crossFraction = saturatedFraction(hsv, enemyCrossRoi(cy));
-			const crossLap = meanBrightness(lap, enemyCrossRoi(cy));
-			const occluded =
-				crossFraction >= CROSS_MIN_FRACTION && crossLap >= CROSS_MIN_LAPLACIAN;
-
-			// light camo rows: pick template variant by corner brightness, raise ink threshold past it
-			const corner = minTopCorner(gray, hsv, weaponRoi);
+			const { crossFraction, crossLap, occluded, corner, lightSurface } =
+				probes;
 			const cornerMin = corner.mean;
-			const lightSurface =
-				corner.mean >= SPECIAL_READY_MIN_CORNER_MEAN &&
-				corner.saturation <= SPECIAL_READY_MAX_CORNER_SATURATION;
-			let weapon = matchSurfaceWeapon(rgb, weaponRoi, lightSurface, cornerMin);
-			if (weapon) {
-				weapon = resolveTieBySubTile(rgb, weapon, enemySubTileRoi(cy));
-				confidences.push(Math.max(0, weapon.score));
-			}
+			const [weapon, badgeMatches] = read;
+			if (weapon) confidences.push(Math.max(0, weapon.score));
 			const badgeDebug: (WeaponMatch | null)[] = [];
 			const abilities: (AbilityWithUnknown | null)[] = occluded
 				? []
-				: matchBadges(
-						rgb,
-						ENEMY_BADGE_XS.map((cx) => [cx, cy] as const),
-						Math.max(MINIMAP_ABILITY_INK_THRESHOLD, Math.round(cornerMin) + 50),
-						confidences,
-						badgeDebug,
-					);
+				: badgeAbilities(badgeMatches, confidences, badgeDebug);
 			enemyDebug.push({
 				cy,
 				presence,
@@ -689,6 +889,7 @@ export function createMinimapDetector(
 				occluded,
 				lightSurface,
 				cornerMin,
+				cornerMax: corner.brighterMean,
 				cornerSaturation: corner.saturation,
 				weapon,
 				badges: badgeDebug,
@@ -715,9 +916,6 @@ export function createMinimapDetector(
 		const stageMatch = detectStage(frame, confidences);
 		debug.stage = stageMatch;
 
-		gray.delete();
-		rgb.delete();
-		hsv.delete();
 		lap.delete();
 
 		const confidence =
@@ -749,11 +947,13 @@ export function createMinimapDetector(
 	// starved the frame queue (2026-08-23 Mincemeat: last 95s of counter reads
 	// lost). The rearm cooldown covers gate flicker like death's does.
 	return {
-		id: "minimap",
+		id: MINIMAP_DETECTOR_ID,
 		refineIntervalS: 0.4,
-		sufficientConfidence: 0.69,
+		sufficientConfidence: SUFFICIENT_CONFIDENCE,
 		rearmCooldownS: 5,
 		gate,
-		parse,
+		parse: (frame, t, gateResult) =>
+			runSync(parseSteps(frame, t, gateResult, false)),
+		parseSteps,
 	};
 }

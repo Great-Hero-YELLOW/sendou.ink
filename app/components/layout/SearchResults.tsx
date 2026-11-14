@@ -70,7 +70,10 @@ export function SearchResultsListBox({
 					ref.current = element;
 				}
 				if (element && autoFocus === "first") {
-					element.querySelector<HTMLElement>('[role="option"]')?.focus();
+					// the parent dialog isn't open yet when this ref attaches, so a plain focus would scroll the page to it
+					element
+						.querySelector<HTMLElement>('[role="option"]')
+						?.focus({ preventScroll: true });
 				}
 			}}
 			role="listbox"
@@ -154,5 +157,5 @@ export function SearchResultsItemName({
 }: {
 	children: React.ReactNode;
 }) {
-	return <span className={styles.resultName}>{children}</span>;
+	return <span className="truncate">{children}</span>;
 }

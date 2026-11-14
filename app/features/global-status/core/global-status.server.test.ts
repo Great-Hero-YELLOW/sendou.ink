@@ -1,6 +1,7 @@
-import { addHours, addMinutes, subHours } from "date-fns";
+import { addHours, addMinutes, subHours, subMinutes } from "date-fns";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { backdate } from "~/db/seed/core/backdate";
+import * as LobbyFactory from "~/db/seed/factories/LobbyFactory";
 import * as SQGroupFactory from "~/db/seed/factories/SQGroupFactory";
 import * as SQMatchFactory from "~/db/seed/factories/SQMatchFactory";
 import * as SQReadyCheckFactory from "~/db/seed/factories/SQReadyCheckFactory";
@@ -8,6 +9,9 @@ import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentLFGTeamFactory from "~/db/seed/factories/TournamentLFGTeamFactory";
 import * as TournamentTeamFactory from "~/db/seed/factories/TournamentTeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
+import * as LobbyProgression from "~/features/lobbies/core/LobbyProgression.server";
+import * as LobbyMatchRepository from "~/features/lobbies/LobbyMatchRepository.server";
+import * as LobbyRepository from "~/features/lobbies/LobbyRepository.server";
 import { refreshSendouQInstance } from "~/features/sendouq/core/SendouQ.server";
 import * as PendingCheckIns from "~/features/tournament/core/PendingCheckIns.server";
 import { RunningTournaments } from "~/features/tournament-bracket/core/RunningTournaments.server";
@@ -16,8 +20,13 @@ import {
 	testTournament,
 	tournamentCtxTeam,
 } from "~/features/tournament-bracket/core/tests/test-utils";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { tournamentBracketsPage } from "~/features/tournament-bracket/tournament-bracket-urls";
 import {
+	databaseTimestampToDate,
+	dateToDatabaseTimestamp,
+} from "~/utils/dates";
+import {
+	lobbyPage,
 	SENDOUQ_LOOKING_PAGE,
 	SENDOUQ_PREPARING_PAGE,
 	SENDOUQ_READY_PAGE,
@@ -63,7 +72,7 @@ const runningTournamentWithOpenCheckIn = ({
 
 describe("resolveGlobalStatus", () => {
 	beforeEach(async () => {
-		await users.create(8);
+		await users.create(9);
 		RunningTournaments.clear();
 		PendingCheckIns.clearCache();
 		await refreshSendouQInstance();
@@ -75,16 +84,18 @@ describe("resolveGlobalStatus", () => {
 	}: {
 		isCheckedIn?: boolean;
 	} = {}) => {
+		const startsAt = dateToDatabaseTimestamp(addMinutes(new Date(), 30));
 		const { id: tournamentId } = await TournamentFactory.create({
 			authorId: users.id(8),
-			startTimes: [dateToDatabaseTimestamp(addMinutes(new Date(), 30))],
+			name: "Pending Cup",
+			startTimes: [startsAt],
 		});
 		await TournamentTeamFactory.create(
 			{ tournamentId, memberUserIds: userIds([1, 2, 3, 4]) },
 			{ isCheckedIn },
 		);
 
-		return tournamentId;
+		return { tournamentId, startsAt };
 	};
 
 	test("returns null for a user with nothing ongoing", async () => {
@@ -122,6 +133,25 @@ describe("resolveGlobalStatus", () => {
 			count: 1,
 			groupId: group.id,
 			expiresAt: expect.any(Number),
+		});
+	});
+
+	test("does not count a like from a group gone stale in the looking pool", async () => {
+		const likerGroup = await SQGroupFactory.create({
+			memberUserIds: userIds([5]),
+		});
+		await SQGroupFactory.create(
+			{ memberUserIds: userIds([1, 2]) },
+			{ likedByGroupIds: [likerGroup.id] },
+		);
+		await backdate("Group", likerGroup.id, {
+			latestActionAt: subMinutes(new Date(), 45),
+		});
+		await refreshSendouQInstance();
+
+		expect(await resolveGlobalStatus(users.id(1))).toMatchObject({
+			state: "SQ_QUEUED",
+			count: 0,
 		});
 	});
 
@@ -170,6 +200,25 @@ describe("resolveGlobalStatus", () => {
 		expect(await resolveGlobalStatus(users.id(1))).toEqual({
 			state: "SQ_MATCH",
 			url: sendouQMatchPage(match.id),
+			sqMatchId: match.id,
+			gameNumber: 1,
+		});
+	});
+
+	test("resolves the game being played of a match mid-way", async () => {
+		const match = await SQMatchFactory.create(
+			{
+				alphaUserIds: userIds([1, 2, 3, 4]),
+				bravoUserIds: userIds([5, 6, 7, 8]),
+			},
+			{ reportedMapCount: 2 },
+		);
+		await refreshSendouQInstance();
+
+		expect(await resolveGlobalStatus(users.id(5))).toMatchObject({
+			state: "SQ_MATCH",
+			sqMatchId: match.id,
+			gameNumber: 3,
 		});
 	});
 
@@ -186,16 +235,20 @@ describe("resolveGlobalStatus", () => {
 		expect(await resolveGlobalStatus(users.id(5))).toEqual({
 			state: "SQ_MATCH",
 			url: sendouQMatchPage(match.id),
+			sqMatchId: match.id,
+			gameNumber: 4,
 		});
 	});
 
 	test("resolves a tournament the user has yet to check in to", async () => {
-		const tournamentId = await tournamentWithCheckInOpen();
+		const { tournamentId, startsAt } = await tournamentWithCheckInOpen();
 
 		expect(await resolveGlobalStatus(users.id(1))).toEqual({
 			state: "TO_CHECKIN",
 			url: tournamentRegisterPage(tournamentId),
 			logoUrl: expect.any(String),
+			tournamentName: "Pending Cup",
+			checkInClosesAt: databaseTimestampToDate(startsAt).getTime(),
 		});
 	});
 
@@ -274,49 +327,67 @@ describe("resolveGlobalStatus", () => {
 		expect((await resolveGlobalStatus(users.id(1)))?.state).toBe("SQ_QUEUED");
 	});
 
-	test("resolves an ongoing tournament match with the tournament's logo", async () => {
-		RunningTournaments.add(
-			runningTournamentWithMatch({
-				tournamentId: 1,
-				teamOneUserIds: userIds([1]),
-				teamTwoUserIds: userIds([2]),
-			}),
-		);
+	test("resolves an ongoing tournament match with the tournament's logo, name and round", async () => {
+		const tournament = runningTournamentWithMatch({
+			tournamentId: 1,
+			teamOneUserIds: userIds([1]),
+			teamTwoUserIds: userIds([2]),
+		});
+		RunningTournaments.add(tournament);
+		const match = tournament.bracketByIdx(0)!.data.match[0];
 
 		const status = await resolveGlobalStatus(users.id(1));
 
 		expect(status?.state).toBe("TO_MATCH");
 		expect(status?.url).toMatch(/^\/to\/1\/matches\/\d+$/);
 		expect(status?.logoUrl).toBe("/test.avif");
-	});
-
-	test("resolves a match locked for cast as waiting for it", async () => {
-		RunningTournaments.add(
-			runningTournamentWithMatch({
-				tournamentId: 1,
-				teamOneUserIds: userIds([1]),
-				teamTwoUserIds: userIds([2]),
-				lockFirstMatchForCast: true,
-			}),
-		);
-
-		expect((await resolveGlobalStatus(users.id(1)))?.state).toBe(
-			"TO_WAITING_FOR_CAST",
+		expect(status?.tournamentName).toBe("test");
+		expect(status?.roundName).toBeDefined();
+		expect(status?.roundName).toBe(
+			tournament.matchContextNamesById(match.id).roundName,
 		);
 	});
 
-	test("resolves an open regular check-in", async () => {
-		RunningTournaments.add(
-			runningTournamentWithOpenCheckIn({
+	test("resolves a match locked for cast as waiting for it, linking to the match in the bracket", async () => {
+		const tournament = runningTournamentWithMatch({
+			tournamentId: 1,
+			teamOneUserIds: userIds([1]),
+			teamTwoUserIds: userIds([2]),
+			lockFirstMatchForCast: true,
+		});
+		RunningTournaments.add(tournament);
+		const lockedMatch = tournament.bracketByIdx(0)!.data.match[0];
+
+		const status = await resolveGlobalStatus(users.id(1));
+
+		expect(status?.state).toBe("TO_WAITING_FOR_CAST");
+		expect(status?.url).toBe(
+			tournamentBracketsPage({
 				tournamentId: 1,
-				teamUserIds: userIds([1]),
+				bracketIdx: 0,
+				groupId: lockedMatch.groupId,
 			}),
 		);
+		expect(status?.scrollToMatchId).toBe(lockedMatch.id);
+		expect(status?.tournamentName).toBe("test");
+		expect(status?.roundName).toBe(
+			tournament.matchContextNamesById(lockedMatch.id).roundName,
+		);
+	});
+
+	test("resolves an open regular check-in, closing as the tournament starts", async () => {
+		const tournament = runningTournamentWithOpenCheckIn({
+			tournamentId: 1,
+			teamUserIds: userIds([1]),
+		});
+		RunningTournaments.add(tournament);
 
 		const status = await resolveGlobalStatus(users.id(1));
 
 		expect(status?.state).toBe("TO_CHECKIN");
 		expect(status?.url).toBe(tournamentRegisterPage(1));
+		expect(status?.tournamentName).toBe("test");
+		expect(status?.checkInClosesAt).toBe(tournament.ctx.startsAt.getTime());
 	});
 
 	test("ignores leagues", async () => {
@@ -348,5 +419,51 @@ describe("resolveGlobalStatus", () => {
 		);
 
 		expect((await resolveGlobalStatus(users.id(1)))?.state).toBe("TO_MATCH");
+	});
+
+	/** A started lobby of users 1-8 playing its first set, user 9 on the waitlist. */
+	const lobbyPlayingSet = async () => {
+		const lobby = await LobbyFactory.create(
+			{
+				hostUserId: users.id(1),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+			},
+			{
+				signedUpUserIds: userIds([2, 3, 4, 5, 6, 7, 8]),
+				checkedInUserIds: userIds([1, 2, 3, 4, 5, 6, 7, 8]),
+				lateWaitlistedUserIds: userIds([9]),
+			},
+		);
+		await LobbyProgression.advance(lobby.id);
+
+		return lobby.id;
+	};
+
+	test("playing a lobby's set is being in a lobby match", async () => {
+		const lobbyId = await lobbyPlayingSet();
+
+		const status = await resolveGlobalStatus(users.id(1));
+
+		expect(status?.state).toBe("LOBBY_MATCH");
+		expect(status?.url).toBe(lobbyPage(lobbyId));
+	});
+
+	test("a spot opening in a lobby asks its waitlist to confirm being ready", async () => {
+		const lobbyId = await lobbyPlayingSet();
+		const [set] = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+
+		await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: users.id(8),
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		expect((await resolveGlobalStatus(users.id(9)))?.state).toBe(
+			"LOBBY_READY_CHECK",
+		);
+		expect((await resolveGlobalStatus(users.id(1)))?.state).toBe(
+			"LOBBY_IN_ROOM",
+		);
 	});
 });

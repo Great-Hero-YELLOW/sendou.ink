@@ -14,17 +14,12 @@ import {
 	getUserFromRequest,
 	userAsyncLocalStorage,
 } from "~/features/auth/core/user-context.server";
+import { RENDERS_FIELD_ERRORS_KEY } from "~/form/utils";
 import type { AnySchema } from "~/utils/schema";
 import { logger } from "./logger";
 
 /** User a wrapped action/loader runs as: a pinned seed user or any user id (e.g. one the test created). */
 export type TestUser = "admin" | "regular" | number;
-
-export function arrayContainsSameItems<T>(arr1: T[], arr2: T[]) {
-	return (
-		arr1.length === arr2.length && arr1.every((item) => arr2.includes(item))
-	);
-}
 
 /** Runs `fn` with the user as the actor (`actorId()` / `actorIdOrNull()`), for repository tests outside a request. */
 export function withUserId<T>(id: number, fn: () => T): T {
@@ -53,12 +48,21 @@ export function wrappedAction<T extends AnySchema>({
 }) {
 	return async (
 		args: v.InferOutput<T>,
-		{ user, params = {} }: { user?: TestUser; params?: Params<string> } = {},
+		{
+			user,
+			params = {},
+			url = "/path",
+		}: {
+			user?: TestUser;
+			params?: Params<string>;
+			/** Path with its search params, built with the route's search params definition. */
+			url?: string;
+		} = {},
 	) => {
 		const body = isJsonSubmission
-			? JSON.stringify(args)
+			? JSON.stringify({ ...args, [RENDERS_FIELD_ERRORS_KEY]: true })
 			: new URLSearchParams(args as any);
-		const request = new Request("http://app.com/path", {
+		const request = new Request(new URL(url, "http://app.com"), {
 			method: "POST",
 			body,
 			headers: [
@@ -72,7 +76,7 @@ export function wrappedAction<T extends AnySchema>({
 			],
 		});
 
-		const userFromRequest = await getUserFromRequest(
+		const { user: userFromRequest } = await getUserFromRequest(
 			request,
 			new URL(request.url),
 		);
@@ -132,7 +136,7 @@ export function wrappedLoader<T>({
 			],
 		});
 
-		const userFromRequest = await getUserFromRequest(
+		const { user: userFromRequest } = await getUserFromRequest(
 			request,
 			new URL(request.url),
 		);

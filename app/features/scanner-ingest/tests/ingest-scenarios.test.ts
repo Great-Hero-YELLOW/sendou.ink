@@ -1,5 +1,14 @@
+import * as R from "remeda";
 import { describe, expect, test } from "vitest";
+import { db } from "~/db/sql";
+import type {
+	ScannerMatch,
+	ScannerMatchTeam,
+} from "~/features/scanner/core/scanner-match";
+import * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
+import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
 import { databaseTimestampToJavascriptTimestamp } from "~/utils/dates";
+import { linkStoredMatches } from "../core/relink.server";
 import {
 	ALPHA_NAMES,
 	anotherSendouqMatch,
@@ -11,39 +20,25 @@ import {
 	fetchReportedWeapons,
 	hoursLater,
 	ingest,
+	lobbyWorld,
 	minutesAgo,
 	qMatchPage,
 	renamed,
 	scannedGame,
 	sendouqWorld,
-	setupScannerGate,
 	tournamentMatchPage,
 	tournamentWorld,
 	WEAPONS,
-	withScannerDisabled,
 } from "./harness";
 
-setupScannerGate();
-
 describe("gating & request filtering", () => {
-	test("G1 gate closed: scanner disabled and non-privileged user → 403, nothing stored", async () => {
-		const w = await sendouqWorld();
-
-		await withScannerDisabled(async () => {
-			await expect(
-				ingest(w.bravoUsers[1]!, [w.scanned(w.maps[0]!)]),
-			).rejects.toThrow("403");
-		});
-
-		expect(await fetchIngestedMatches()).toHaveLength(0);
-	});
-
-	test("G2 non-private lobby: only X-battle matches in the request → skipped entirely", async () => {
+	test("G2 other lobbies: anarchy and casual matches are skipped entirely", async () => {
 		const w = await sendouqWorld();
 		await w.conclude();
 
 		const res = await ingest(w.povUser, [
-			w.scanned(w.maps[0]!, { lobby: "X" }),
+			w.scanned(w.maps[0]!, { lobby: "SERIES" }),
+			w.scanned(w.maps[1]!, { lobby: "REGULAR" }),
 		]);
 
 		expect(res).toEqual({
@@ -56,22 +51,102 @@ describe("gating & request filtering", () => {
 		expect(await fetchIngestedMatches()).toHaveLength(0);
 	});
 
-	test("G3 mixed request keeps indices: only the private match is stored and linked", async () => {
+	test("G3 X battle: stored without a context hint and never linked", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+
+		const res = await ingest(w.povUser, [
+			w.scanned(w.maps[0]!, { lobby: "X" }),
+		]);
+
+		expect(res).toEqual({
+			storedMatchesCount: 1,
+			mergedMatchesCount: 0,
+			linkedGamesCount: 0,
+			linkedMatches: [],
+			contextResolved: false,
+		});
+		const rows = await fetchIngestedMatches();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.data.lobby).toBe("X");
+		expect(rows[0]!.groupMatchIdHint).toBeNull();
+		expect(await fetchLinks()).toHaveLength(0);
+	});
+
+	test("G4 mixed request keeps indices: X battle stored, private match stored and linked", async () => {
 		const w = await sendouqWorld();
 		await w.conclude();
 
 		const res = await ingest(w.povUser, [
 			w.scanned(w.maps[1]!, { lobby: "X" }),
+			w.scanned(w.maps[0]!, { lobby: "REGULAR" }),
 			w.scanned(w.maps[0]!),
 		]);
 
-		expect(res.storedMatchesCount).toBe(1);
+		expect(res.storedMatchesCount).toBe(2);
 		expect(res.linkedMatches).toEqual([
-			{ matchIndex: 1, link: { type: "sendouq", groupMatchId: w.match.id } },
+			{ matchIndex: 2, link: { type: "sendouq", groupMatchId: w.match.id } },
 		]);
 		const rows = await fetchIngestedMatches();
-		expect(rows).toHaveLength(1);
-		expect(rows[0]!.data.lobby).toBe("PRIVATE");
+		expect(new Set(rows.map((row) => row.data.lobby))).toEqual(
+			new Set(["PRIVATE", "X"]),
+		);
+		expect(await fetchLinks()).toHaveLength(1);
+	});
+
+	test("G5 implausible values: stats, scores and names the game can't show are stored as unread", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+		const scan = w.scanned(w.maps[0]!);
+		const [winners, losers] = scan.teams;
+
+		const res = await ingest(w.povUser, [
+			{
+				...scan,
+				matchScores: [99999, -5],
+				teams: [
+					{
+						players: [
+							{
+								...winners.players[0]!,
+								name: "x".repeat(100),
+								ka: 1e12,
+								d: -3,
+								s: 1.5,
+								paint: 1.5e300,
+							},
+							...winners.players.slice(1),
+						],
+					},
+					losers,
+				],
+			},
+		]);
+		expect(res.linkedGamesCount).toBe(1);
+
+		const scoreboard = (await qMatchPage(w.match.id)).ingestedScoreboards[0]!;
+		expect(scoreboard.data.scores).toEqual([null, null]);
+		expect(scoreboard.data.players[0]).toMatchObject({
+			name: "",
+			ka: null,
+			d: null,
+			s: null,
+			paint: null,
+		});
+	});
+
+	test("G6 a play time far in the future: stored without one and never linked", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+
+		const res = await ingest(w.povUser, [
+			w.scanned(w.maps[0]!, { playedAt: 1e300 }),
+		]);
+
+		expect(res.storedMatchesCount).toBe(1);
+		expect(res.linkedGamesCount).toBe(0);
+		const rows = await fetchIngestedMatches();
+		expect(rows[0]!.data.playedAt).toBeNull();
 	});
 });
 
@@ -194,21 +269,18 @@ describe("SendouQ flow", () => {
 		]);
 	});
 
-	test("Q5 name normalization: a POV-less read links via case/width/discriminator-insensitive names", async () => {
+	test("Q5 a POV-less read: stored with its hint but never linked, even with the set's names", async () => {
 		const w = await sendouqWorld();
 		await w.conclude();
 
-		const scan = renamed(
-			w.scanned(w.maps[0]!, { pov: null }),
-			(name) => `${toFullWidth(name.toUpperCase())}#9999`,
-		);
-		const res = await ingest(w.povUser, [scan]);
+		const res = await ingest(w.povUser, [w.scanned(w.maps[0]!, { pov: null })]);
 
-		expect(res.linkedGamesCount).toBe(1);
-		expect(res.linkedMatches).toEqual([
-			{ matchIndex: 0, link: { type: "sendouq", groupMatchId: w.match.id } },
-		]);
-		expect(await fetchReportedWeapons()).toHaveLength(0);
+		expect(res.contextResolved).toBe(true);
+		expect(res.linkedGamesCount).toBe(0);
+		expect((await fetchIngestedMatches())[0]!.groupMatchIdHint).toBe(
+			w.match.id,
+		);
+		expect(await fetchLinks()).toHaveLength(0);
 	});
 
 	test("Q6 POV side contradiction: seating the sender on the wrong side blocks the link", async () => {
@@ -257,6 +329,49 @@ describe("SendouQ flow", () => {
 				weaponSplId: WEAPONS[0],
 			},
 		]);
+	});
+
+	test("Q12 a nameless first link: the opponent's named read still joins the game", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+		const scan = w.scanned(w.maps[0]!);
+
+		await ingest(w.povUser, [
+			{
+				...scan,
+				teams: [
+					{
+						players: scan.teams[0].players.map((p) => ({ ...p, name: null })),
+					},
+					{
+						players: scan.teams[1].players.map((p) => ({ ...p, name: null })),
+					},
+				],
+			},
+		]);
+		const res = await ingest(w.bravoUsers[0]!, [
+			w.scanned(w.maps[0]!, { seenFrom: "loser" }),
+		]);
+
+		expect(res.linkedGamesCount).toBe(1);
+		const scoreboard = (await qMatchPage(w.match.id)).ingestedScoreboards[0]!;
+		expect(scoreboard.data.players.map((p) => p.name)).toEqual([
+			...ALPHA_NAMES,
+			...BRAVO_NAMES,
+		]);
+		expect(scoreboard.data.players[0]!.userId).toBe(w.povUser.id);
+		expect(scoreboard.data.players[4]!.userId).toBe(w.bravoUsers[0]!.id);
+	});
+
+	test("Q13 a teammate's recording: the game links, but their weapon isn't credited to the sender", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+
+		// the POV seat is Alpha1's, sent by their teammate Alpha2
+		const res = await ingest(w.alphaUsers[1]!, [w.scanned(w.maps[0]!)]);
+
+		expect(res.linkedGamesCount).toBe(1);
+		expect(await fetchReportedWeapons()).toHaveLength(0);
 	});
 
 	test("Q11 POV read misflagged as cast: the sender's seat still resolves and links their match", async () => {
@@ -348,6 +463,105 @@ describe("SendouQ flow", () => {
 		const page = await qMatchPage(w.match.id);
 		expect(page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([0, 1]);
 	});
+
+	test("Q14 send before report: the report links the stored read without a resend", async () => {
+		const w = await sendouqWorld();
+		const res = await ingest(w.povUser, [w.scanned(w.maps[0]!)]);
+		expect(res.linkedGamesCount).toBe(0);
+
+		await SQMatchRepository.reportMapWinner({
+			matchId: w.match.id,
+			winnerId: w.match.alphaGroup.id,
+			reportedByUserId: w.povUser.id,
+			reportedCount: 0,
+		});
+		await linkStoredMatches({ type: "sendouq", groupMatchId: w.match.id });
+
+		const page = await qMatchPage(w.match.id);
+		expect(page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([0]);
+		expect(page.reportedWeapons).toEqual([
+			{
+				groupMatchId: w.match.id,
+				mapIndex: 0,
+				userId: w.povUser.id,
+				weaponSplId: WEAPONS[0],
+			},
+		]);
+	});
+
+	test("Q15 corrected map report: the undo unlinks the read, which relinks only to a report it agrees with", async () => {
+		const w = await sendouqWorld();
+		const reportFirstMap = async (winnerId: number) => {
+			await SQMatchRepository.reportMapWinner({
+				matchId: w.match.id,
+				winnerId,
+				reportedByUserId: w.povUser.id,
+				reportedCount: 0,
+			});
+			await linkStoredMatches({ type: "sendouq", groupMatchId: w.match.id });
+		};
+		const undoFirstMap = () =>
+			SQMatchRepository.undoMapReport({ matchId: w.match.id, mapIndex: 0 });
+
+		await reportFirstMap(w.match.alphaGroup.id);
+		await ingest(w.povUser, [w.scanned(w.maps[0]!)]);
+		expect(await fetchLinks()).toHaveLength(1);
+
+		await undoFirstMap();
+		expect(await fetchLinks()).toHaveLength(0);
+
+		await reportFirstMap(w.match.bravoGroup.id);
+		expect(await fetchLinks()).toHaveLength(0);
+		expect((await qMatchPage(w.match.id)).ingestedScoreboards).toHaveLength(0);
+
+		await undoFirstMap();
+		await reportFirstMap(w.match.alphaGroup.id);
+		expect(await fetchLinks()).toHaveLength(1);
+		expect((await qMatchPage(w.match.id)).ingestedScoreboards).toHaveLength(1);
+	});
+});
+
+describe("lobby flow", () => {
+	test("L1 live send, map already reported: stored + linked to the lobby's set", async () => {
+		const w = await lobbyWorld();
+		const [map] = await w.report();
+
+		const res = await ingest(w.povUser, [w.scanned(map!)]);
+
+		expect(res.linkedMatches).toEqual([
+			{ matchIndex: 0, link: { type: "lobby", lobbyId: w.lobbyId } },
+		]);
+		const rows = await fetchIngestedMatches();
+		expect(rows[0]!.lobbySetIdHint).toBe(w.setId);
+		const links = await fetchLinks();
+		expect(links.map((link) => link.lobbyGameId)).toEqual([map!.id]);
+	});
+
+	test("L2 send before report: the report links the stored read without a resend", async () => {
+		const w = await lobbyWorld();
+		const res = await ingest(w.povUser, [w.scanned(w.maps[0]!)]);
+		expect(res.linkedGamesCount).toBe(0);
+
+		await w.report();
+		await linkStoredMatches({ type: "lobby", lobbySetId: w.setId });
+
+		const links = await fetchLinks();
+		expect(links.map((link) => link.lobbyGameId)).toEqual([w.maps[0]!.id]);
+	});
+
+	test("L3 undone map report: the undo unlinks the read, the re-report links it again", async () => {
+		const w = await lobbyWorld();
+		const [map] = await w.report();
+		await ingest(w.povUser, [w.scanned(map!)]);
+		expect(await fetchLinks()).toHaveLength(1);
+
+		await w.undo();
+		expect(await fetchLinks()).toHaveLength(0);
+
+		await w.report();
+		await linkStoredMatches({ type: "lobby", lobbySetId: w.setId });
+		expect(await fetchLinks()).toHaveLength(1);
+	});
 });
 
 describe("tournament flow", () => {
@@ -432,35 +646,21 @@ describe("tournament flow", () => {
 		expect(laterPage.ingestedScoreboards).toHaveLength(0);
 	});
 
-	test("T2 VoD scan spanning two sets links each read into its own set", async () => {
+	test("T2 reads without a play time (VoD) are stored but never linked", async () => {
 		const w = await tournamentWorld();
-		const [set1, set2] = w.matchesOfTeam(w.championTeamId);
-		const games = [...(await w.games(set1!.id)), ...(await w.games(set2!.id))];
+		const [set1] = w.matchesOfTeam(w.championTeamId);
+		const games = await w.games(set1!.id);
 
 		const res = await ingest(
 			w.povUser,
 			games.map((game) => w.scanned(game, { playedAt: null })),
 		);
 
-		expect(res.linkedGamesCount).toBe(4);
-		expect(res.linkedMatches).toEqual(
-			[set1, set1, set2, set2].map((set, matchIndex) => ({
-				matchIndex,
-				link: {
-					type: "tournament",
-					tournamentId: w.tournamentId,
-					matchId: set!.id,
-				},
-			})),
-		);
-		const set1Page = await tournamentMatchPage(w.tournamentId, set1!.id);
-		expect(set1Page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([
-			0, 1,
-		]);
-		const set2Page = await tournamentMatchPage(w.tournamentId, set2!.id);
-		expect(set2Page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([
-			0, 1,
-		]);
+		expect(res.storedMatchesCount).toBe(games.length);
+		expect(res.linkedGamesCount).toBe(0);
+		expect(res.linkedMatches).toEqual([]);
+		const page = await tournamentMatchPage(w.tournamentId, set1!.id);
+		expect(page.ingestedScoreboards).toHaveLength(0);
 	});
 
 	test("T3 partial then fuller resend: the replay read merges into the stored partial and links", async () => {
@@ -485,7 +685,7 @@ describe("tournament flow", () => {
 		expect(page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([0]);
 	});
 
-	test("T4 cast footage by staff links to the casted set without POV weapons", async () => {
+	test("T4 cast footage by staff: stored with the tournament hint but not linked", async () => {
 		const w = await tournamentWorld();
 		const finalMatch = w.matches.at(-1)!;
 		await w.cast(finalMatch.id);
@@ -499,22 +699,171 @@ describe("tournament flow", () => {
 		);
 
 		expect(res.contextResolved).toBe(true);
-		expect(res.linkedGamesCount).toBe(2);
-		expect(res.linkedMatches).toEqual(
-			games.map((_, matchIndex) => ({
-				matchIndex,
+		expect(res.linkedGamesCount).toBe(0);
+		expect(
+			(await fetchIngestedMatches()).map((row) => row.tournamentIdHint),
+		).toEqual(games.map(() => w.tournamentId));
+		expect(await fetchLinks()).toHaveLength(0);
+	});
+
+	test("T7 another set's report on the same map: a read of a game the sender didn't play there stays unlinked", async () => {
+		const w = await tournamentWorld();
+		const finalMatch = w.matches.at(-1)!;
+		const [finalGame] = await w.games(finalMatch.id);
+		const eliminatedSet = w.matches.find(
+			(match) =>
+				match.id !== finalMatch.id &&
+				match.loserTeamId !== finalMatch.winnerTeamId &&
+				match.loserTeamId !== finalMatch.loserTeamId,
+		)!;
+		const [ownGame] = await w.games(eliminatedSet.id);
+		const stranger = w.teams.find(
+			(team) => team.id === eliminatedSet.loserTeamId,
+		)!;
+		// their own game, but read with their seat on the winning side, so
+		// nothing of their set takes it and it waits unlinked with the hint
+		await ingest({ id: stranger.memberUserIds[0]! }, [
+			w.scanned({
+				...ownGame!,
+				mode: finalGame!.mode,
+				stage: finalGame!.stage,
+				playedAt: finalGame!.playedAt,
+			}),
+		]);
+		expect((await fetchIngestedMatches())[0]!.tournamentIdHint).toBe(
+			w.tournamentId,
+		);
+
+		await linkStoredMatches({
+			type: "tournament",
+			tournamentId: w.tournamentId,
+			tournamentMatchId: finalMatch.id,
+		});
+
+		expect(await fetchLinks()).toHaveLength(0);
+	});
+
+	test("T10 a set's deciding game: the next set its report started doesn't capture the read", async () => {
+		const { res, w, decidedSet } = await ingestDecidingGame({
+			startOffsetMs: -3 * 60_000,
+		});
+
+		expect(res.linkedMatches).toEqual([
+			{
+				matchIndex: 0,
 				link: {
 					type: "tournament",
 					tournamentId: w.tournamentId,
-					matchId: finalMatch.id,
+					matchId: decidedSet.id,
 				},
-			})),
+			},
+		]);
+	});
+
+	test.each([
+		{
+			why: "starting 15 min before its results",
+			startOffsetMs: -15 * 60_000,
+			linksDecidedSet: true,
+		},
+		{
+			why: "starting over 15 min before its results",
+			startOffsetMs: -15 * 60_000 - 1000,
+			linksDecidedSet: false,
+		},
+		{ why: "without a start", startOffsetMs: null, linksDecidedSet: false },
+	])(
+		"T11 a set's deciding game read $why: only a start within the game's span anchors its set",
+		async ({ startOffsetMs, linksDecidedSet }) => {
+			const { res, decidedSet, nextSet } = await ingestDecidingGame({
+				startOffsetMs,
+			});
+
+			expect(res.linkedMatches.map((linked) => linked.link)).toEqual([
+				expect.objectContaining({
+					matchId: linksDecidedSet ? decidedSet.id : nextSet.id,
+				}),
+			]);
+		},
+	);
+
+	test("T8 undone and re-reported game: the read relinks to the new result without a resend", async () => {
+		const w = await tournamentWorld();
+		const finalMatch = w.matches.at(-1)!;
+		const [game1] = await w.games(finalMatch.id);
+		await ingest(w.povUser, [w.scanned(game1!)]);
+		const [result] = await TournamentMatchRepository.findResultsByMatchId(
+			finalMatch.id,
 		);
-		expect(await fetchReportedWeapons()).toHaveLength(0);
-		const page = await tournamentMatchPage(w.tournamentId, finalMatch.id);
-		expect(page.ingestedScoreboards.map((sb) => sb.mapIndex)).toEqual([0, 1]);
+
+		await TournamentMatchRepository.deleteResultById(result!.id);
+		expect(await fetchLinks()).toHaveLength(0);
+
+		const reReported = await TournamentMatchRepository.insertResult({
+			matchId: finalMatch.id,
+			mode: result!.mode,
+			stageId: result!.stageId,
+			reporterId: w.author.id,
+			winnerTeamId: result!.winnerTeamId,
+			number: 1,
+			source: result!.source,
+		});
+		await db
+			.transaction()
+			.execute((trx) =>
+				TournamentMatchRepository.setParticipants(
+					{ resultId: reReported.id, participants: result!.participants },
+					trx,
+				),
+			);
+		await linkStoredMatches({
+			type: "tournament",
+			tournamentId: w.tournamentId,
+			tournamentMatchId: finalMatch.id,
+		});
+
+		const links = await fetchLinks();
+		expect(links.map((link) => link.tournamentMatchGameResultId)).toEqual([
+			reReported.id,
+		]);
+	});
+
+	test("T9 minimaps-only read completed from the battle log: the resend merges into it and links", async () => {
+		const w = await tournamentWorld();
+		const finalMatch = w.matchesOfTeam(w.championTeamId).at(-1)!;
+		const [game1] = await w.games(finalMatch.id);
+		const completed = w.scanned(game1!);
+		const minimapsOnly: ScannerMatch = {
+			...completed,
+			playedAt: null,
+			lobby: null,
+			matchScores: null,
+			winner: null,
+			pov: null,
+			teams: [minimapTeam(completed.teams[0]), minimapTeam(completed.teams[1])],
+		};
+
+		await ingest(w.povUser, [minimapsOnly]);
+		const res = await ingest(w.povUser, [completed]);
+
+		expect(res.storedMatchesCount).toBe(0);
+		expect(res.mergedMatchesCount).toBe(1);
+		expect(res.linkedGamesCount).toBe(1);
+		expect(await fetchIngestedMatches()).toHaveLength(1);
 	});
 });
+
+function minimapTeam(team: ScannerMatchTeam): ScannerMatchTeam {
+	return {
+		players: team.players.map((player) => ({
+			...player,
+			paint: null,
+			ka: null,
+			d: null,
+			s: null,
+		})),
+	};
+}
 
 describe("response contract & idempotency", () => {
 	test("R1 no context: a scrim between unknown players is stored without hints or links", async () => {
@@ -567,13 +916,127 @@ describe("response contract & idempotency", () => {
 	});
 });
 
-function toFullWidth(name: string) {
-	return [...name]
-		.map((character) => {
-			const codePoint = character.codePointAt(0)!;
-			return codePoint >= 0x21 && codePoint <= 0x7e
-				? String.fromCodePoint(codePoint + 0xfee0)
-				: character;
-		})
-		.join("");
+describe("abuse limits", () => {
+	test("A1 a sender's rescans of one game that don't merge still link it once", async () => {
+		const w = await sendouqWorld();
+		await w.conclude();
+		await ingest(w.povUser, [
+			w.scanned(w.maps[0]!, { replayCode: distinctReplayCode(1) }),
+		]);
+
+		const rescan = await ingest(w.povUser, [
+			w.scanned(w.maps[0]!, { replayCode: distinctReplayCode(2) }),
+		]);
+
+		expect(rescan.storedMatchesCount).toBe(1);
+		expect(rescan.linkedGamesCount).toBe(0);
+		expect(await fetchLinks()).toHaveLength(1);
+		expect((await qMatchPage(w.match.id)).ingestedScoreboards).toHaveLength(1);
+	});
+
+	test("A2 past the hourly match quota: the send is refused and nothing more is stored", async () => {
+		const user = await createUser();
+		const scans = R.range(0, 201).map((i) =>
+			scannedGame(QUOTA_GAME, {
+				lobby: "X",
+				replayCode: distinctReplayCode(i),
+			}),
+		);
+		for (const request of R.chunk(scans.slice(0, 200), 50)) {
+			await ingest(user, request);
+		}
+
+		await expect(ingest(user, [scans[200]!])).rejects.toThrow("429");
+		expect(await fetchIngestedMatches()).toHaveLength(200);
+	});
+
+	test("A3 max-size sends: refused once the daily size quota is used up", async () => {
+		const user = await createUser();
+		const request = (requestIndex: number) =>
+			R.range(0, 32).map((i) => maxSizeScan(requestIndex * 32 + i));
+		await ingest(user, request(0));
+		await ingest(user, request(1));
+		await ingest(user, request(2));
+
+		await expect(ingest(user, request(3))).rejects.toThrow("429");
+		expect(await fetchIngestedMatches()).toHaveLength(96);
+	});
+});
+
+async function ingestDecidingGame({
+	startOffsetMs,
+}: {
+	startOffsetMs: number | null;
+}) {
+	const w = await tournamentWorld();
+	const [decidedSet, nextSet] = w.matchesOfTeam(w.championTeamId);
+	const decidingGame = (await w.games(decidedSet!.id)).at(-1)!;
+	await w.startSetAt(
+		decidedSet!.id,
+		new Date(decidingGame.playedAt! - 20 * 60_000),
+	);
+	await w.startSetAt(nextSet!.id, new Date(decidingGame.playedAt!));
+	// the results screen shows after the game was already reported
+	const playedAt = decidingGame.playedAt! + 25_000;
+
+	const res = await ingest(w.povUser, [
+		w.scanned(decidingGame, {
+			playedAt,
+			startsAt:
+				startOffsetMs === null
+					? null
+					: Math.floor((playedAt + startOffsetMs) / 1000),
+			endsAt: Math.floor(playedAt / 1000),
+		}),
+	]);
+
+	return { res, w, decidedSet: decidedSet!, nextSet: nextSet! };
+}
+
+const QUOTA_GAME = {
+	mode: "SZ",
+	stage: 1,
+	order: 0,
+	winnerNames: ALPHA_NAMES,
+	loserNames: BRAVO_NAMES,
+} as const;
+
+/** Replay codes of different `i` differ in more places than OCR errors explain, so their reads never merge. */
+function distinctReplayCode(i: number) {
+	return String(i).padStart(4, "0").repeat(4);
+}
+
+/** An X battle read with every sample list as long as the schema allows. */
+function maxSizeScan(i: number): ScannerMatch {
+	const flags: [boolean, boolean, boolean, boolean] = [
+		true,
+		false,
+		true,
+		false,
+	];
+
+	return scannedGame(QUOTA_GAME, {
+		lobby: "X",
+		replayCode: distinctReplayCode(i),
+		objective: {
+			mode: "SZ",
+			samples: R.range(0, 1000).map((t) => ({
+				t: t * 1000,
+				time: 1000 - t,
+				score: [50, 60],
+				penalty: [0, 0],
+				control: 0,
+				position: 12.5,
+			})),
+		},
+		playerStatus: {
+			samples: R.range(0, 1000).map((t) => ({
+				t: t * 1000,
+				time: 1000 - t,
+				special: [flags, flags],
+				dead: [flags, flags],
+			})),
+		},
+		kills: R.range(0, 200).map((t) => ({ t, time: t, name: "x".repeat(32) })),
+	});
 }

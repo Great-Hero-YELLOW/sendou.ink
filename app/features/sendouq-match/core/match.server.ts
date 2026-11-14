@@ -13,24 +13,28 @@ import type {
 	SQMatch,
 	SQUncensoredGroup,
 } from "~/features/sendouq/core/SendouQ.server";
-import { SENDOUQ_BEST_OF } from "~/features/sendouq/q-constants";
-import { modesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort, ModeWithStage } from "~/modules/in-game-lists/types";
 import type {
 	TournamentMapListMap,
 	TournamentMaplistSource,
 } from "~/modules/tournament-map-list-generator/types";
 import { logger } from "~/utils/logger";
-import { averageArray } from "~/utils/number";
 import type { MatchTiers } from "../SQMatchRepository.server";
 
 type WeightsMap = Map<string, number>;
+
+/** How much each earlier play of a map multiplies its weight by, see `playedMaps` of {@link matchMapList}. */
+const PLAYED_MAP_WEIGHT_MULTIPLIER = 0.25;
 
 async function calculateMapWeights(
 	groupOnePreferences: UserMapModePreferences[],
 	groupTwoPreferences: UserMapModePreferences[],
 	modesIncluded: readonly ModeShort[],
-): Promise<WeightsMap> {
+): Promise<{
+	weights: WeightsMap;
+	teamOneVotedKeys: Set<string>;
+	teamTwoVotedKeys: Set<string>;
+}> {
 	const teamOneVotes: WeightsMap = new Map();
 	const teamTwoVotes: WeightsMap = new Map();
 
@@ -56,10 +60,17 @@ async function calculateMapWeights(
 		teamTwoWeights,
 	);
 
-	return applyDefaultWeights(combinedWeights);
+	return {
+		weights: await applyDefaultWeights(combinedWeights),
+		teamOneVotedKeys: new Set(teamOneVotes.keys()),
+		teamTwoVotedKeys: new Set(teamTwoVotes.keys()),
+	};
 }
 
-/** Combines two teams' map weights, first normalizing team one's to team two's total so differing preference counts weigh fairly. */
+/**
+ * Combines two teams' map weights, first normalizing team one's to team two's total so differing preference counts weigh fairly.
+ * @internal
+ */
 export function normalizeAndCombineWeights(
 	teamOneWeights: Map<string, number>,
 	teamTwoWeights: Map<string, number>,
@@ -141,6 +152,9 @@ function countVotesForTeam(
 	}
 }
 
+/**
+ * @param playedMaps maps the players have already played together, oldest first: the list continues from them and each play weighs the map down further
+ */
 export async function matchMapList(
 	groupOne: {
 		preferences: { userId: number; preferences: UserMapModePreferences }[];
@@ -151,12 +165,16 @@ export async function matchMapList(
 		id: number;
 	},
 	modesIncluded: readonly ModeShort[],
+	bestOf: number,
+	playedMaps: ModeWithStage[] = [],
 ): Promise<TournamentMapListMap[]> {
-	const weights = await calculateMapWeights(
-		groupOne.preferences.map((p) => p.preferences),
-		groupTwo.preferences.map((p) => p.preferences),
-		modesIncluded,
-	);
+	const { weights, teamOneVotedKeys, teamTwoVotedKeys } =
+		await calculateMapWeights(
+			groupOne.preferences.map((p) => p.preferences),
+			groupTwo.preferences.map((p) => p.preferences),
+			modesIncluded,
+		);
+	weighDownPlayedMaps(weights, playedMaps);
 
 	logger.info(
 		`[matchMapList] Generated map weights: ${JSON.stringify(
@@ -172,10 +190,16 @@ export async function matchMapList(
 		),
 		initialWeights: weights,
 		skipEnsureMinimumCandidates: true,
+		candidateFilters: alternatingTeamFilters({
+			teamOneVotedKeys,
+			teamTwoVotedKeys,
+			bestOf,
+		}),
+		history: playedMaps,
 	});
 	generator.next();
 
-	const maps = generator.next({ amount: SENDOUQ_BEST_OF }).value;
+	const maps = generator.next({ amount: bestOf }).value;
 
 	const resolveSource = (map: ModeWithStage): TournamentMaplistSource => {
 		const groupOnePrefers = groupOne.preferences.some((p) =>
@@ -213,73 +237,50 @@ export async function matchMapList(
 	return result;
 }
 
-export function mapModePreferencesToModeList(
-	groupOnePreferences: UserMapModePreferences["modes"][],
-	groupTwoPreferences: UserMapModePreferences["modes"][],
-): ModeShort[] {
-	const groupOneScores = new Map<ModeShort, number>();
-	const groupTwoScores = new Map<ModeShort, number>();
+/** Only positive weights are scaled down, scaling a negative one would raise it. */
+function weighDownPlayedMaps(weights: WeightsMap, playedMaps: ModeWithStage[]) {
+	const playCounts = R.countBy(playedMaps, (map) =>
+		MapList.modeStageKey(map.mode, map.stageId),
+	);
 
-	for (const [i, groupPrefences] of [
-		groupOnePreferences,
-		groupTwoPreferences,
-	].entries()) {
-		for (const mode of modesShort) {
-			const preferences = groupPrefences
-				.flat()
-				.filter((preference) => preference.mode === mode)
-				.map(({ preference }) => (preference === "AVOID" ? -1 : 1));
+	for (const [key, count] of Object.entries(playCounts)) {
+		const weight = weights.get(key);
+		if (weight === undefined || weight <= 0) continue;
 
-			const average = averageArray(preferences.length > 0 ? preferences : [0]);
-			const roundedAverage = Math.round(average);
-			const scoresMap = i === 0 ? groupOneScores : groupTwoScores;
+		weights.set(key, weight * PLAYED_MAP_WEIGHT_MULTIPLIER ** count);
+	}
+}
 
-			scoresMap.set(mode, roundedAverage);
+/** Teams alternate picking from maps they voted for, the last map preferably one both voted for. */
+function alternatingTeamFilters({
+	teamOneVotedKeys,
+	teamTwoVotedKeys,
+	bestOf,
+}: {
+	teamOneVotedKeys: Set<string>;
+	teamTwoVotedKeys: Set<string>;
+	bestOf: number;
+}) {
+	const [firstPicker, secondPicker] = R.shuffle([
+		teamOneVotedKeys,
+		teamTwoVotedKeys,
+	]);
+	const votedBy = (votedKeys: Set<string>) => (map: ModeWithStage) =>
+		votedKeys.has(MapList.modeStageKey(map.mode, map.stageId));
+
+	return (index: number) => {
+		const picker = index % 2 === 0 ? firstPicker : secondPicker;
+
+		if (index === bestOf - 1) {
+			return [
+				(map: ModeWithStage) =>
+					votedBy(firstPicker)(map) && votedBy(secondPicker)(map),
+				votedBy(picker),
+			];
 		}
-	}
 
-	const combinedMap = new Map<ModeShort, number>();
-	for (const mode of modesShort) {
-		const groupOneScore = groupOneScores.get(mode) ?? 0;
-		const groupTwoScore = groupTwoScores.get(mode) ?? 0;
-		const combinedScore = groupOneScore + groupTwoScore;
-		combinedMap.set(mode, combinedScore);
-	}
-
-	const result = R.shuffle(modesShort).filter((mode) => {
-		const score = combinedMap.get(mode)!;
-
-		// if opinion is split, don't include
-		return score > 0;
-	});
-
-	result.sort((a, b) => {
-		const aScore = combinedMap.get(a)!;
-		const bScore = combinedMap.get(b)!;
-
-		if (aScore === bScore) return 0;
-		return aScore > bScore ? -1 : 1;
-	});
-
-	if (result.length === 0) {
-		const bestScore = Math.max(...combinedMap.values());
-
-		const leastWorstModesResult = R.shuffle(modesShort).filter((mode) => {
-			// turf war never included if not positive
-			if (mode === "TW") return false;
-
-			const score = combinedMap.get(mode)!;
-
-			return score === bestScore;
-		});
-
-		// ok nevermind they are haters but really like turf war for some reason
-		if (leastWorstModesResult.length === 0) return ["TW"];
-
-		return leastWorstModesResult;
-	}
-
-	return result;
+		return [votedBy(picker)];
+	};
 }
 
 export function compareMatchToReportedScores({

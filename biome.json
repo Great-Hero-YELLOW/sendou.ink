@@ -5,6 +5,10 @@
 			"**",
 			"!scripts/dicts/**/*",
 			"!scripts/output/**/*",
+			"!docs/site/dist/**/*",
+			"!docs/site/.astro/**/*",
+			"!docs/site/visits.json",
+			"!translation-usage.json",
 			"!app/db/seed/data/placements.json",
 			"!build/**/*",
 			"!app/features/scanner/tests/fixtures",
@@ -40,7 +44,8 @@
 				"noReturnAssign": "error",
 				"noNestedPromises": "error",
 				"noUnusedExpressions": "error",
-				"noShadow": "error"
+				"noShadow": "error",
+				"noJsxLeakedDollar": "error"
 			},
 			"correctness": {
 				"noUndeclaredVariables": "error",
@@ -52,7 +57,8 @@
 					"level": "error"
 				},
 				"useSingleJsDocAsterisk": "error",
-				"noUndeclaredDependencies": "error"
+				"noUndeclaredDependencies": "error",
+				"noJsxNamespace": "error"
 			},
 			"style": {
 				"noNonNullAssertion": "off",
@@ -132,7 +138,9 @@
 						"strictCase": false,
 						"requireAscii": true
 					}
-				}
+				},
+				"useImportsFirst": "error",
+				"useReduceTypeParameter": "error"
 			},
 			"a11y": {
 				"useKeyWithClickEvents": "off",
@@ -158,24 +166,24 @@
 					"level": "error"
 				},
 				"noUselessCatchBinding": "error",
-				"noForEach": "error"
+				"noForEach": "error",
+				"useIndexOf": "error",
+				"useArraySome": "error",
+				"noUnnecessaryTemplateExpression": {
+					"fix": "safe",
+					"level": "error"
+				}
 			},
 			"performance": {
 				"noSyncScripts": "error"
 			},
+			"security": {
+				"noDangerouslySetInnerHtml": "error",
+				"useIframeSandbox": "error"
+			},
 			"nursery": {
-				"useImportsFirst": "error",
 				"useReactFunctionComponentDefinition": "error",
 				"useControlLabel": "error",
-				"useIframeSandbox": "error",
-				"useArraySome": "error",
-				"useReduceTypeParameter": "error",
-				"noUnnecessaryTemplateExpression": {
-					"fix": "safe",
-					"level": "error"
-				},
-				"noJsxLeakedDollar": "error",
-				"noJsxNamespace": "error",
 				"noNegationInEqualityCheck": "error",
 				"noExtendNative": "error"
 			}
@@ -193,6 +201,16 @@
 		},
 		"parser": {
 			"cssModules": true
+		}
+	},
+	"markdown": {
+		"formatter": {
+			"enabled": false
+		}
+	},
+	"yaml": {
+		"formatter": {
+			"enabled": false
 		}
 	},
 	"overrides": [
@@ -225,17 +243,26 @@
 			"includes": ["e2e/**"],
 			"linter": {
 				"rules": {
-					"nursery": {
+					"suspicious": {
 						"noPlaywrightPagePause": "error",
 						"noPlaywrightWaitForTimeout": "error",
-						"noPlaywrightMissingAwait": "error",
-						"noPlaywrightUselessAwait": "error",
 						"noPlaywrightWaitForNavigation": "error",
+						"noPlaywrightNetworkidle": "error"
+					},
+					"correctness": {
+						"noPlaywrightMissingAwait": "error",
+						"usePlaywrightValidDescribeCallback": "error"
+					},
+					"complexity": {
+						"noPlaywrightUselessAwait": "error"
+					},
+					"style": {
 						"noPlaywrightElementHandle": "error",
 						"noPlaywrightEval": "error",
-						"noPlaywrightNetworkidle": "error",
-						"noPlaywrightWaitForSelector": "error",
-						"usePlaywrightValidDescribeCallback": "error"
+						"noPlaywrightWaitForSelector": "error"
+					},
+					"performance": {
+						"useDomNodeTextContent": "off"
 					}
 				}
 			}
@@ -258,6 +285,7 @@
 				"app/routes.ts",
 				"app/entry.server.tsx",
 				"*.config.ts",
+				"docs/site/astro.config.ts",
 				"knip.ts",
 				"e2e/global-setup.ts",
 				"e2e/global-teardown.ts",
@@ -267,6 +295,17 @@
 				"rules": {
 					"style": {
 						"noDefaultExport": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["**/*.astro"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedVariables": "off",
+						"noUnusedImports": "off"
 					}
 				}
 			}
@@ -283,7 +322,7 @@
 			"includes": ["**/*.test.ts", "**/*.test.tsx"],
 			"linter": {
 				"rules": {
-					"nursery": {
+					"style": {
 						"useConsistentTestIt": {
 							"level": "error",
 							"options": { "function": "test", "withinDescribe": "test" }
@@ -304,8 +343,47 @@
 			"plugins": ["./biome-plugins/no-kysely-sqlite-helpers.grit"]
 		},
 		{
+			"includes": ["**"],
+			"plugins": [
+				"./biome-plugins/kysely-enforce-where.grit",
+				"./biome-plugins/no-floating-query-builder.grit",
+				"./biome-plugins/no-db-inside-transaction.grit",
+				"./biome-plugins/no-await-without-trx-in-transaction.grit",
+				"./biome-plugins/no-where-eq-null.grit"
+			]
+		},
+		{
+			"includes": ["**", "!migrations/**"],
+			"plugins": ["./biome-plugins/no-dynamic-sql-raw.grit"]
+		},
+		{
+			"includes": ["**", "!**/*.test.ts", "!**/*.test.tsx"],
+			"plugins": ["./biome-plugins/no-promise-all-queries.grit"]
+		},
+		{
+			"includes": ["app/**", "!app/features/components-showcase/**"],
+			"plugins": ["./biome-plugins/no-relative-links.grit"]
+		},
+		{
 			"includes": ["app/**"],
 			"plugins": ["./biome-plugins/no-and-conditional-rendering.grit"]
+		},
+		{
+			"includes": [
+				"app/**",
+				"!app/modules/persisted-state/**",
+				"!**/*.test.ts",
+				"!**/*.test.tsx"
+			],
+			"plugins": ["./biome-plugins/no-raw-web-storage.grit"]
+		},
+		{
+			"includes": [
+				"app/**",
+				"!app/form/parse.server.ts",
+				"!app/form/define-action.server.ts"
+			],
+			"plugins": ["./biome-plugins/no-raw-actions.grit"]
 		}
 	]
 }

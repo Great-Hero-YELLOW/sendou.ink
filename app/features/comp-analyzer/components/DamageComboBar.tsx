@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SendouSwitch } from "~/components/elements/Switch";
@@ -9,11 +10,7 @@ import {
 } from "~/components/Image";
 import { MAX_AP } from "~/features/build-analyzer/analyzer-constants";
 import { mainWeaponParams } from "~/features/build-analyzer/core/utils";
-import type {
-	MainWeaponId,
-	SpecialWeaponId,
-	SubWeaponId,
-} from "~/modules/in-game-lists/types";
+import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { abilityImageUrl } from "~/utils/urls";
 import { LETHAL_DAMAGE } from "../comp-analyzer-constants";
 import {
@@ -22,15 +19,10 @@ import {
 	useTargetSubDefenseAp,
 } from "../comp-analyzer-hooks";
 import type { DamageCombo, DamageSegment } from "../comp-analyzer-types";
-import {
-	calculateDamageCombos,
-	calculateInkTimeToKill,
-	type ExcludedDamageKey,
-	getAllDamageKeys,
-} from "../core/damage-combinations";
+import * as DamageCombos from "../core/DamageCombos";
 import styles from "./DamageComboBar.module.css";
 
-function filterKeyToString(key: ExcludedDamageKey): string {
+function filterKeyToString(key: DamageCombos.ExcludedDamageKey): string {
 	return `${key.weaponId}-${key.weaponType}-${key.damageType}`;
 }
 
@@ -47,7 +39,7 @@ const SLOT_COLORS = ["yellow", "pink", "green", "blue"] as const;
 interface DamageComboBarProps {
 	combo: DamageCombo;
 	inkTimeFrames: number | null;
-	onToggleFilter: (key: ExcludedDamageKey) => void;
+	onToggleFilter: (key: DamageCombos.ExcludedDamageKey) => void;
 }
 
 function DamageComboBar({
@@ -78,7 +70,7 @@ function DamageComboBar({
 						key={index}
 						segment={segment}
 						totalDamage={totalWithInk}
-						damageTypeLabel={t(`analyzer:damage.${segment.damageType}` as any)}
+						damageTypeLabel={t(`analyzer:damage.${segment.damageType}`)}
 						onToggleFilter={onToggleFilter}
 					/>
 				))}
@@ -105,7 +97,7 @@ interface SegmentBarProps {
 	segment: DamageSegment;
 	totalDamage: number;
 	damageTypeLabel: string;
-	onToggleFilter: (key: ExcludedDamageKey) => void;
+	onToggleFilter: (key: DamageCombos.ExcludedDamageKey) => void;
 }
 
 function SegmentBar({
@@ -117,7 +109,6 @@ function SegmentBar({
 	const segmentDamage = segment.damageValue * segment.count;
 	const widthPercent = (segmentDamage / totalDamage) * 100;
 	const slotColor = SLOT_COLORS[segment.weaponSlot] ?? "yellow";
-	const params = mainWeaponParams(segment.weaponId);
 
 	const handleFilterClick = () => {
 		onToggleFilter({
@@ -137,8 +128,6 @@ function SegmentBar({
 					weaponId={segment.weaponId}
 					isSubWeapon={segment.isSubWeapon}
 					isSpecialWeapon={segment.isSpecialWeapon}
-					subWeaponId={params.subWeaponId}
-					specialWeaponId={params.specialWeaponId}
 				/>
 				<span className={styles.damageValue}>
 					{segment.damageValue}
@@ -149,7 +138,7 @@ function SegmentBar({
 			</div>
 			<button
 				type="button"
-				className={styles.damageTypeLabel}
+				className={clsx(styles.damageTypeLabel, "truncate")}
 				onClick={handleFilterClick}
 			>
 				{damageTypeLabel}
@@ -189,21 +178,17 @@ interface WeaponIconProps {
 	weaponId: MainWeaponId;
 	isSubWeapon: boolean;
 	isSpecialWeapon: boolean;
-	subWeaponId: SubWeaponId;
-	specialWeaponId: SpecialWeaponId;
 }
 
 function WeaponIcon({
 	weaponId,
 	isSubWeapon,
 	isSpecialWeapon,
-	subWeaponId,
-	specialWeaponId,
 }: WeaponIconProps) {
 	if (isSubWeapon) {
 		return (
 			<SubWeaponImage
-				subWeaponId={subWeaponId}
+				subWeaponId={mainWeaponParams(weaponId).subWeaponId}
 				size={18}
 				className={styles.subSpecialWeaponIcon}
 			/>
@@ -213,7 +198,7 @@ function WeaponIcon({
 	if (isSpecialWeapon) {
 		return (
 			<SpecialWeaponImage
-				specialWeaponId={specialWeaponId}
+				specialWeaponId={mainWeaponParams(weaponId).specialWeaponId}
 				size={18}
 				className={styles.subSpecialWeaponIcon}
 			/>
@@ -231,13 +216,12 @@ function WeaponIcon({
 }
 
 interface FilteredItemProps {
-	filterKey: ExcludedDamageKey;
-	onRestore: (key: ExcludedDamageKey) => void;
+	filterKey: DamageCombos.ExcludedDamageKey;
+	onRestore: (key: DamageCombos.ExcludedDamageKey) => void;
 }
 
 function FilteredItem({ filterKey, onRestore }: FilteredItemProps) {
 	const { t } = useTranslation(["analyzer", "weapons"]);
-	const params = mainWeaponParams(filterKey.weaponId);
 
 	return (
 		<button
@@ -249,18 +233,16 @@ function FilteredItem({ filterKey, onRestore }: FilteredItemProps) {
 				weaponId={filterKey.weaponId}
 				isSubWeapon={filterKey.weaponType === "sub"}
 				isSpecialWeapon={filterKey.weaponType === "special"}
-				subWeaponId={params.subWeaponId}
-				specialWeaponId={params.specialWeaponId}
 			/>
-			<span>{t(`analyzer:damage.${filterKey.damageType}` as any)}</span>
+			<span>{t(`analyzer:damage.${filterKey.damageType}`)}</span>
 		</button>
 	);
 }
 
 interface DamageComboListProps {
 	weaponIds: MainWeaponId[];
-	excludedKeys: ExcludedDamageKey[];
-	onExcludedKeysChange: (keys: ExcludedDamageKey[]) => void;
+	excludedKeys: DamageCombos.ExcludedDamageKey[];
+	onExcludedKeysChange: (keys: DamageCombos.ExcludedDamageKey[]) => void;
 }
 
 export function DamageComboList({
@@ -282,13 +264,13 @@ export function DamageComboList({
 	const singleWeaponOnly = weaponIds.length === 1;
 	const includeSingleWeaponCombos = singleWeaponOnly || singleWeaponCombos;
 
-	const allDamageKeys = getAllDamageKeys(weaponIds, targetSubDefenseAp);
+	const allDamageKeys = DamageCombos.damageKeys(weaponIds, targetSubDefenseAp);
 	const allDamageKeyStrings = new Set(allDamageKeys.map(filterKeyToString));
 	const validExcludedKeys = excludedKeys.filter((key) =>
 		allDamageKeyStrings.has(filterKeyToString(key)),
 	);
 
-	const combos = calculateDamageCombos(
+	const combos = DamageCombos.calculate(
 		weaponIds,
 		validExcludedKeys,
 		targetSubDefenseAp,
@@ -300,7 +282,7 @@ export function DamageComboList({
 		return null;
 	}
 
-	const handleToggleFilter = (key: ExcludedDamageKey) => {
+	const handleToggleFilter = (key: DamageCombos.ExcludedDamageKey) => {
 		const keyString = filterKeyToString(key);
 		const exists = excludedKeys.some((k) => filterKeyToString(k) === keyString);
 
@@ -411,7 +393,7 @@ export function DamageComboList({
 						</div>
 					) : null}
 					{combos.map((combo, index) => {
-						const inkTimeFrames = calculateInkTimeToKill(
+						const inkTimeFrames = DamageCombos.inkTimeToKill(
 							combo.totalDamage,
 							targetResAp,
 						);

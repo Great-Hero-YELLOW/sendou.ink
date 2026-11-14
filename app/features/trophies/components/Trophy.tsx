@@ -16,9 +16,11 @@ import {
 } from "react";
 import { TierPill } from "~/components/TierPill";
 import { useTheme } from "~/features/theme/core/provider";
+import { useLatestRef } from "~/hooks/useLatestRef";
 import { usePrefersReducedMotion } from "~/hooks/usePrefersReducedMotion";
 import { IS_E2E_TEST_RUN } from "~/utils/e2e";
-import { decompressTrophyModel } from "../trophies-utils";
+import * as XpTrophy from "../core/XpTrophy";
+import { decompressTrophyModel, useXpTrophyState } from "../trophies-utils";
 import style from "./Trophy.module.css";
 
 type TrophyCtxValue =
@@ -88,7 +90,9 @@ export function TrophyGrid({
 
 export function Trophy({
 	model,
+	code,
 	preview,
+	paused,
 	tier,
 	tentativeTier,
 	disableCameraControls,
@@ -98,9 +102,13 @@ export function Trophy({
 	colorScheme: forcedColorScheme,
 	fps = 60,
 	deferred,
+	showAnimationProgress,
 }: {
 	model: string;
+	code?: string | null;
 	preview?: boolean;
+	/** Freezes on the current frame. Unlike toggling `preview`, keeps the viewer so the canvas never blanks. */
+	paused?: boolean;
 	tier?: number | null;
 	tentativeTier?: number | null;
 	disableCameraControls?: boolean;
@@ -110,6 +118,7 @@ export function Trophy({
 	colorScheme?: ColorScheme;
 	fps?: number;
 	deferred?: boolean;
+	showAnimationProgress?: boolean;
 }) {
 	const ctxValue = useContext(TrophyCtx);
 	const context = ctxValue?.context;
@@ -119,22 +128,36 @@ export function Trophy({
 	const [error, setError] = useState<boolean>(false);
 	const [drawn, setDrawn] = useState(false);
 	const [everDrawn, setEverDrawn] = useState(false);
-	const [activeModel, setActiveModel] = useState(model);
+	const [active, setActive] = useState({ model, code });
+	const [hasAnimation, setHasAnimation] = useState(false);
+	const animationProgressRef = useRef<HTMLDivElement>(null);
 	const reducedMotion = usePrefersReducedMotion();
 
-	const onRenderStatsRef = useRef(onRenderStats);
-	onRenderStatsRef.current = onRenderStats;
+	const onRenderStatsRef = useLatestRef(onRenderStats);
+	const reportsRenderStats = Boolean(onRenderStats);
+	const pausedRef = useLatestRef(paused);
 
-	const prevModelRef = useRef(model);
-	if (prevModelRef.current !== model) {
-		prevModelRef.current = model;
+	useEffect(() => {
+		const viewer = viewerRef.current;
+		if (!viewer || !drawn) return;
+
+		if (paused) viewer.stopRenderLoop();
+		else viewer.startRenderLoop(false);
+	}, [paused, drawn]);
+
+	const [prevSource, setPrevSource] = useState({ model, code });
+	if (prevSource.model !== model || prevSource.code !== code) {
+		setPrevSource({ model, code });
 		setError(false);
-		if (!drawn || reducedMotion) setActiveModel(model);
+		if (!drawn || reducedMotion) setActive({ model, code });
 		setDrawn(false);
 	}
 
-	const swapping = activeModel !== model;
-	const modelState = decompressTrophyModel(activeModel);
+	const swapping = active.model !== model || active.code !== code;
+	const xpVariant = XpTrophy.parseCode(active.code);
+	const xpState = useXpTrophyState(xpVariant);
+	const isLoadingXpState = xpVariant !== null && xpState === null;
+	const modelState = xpVariant ? xpState : decompressTrophyModel(active.model);
 	const siteColorScheme = useTrophyColorScheme();
 	const colorScheme = forcedColorScheme ?? siteColorScheme;
 
@@ -168,48 +191,59 @@ export function Trophy({
 				return;
 			}
 
-			viewer.setResolution(128, 128, 4);
-			viewer.leftTag = null;
-			viewer.rightTag = null;
-			viewer.animation.loop = true;
-			viewer.animation.speed = 1;
-			viewer.clampCameraDistance = { enabled: true, minimumDistance: 3 };
-			viewer.maxFps = fps;
-			viewer.cameraMode = "spin";
-			viewer.cameraModeSpeed = 5;
-			viewer.animation.setTime(0);
+			configureViewer(viewer, fps);
+
+			const presentFrame = (onPresented: () => void) => {
+				if (viewerRef.current !== viewer) return;
+				if (!viewer.draw()) {
+					requestAnimationFrame(() => presentFrame(onPresented));
+					return;
+				}
+				onPresented();
+			};
 
 			// render loops starve the main thread on software WebGL, so surfaces
 			// showing many trophies without GPU acceleration draw a single static frame
 			if (preview || (staticOnSoftwareRendering && isSoftwareRendering())) {
-				viewer.whenReady().then(() => {
-					const drawOnce = () => {
-						if (viewerRef.current !== viewer) return;
-						if (!viewer.draw()) {
-							requestAnimationFrame(drawOnce);
-							return;
-						}
+				viewer.whenReady().then(() =>
+					presentFrame(() => {
 						viewer.dispose();
 						viewerRef.current = null;
 						setDrawn(true);
 						setEverDrawn(true);
-					};
-					drawOnce();
-				});
+					}),
+				);
 				return;
 			}
 
-			if (context && onRenderStats) {
-				viewer.onFrame = () => {
-					onRenderStatsRef.current?.({ ...context.stats });
-				};
+			const animationDuration = viewer.modelInfo?.animationDuration ?? 0;
+			const tracksAnimationProgress = Boolean(
+				showAnimationProgress && animationDuration > 0,
+			);
+			setHasAnimation(tracksAnimationProgress);
+
+			if ((context && reportsRenderStats) || tracksAnimationProgress) {
+				setFrameListener(viewer, () => {
+					if (context) onRenderStatsRef.current?.({ ...context.stats });
+					animationProgressRef.current?.style.setProperty(
+						"--animation-progress",
+						String(viewer.animation.time / animationDuration),
+					);
+				});
 			}
 
-			viewer.startRenderLoop(false);
-			viewer.whenReady().then(() => {
-				if (viewerRef.current !== viewer) return;
+			const markDrawn = () => {
 				setDrawn(true);
 				setEverDrawn(true);
+			};
+			viewer.whenReady().then(() => {
+				if (viewerRef.current !== viewer) return;
+				if (pausedRef.current) {
+					presentFrame(markDrawn);
+					return;
+				}
+				viewer.startRenderLoop(false);
+				markDrawn();
 			});
 
 			if (disableCameraControls) return;
@@ -234,6 +268,10 @@ export function Trophy({
 			disableCameraControls,
 			colorScheme,
 			fps,
+			showAnimationProgress,
+			reportsRenderStats,
+			onRenderStatsRef,
+			pausedRef,
 		],
 	);
 
@@ -261,7 +299,7 @@ export function Trophy({
 		</div>
 	) : null;
 
-	if (error || modelState === null) {
+	if (error || (modelState === null && !isLoadingXpState)) {
 		return (
 			<div className={style.container} style={containerStyle}>
 				<div className={clsx(style.trophy, style.error)}>
@@ -275,7 +313,10 @@ export function Trophy({
 
 	return (
 		<div className={style.container} style={containerStyle} aria-busy={!drawn}>
-			{deferred || isLoadingSharedContext || !RENDERS_MODELS ? (
+			{deferred ||
+			isLoadingSharedContext ||
+			isLoadingXpState ||
+			!RENDERS_MODELS ? (
 				<div className={style.trophy} />
 			) : (
 				<canvas
@@ -285,10 +326,17 @@ export function Trophy({
 						[style.interactive]: !preview && !disableCameraControls,
 					})}
 					onTransitionEnd={() => {
-						if (swapping) setActiveModel(model);
+						if (swapping) setActive({ model, code });
 					}}
 				/>
 			)}
+			{hasAnimation ? (
+				<div
+					ref={animationProgressRef}
+					className={style.animationProgress}
+					data-testid="trophy-animation-progress"
+				/>
+			) : null}
 			{everDrawn || swapping ? null : (
 				<div className={style.loading}>
 					<div className={style.spinner} />
@@ -298,6 +346,23 @@ export function Trophy({
 			{cornerPill}
 		</div>
 	);
+}
+
+function configureViewer(viewer: PicoCAD2Viewer, fps: number) {
+	viewer.setResolution(128, 128, 4);
+	viewer.leftTag = null;
+	viewer.rightTag = null;
+	viewer.animation.loop = true;
+	viewer.animation.speed = 1;
+	viewer.clampCameraDistance = { enabled: true, minimumDistance: 3 };
+	viewer.maxFps = fps;
+	viewer.cameraMode = "spin";
+	viewer.cameraModeSpeed = 5;
+	viewer.animation.setTime(0);
+}
+
+function setFrameListener(viewer: PicoCAD2Viewer, onFrame: () => void) {
+	viewer.onFrame = onFrame;
 }
 
 function useTrophyColorScheme(): ColorScheme {

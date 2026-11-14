@@ -20,10 +20,15 @@ import {
 } from "~/db/json-selections";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
+import type { CustomTheme } from "~/db/tables-json";
 import * as Seasons from "~/features/mmr/core/Seasons";
+import { SUPPORTER_MIN_PATRON_TIER } from "~/modules/permissions/utils";
 import { dateToDatabaseTimestamp } from "./dates";
-import { IS_E2E_TEST_RUN } from "./e2e";
 import { safeNumberParse } from "./number";
+import { USER_SUBMITTED_IMAGE_ROOT } from "./urls";
+
+// LIKE folds ASCII case only, but it's much cheaper than calling `unicode_lower` for every row
+const NON_ASCII_CASED_LETTER_REGEX = /(?=\P{ASCII})\p{Cased}/u;
 
 /** Base query selecting the user by URL identifier (user id, Discord id or custom URL). */
 export function userByIdentifierQuery(identifier: string) {
@@ -89,15 +94,13 @@ type UserIdColumn<O> = O extends { idAs: infer I extends string }
 type CommonUserSelectResult<O> = readonly [
 	`${UserTableAlias<O>}.id as ${UserIdColumn<O>}`,
 	`${UserTableAlias<O>}.username as ${PrefixedUserColumn<O, "username">}`,
-	`${UserTableAlias<O>}.discordId as ${PrefixedUserColumn<O, "discordId">}`,
-	`${UserTableAlias<O>}.discordAvatar as ${PrefixedUserColumn<O, "discordAvatar">}`,
 	`${UserTableAlias<O>}.customUrl as ${PrefixedUserColumn<O, "customUrl">}`,
-	AliasedRawBuilder<string | null, PrefixedUserColumn<O, "customAvatarUrl">>,
+	AliasedRawBuilder<string | null, PrefixedUserColumn<O, "avatar">>,
 ];
 
 /**
- * Select list for the fields shared by every user representation, incl. `customAvatarUrl` (full
- * supporter avatar URL or `null`). Reads from `"User"` unless `alias` is given; `prefix` prefixes
+ * Select list for the fields shared by every user representation, incl. `avatar` (see
+ * {@link userAvatar}). Reads from `"User"` unless `alias` is given; `prefix` prefixes
  * every output column (`sender` → `senderId`, ...), `idAs` renames only the id column and
  * `inTournament` resolves `username` via {@link tournamentUsername}.
  */
@@ -117,49 +120,52 @@ export function commonUserSelect<const O extends CommonUserSelectOptions>(
 		options?.inTournament
 			? tournamentUsername(alias).as(outputName("username"))
 			: `${alias}.username as ${outputName("username")}`,
-		`${alias}.discordId as ${outputName("discordId")}`,
-		`${alias}.discordAvatar as ${outputName("discordAvatar")}`,
 		`${alias}.customUrl as ${outputName("customUrl")}`,
-		customAvatarUrl(eb, alias).as(outputName("customAvatarUrl")),
+		userAvatar(eb, alias).as(outputName("avatar")),
 	] as unknown as CommonUserSelectResult<O>;
 }
 
 /**
- * Full URL of a user's supporter custom avatar, or `null`. Alias it when selecting directly.
- * Prefer {@link commonUserSelect} / {@link commonUserJsonObject} when they fit.
+ * File name of the user's avatar (custom one over the one synced from their log in account) or
+ * `null`, the client builds the URL with `avatarUrl()`.
  */
-export function customAvatarUrl(
-	eb: ExpressionBuilder<DB, any>,
-	alias = "User",
-) {
-	return concatUserSubmittedImagePrefix(
+export function userAvatar(eb: ExpressionBuilder<DB, any>, alias = "User") {
+	const imageUrlOf = (column: "customAvatarImgId" | "syncedAvatarImgId") =>
 		eb
 			.selectFrom("UserSubmittedImage")
 			.select("UserSubmittedImage.url")
-			.whereRef(
-				"UserSubmittedImage.id",
-				"=",
-				sql.ref(`${alias}.customAvatarImgId`),
-			)
-			.$asScalar(),
-	).$castTo<string | null>();
+			.whereRef("UserSubmittedImage.id", "=", sql.ref(`${alias}.${column}`))
+			.$asScalar();
+
+	return eb.fn
+		.coalesce(imageUrlOf("customAvatarImgId"), imageUrlOf("syncedAvatarImgId"))
+		.$castTo<string | null>();
 }
 
 export type CommonUser = Pick<
 	Tables["User"],
-	"id" | "username" | "discordId" | "discordAvatar" | "customUrl"
-> & { customAvatarUrl: string | null };
+	"id" | "username" | "customUrl"
+> & {
+	avatar: string | null;
+};
 
 /** Represents User joined with PlusTier table */
 export type UserWithPlusTier = Tables["User"] & {
 	plusTier: Tables["PlusTier"]["tier"] | null;
 };
 
-const userChatNameHueRaw = sql<
-	string | null
->`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme" ->> '--_chat-h', null)`;
+const userIsSupporter = sql<SqlBool>`COALESCE("User"."patronTier", 0) >= ${sql.lit(SUPPORTER_MIN_PATRON_TIER)}`;
 
-export const userChatNameHue = userChatNameHueRaw.as("chatNameHue");
+/** The user's custom theme, null unless they are a supporter (lapsed supporters lose theirs). */
+export const supporterCustomTheme = asJson(
+	sql<CustomTheme | null>`IIF(${userIsSupporter}, "User"."customTheme", null)`,
+);
+
+export const userChatNameHue = sql<
+	string | null
+>`IIF(${userIsSupporter}, "User"."customTheme" ->> '--_chat-h', null)`.as(
+	"chatNameHue",
+);
 
 /**
  * The {@link CommonUser} fields as a plain record of Kysely expressions, for spreading into a
@@ -170,10 +176,8 @@ export function commonUserObjectFields(eb: ExpressionBuilder<Tables, "User">) {
 	return {
 		id: eb.ref("User.id"),
 		username: eb.ref("User.username"),
-		discordId: eb.ref("User.discordId"),
-		discordAvatar: eb.ref("User.discordAvatar"),
 		customUrl: eb.ref("User.customUrl"),
-		customAvatarUrl: customAvatarUrl(eb),
+		avatar: userAvatar(eb),
 	};
 }
 
@@ -204,13 +208,6 @@ export function commonUserMembersAgg<
 		])
 		.$castTo<Array<CommonUser & ExtractedExpressionTypes<E>>>();
 }
-
-const USER_SUBMITTED_IMAGE_ROOT =
-	(process.env.NODE_ENV === "development" && !Config.prodMode) ||
-	IS_E2E_TEST_RUN ||
-	process.env.NODE_ENV === "test"
-		? "http://127.0.0.1:9000/sendou"
-		: "https://sendou.nyc3.cdn.digitaloceanspaces.com";
 
 /** Full URL of the tournament's custom logo (via `avatarImgId`), or null when it has none. */
 export function tournamentLogoOrNull(
@@ -266,8 +263,45 @@ export function calendarEventStartTime(
 		.whereRef("CalendarEventDate.eventId", "=", "CalendarEvent.id");
 }
 
-/** Subquery counting a tournament's non-placeholder teams. Correlates on `"Tournament"."id"`. */
-export function tournamentTeamCount(
+/** SQL counterpart of `Series.matchesEventName`: the event's name contains one of the substrings, ignoring case. */
+export function calendarEventNameMatchesSeries(substringMatches: string[]) {
+	return (eb: ExpressionBuilder<Tables, "CalendarEvent">) =>
+		eb.or(
+			substringMatches.map((match) =>
+				containsIgnoringCase(eb.ref("CalendarEvent.name"), match),
+			),
+		);
+}
+
+/**
+ * Whether the text contains the substring, ignoring case the way JS `toLowerCase` does (so "É" matches "é").
+ * `%` and `_` are matched literally.
+ */
+export function containsIgnoringCase(
+	text: Expression<string | null>,
+	substring: string,
+) {
+	if (NON_ASCII_CASED_LETTER_REGEX.test(substring)) {
+		return sql<SqlBool>`instr(unicode_lower(${text}), ${substring.toLowerCase()}) > 0`;
+	}
+
+	return sql<SqlBool>`${text} like ${`%${escapeLikeWildcards(substring)}%`} escape '\\'`;
+}
+
+/** Whether the text equals the value, ignoring case the way JS `toLowerCase` does (so "É" matches "é"). */
+export function equalsIgnoringCase(
+	text: Expression<string | null>,
+	value: string,
+) {
+	if (NON_ASCII_CASED_LETTER_REGEX.test(value)) {
+		return sql<SqlBool>`unicode_lower(${text}) = ${value.toLowerCase()}`;
+	}
+
+	return sql<SqlBool>`${text} like ${escapeLikeWildcards(value)} escape '\\'`;
+}
+
+/** Subquery counting all of a tournament's non-placeholder teams, checked in or not (see {@link tournamentActiveTeamCount}). Correlates on `"Tournament"."id"`. */
+export function tournamentRegisteredTeamCount(
 	eb: ExpressionBuilder<Tables, "Tournament">,
 ) {
 	return eb
@@ -312,7 +346,9 @@ function tournamentCheckedInTeams(eb: ExpressionBuilder<DB, "Tournament">) {
 }
 
 /** Subquery counting the teams of {@link tournamentCheckedInTeams}. Correlates on `"Tournament"."id"`. */
-export function tournamentTeamsCount(eb: ExpressionBuilder<DB, "Tournament">) {
+export function tournamentActiveTeamCount(
+	eb: ExpressionBuilder<DB, "Tournament">,
+) {
 	return tournamentCheckedInTeams(eb).select(({ fn }) => [
 		fn.count<number>("TournamentTeam.id").distinct().as("count"),
 	]);
@@ -361,9 +397,12 @@ export function tournamentMembersCount(
 export function latestSkillPerSeason<By extends "userId" | "identifier">({
 	season,
 	by,
+	before,
 }: {
 	season: number;
 	by: By;
+	/** Only rows created at or before this database timestamp, for the standings at a past moment */
+	before?: number;
 }) {
 	// Relies on SQLite's bare column rule: with `max()` the other columns come from the max row.
 	// A self-join against a `max(id)` subquery took ~12s when the planner misjudged a fresh
@@ -379,6 +418,9 @@ export function latestSkillPerSeason<By extends "userId" | "identifier">({
 		])
 		.where("Skill.season", "=", season)
 		.where(`Skill.${by}`, "is not", null)
+		.$if(before !== undefined, (qb) =>
+			qb.where("Skill.createdAt", "<=", before!),
+		)
 		.groupBy(`Skill.${by}`);
 }
 
@@ -410,6 +452,109 @@ export function concatUserSubmittedImagePrefix<T extends string | null>(
 	return sql<T extends null ? string | null : string>`(${sql.lit(
 		`${USER_SUBMITTED_IMAGE_ROOT}/`,
 	)} || ${expr})`;
+}
+
+/** Content whose visibility is stored as `ContentVisibility` rows. */
+export type VisibilityEntity = "ScrimPost" | "Lobby";
+
+const VISIBILITY_ENTITY_COLUMN = {
+	ScrimPost: "scrimPostId",
+	Lobby: "lobbyId",
+} as const satisfies Record<VisibilityEntity, string>;
+
+/**
+ * Whether the entity's visibility schedule lets the viewer see it at `now`: a `ContentVisibility` row that
+ * has come into effect matches them as public, an association they are a member of, their plus tier or a
+ * friendship with the creator. Logged out viewers (`viewerId` null) only see public content. Callers OR this
+ * with their own bypasses (participants always see their own content). `"<entity>"."id"` must be in scope.
+ */
+export function visibleTo({
+	entity,
+	viewerId,
+	now,
+}: {
+	entity: VisibilityEntity;
+	viewerId: number | null;
+	now: number;
+}) {
+	const visibilityRows = visibilityRowsOf(entity, now);
+
+	if (viewerId === null) {
+		return sql<SqlBool>`exists (select 1 from ${visibilityRows} and "ContentVisibility"."isPublic" = 1)`;
+	}
+
+	// friendships are stored with the smaller user id first, so min/max hits the unique index
+	return sql<SqlBool>`exists (
+		select 1 from ${visibilityRows}
+		and (
+			"ContentVisibility"."isPublic" = 1
+			or "ContentVisibility"."associationId" in (
+				select "AssociationMember"."associationId" from "AssociationMember"
+				where "AssociationMember"."userId" = ${viewerId}
+			)
+			or "ContentVisibility"."plusTier" >= (
+				select "PlusTier"."tier" from "PlusTier" where "PlusTier"."userId" = ${viewerId}
+			)
+			or "ContentVisibility"."friendsOfUserId" = ${viewerId}
+			or exists (
+				select 1 from "Friendship"
+				where "Friendship"."userOneId" = min("ContentVisibility"."friendsOfUserId", ${viewerId})
+					and "Friendship"."userTwoId" = max("ContentVisibility"."friendsOfUserId", ${viewerId})
+			)
+		)
+	)`;
+}
+
+/** Whether the entity's visibility schedule reaches the viewer at `now` through an association they are a member of. */
+export function visibleThroughAssociationTo({
+	entity,
+	viewerId,
+	now,
+}: {
+	entity: VisibilityEntity;
+	viewerId: number;
+	now: number;
+}) {
+	return sql<SqlBool>`exists (
+		select 1 from ${visibilityRowsOf(entity, now)}
+		and "ContentVisibility"."associationId" in (
+			select "AssociationMember"."associationId" from "AssociationMember"
+			where "AssociationMember"."userId" = ${viewerId}
+		)
+	)`;
+}
+
+/** Whether the entity is visible to everyone at `now`. Select it negated as `isPrivate` for cards. */
+export function isPublicNow({
+	entity,
+	now,
+}: {
+	entity: VisibilityEntity;
+	now: number;
+}) {
+	return visibleTo({ entity, viewerId: null, now });
+}
+
+/** Whether the association is an audience at any step of the entity's visibility schedule, not only right now. */
+export function mentionsAssociation({
+	entity,
+	associationId,
+}: {
+	entity: VisibilityEntity;
+	associationId: number;
+}) {
+	return sql<SqlBool>`exists (
+		select 1 from "ContentVisibility"
+		where "ContentVisibility".${sql.ref(VISIBILITY_ENTITY_COLUMN[entity])} = ${sql.ref(`${entity}.id`)}
+			and "ContentVisibility"."associationId" = ${associationId}
+	)`;
+}
+
+/** `"ContentVisibility" where ...` of the entity's rows in effect at `now`, to be continued with `and`. */
+function visibilityRowsOf(entity: VisibilityEntity, now: number) {
+	return sql`"ContentVisibility"
+		where "ContentVisibility".${sql.ref(VISIBILITY_ENTITY_COLUMN[entity])} = ${sql.ref(`${entity}.id`)}
+			and "ContentVisibility"."visibleFrom" <= ${now}`;
 }
 
 export type JSONColumnTypeNullable<
@@ -450,6 +595,24 @@ export function tournamentUsername(alias = "User") {
 	return sql<string>`coalesce(${sql.ref(`${alias}.tournamentName`)}, ${sql.ref(
 		`${alias}.username`,
 	)})`;
+}
+
+/** Whether the `LiveStream` row is on one of the user's connected Twitch/YouTube accounts. */
+export function isLiveStreamOf(alias = "User") {
+	return sql<boolean>`(("LiveStream"."platform" = 'TWITCH' and "LiveStream"."account" = ${sql.ref(
+		`${alias}.twitch`,
+	)}) or ("LiveStream"."platform" = 'YOUTUBE' and "LiveStream"."account" = ${sql.ref(
+		`${alias}.youtubeId`,
+	)}))`;
+}
+
+/** Whether the `LiveStream` row is on one of the accounts of a `Tournament.castAccounts` value. */
+export function isCastLiveStreamOf(castAccounts: Expression<unknown>) {
+	return sql<boolean>`exists (
+		select 1 from json_each(${castAccounts}) as "castAccount"
+		where json_extract("castAccount"."value", '$.platform') = "LiveStream"."platform"
+			and json_extract("castAccount"."value", '$.account') = "LiveStream"."account"
+	)`;
 }
 
 type SelectQueryBuilderExpression<O> = Parameters<
@@ -499,7 +662,7 @@ export function jsonBuildObject<O extends Record<string, Expression<unknown>>>(
  * Re-tags an expression with `json()` so it stays nested inside {@link jsonBuildObject}/{@link jsonArrayFrom}.
  * Only needed when the helpers can't recognize it as JSON, e.g. a raw `IIF(...)` over a JSON column.
  */
-export function asJson<T>(expr: Expression<T>): RawBuilder<T> {
+function asJson<T>(expr: Expression<T>): RawBuilder<T> {
 	return sql<T>`json(${expr})`;
 }
 
@@ -526,4 +689,8 @@ function jsonObjectArgs(
 	}
 
 	return args;
+}
+
+function escapeLikeWildcards(value: string) {
+	return value.replace(/[\\%_]/g, (character) => `\\${character}`);
 }

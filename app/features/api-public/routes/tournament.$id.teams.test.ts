@@ -5,6 +5,7 @@ import * as UserFactory from "~/db/seed/factories/UserFactory";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import { type TestUser, withUserId, wrappedLoader } from "~/utils/Test";
+import { avatarUrl } from "~/utils/urls";
 import type { GetTournamentTeamsResponse } from "../schema";
 import { loader } from "./tournament.$id.teams";
 
@@ -100,6 +101,37 @@ const teamWithHiddenInfo = async (tournamentArgs?: { isDraft?: boolean }) => {
 	return { tournament };
 };
 
+/** Two divisions with two teams each, the second division seeded first. */
+const divisionedTournament = async () => {
+	const tournament = await TournamentFactory.create({
+		authorId: users.id(1),
+		minMembersPerTeam: 1,
+		bracketProgression: [
+			{
+				name: "Division 1",
+				type: "single_elimination",
+				requiresCheckIn: false,
+				settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
+			},
+			{
+				name: "Division 2",
+				type: "single_elimination",
+				requiresCheckIn: false,
+				settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
+			},
+		],
+	});
+
+	for (const [index, userId] of users.ids().entries()) {
+		await TournamentTeamFactory.create(
+			{ tournamentId: tournament.id, memberUserIds: [userId] },
+			{ isCheckedIn: true, startingBracketIdx: index < 2 ? 1 : 0 },
+		);
+	}
+
+	return { tournament };
+};
+
 /** Four one-player teams through a single elimination bracket, the higher seed winning every map. */
 const playedTournament = () =>
 	TournamentFactory.createPlayed(
@@ -160,6 +192,23 @@ describe("GET /api/tournament/:id/teams", () => {
 		expect(asOutsider[0].logoUrl).toEqual(expect.any(String));
 	});
 
+	test("returns the stored avatar of a member instead of the Discord CDN one", async () => {
+		const player = await UserFactory.create({ discordAvatar: "abc123" });
+		const tournament = await TournamentFactory.create({
+			authorId: organizerId(),
+		});
+		await TournamentTeamFactory.create({
+			tournamentId: tournament.id,
+			memberUserIds: [player.id],
+		});
+
+		const teams = await fetchTeams(tournament.id);
+
+		expect(teams[0].members[0].avatarUrl).toBe(
+			avatarUrl(`avatar-${player.id}-abc123.webp`, "lg"),
+		);
+	});
+
 	test("returns the tournament name organizers gave a player instead of their username", async () => {
 		const { organizer, player, tournament, team } = await registeredPlayer();
 
@@ -198,6 +247,39 @@ describe("GET /api/tournament/:id/teams", () => {
 		const teams = await fetchTeams(tournament.id);
 
 		expect(teams.map((team) => team.seed)).toEqual([1, null, 2]);
+	});
+
+	test("returns the starting bracket and division of each team", async () => {
+		const { tournament } = await divisionedTournament();
+
+		const teams = await fetchTeams(tournament.id);
+
+		expect(
+			teams.map((team) => [team.startingBracketIdx, team.division]),
+		).toEqual([
+			[1, "Division 2"],
+			[1, "Division 2"],
+			[0, "Division 1"],
+			[0, "Division 1"],
+		]);
+	});
+
+	test("numbers the seeds of a started tournament within each division", async () => {
+		const { tournament } = await divisionedTournament();
+		await TournamentFactory.startBracket(tournament.id);
+
+		const teams = await fetchTeams(tournament.id);
+
+		expect(teams.map((team) => team.seed)).toEqual([1, 2, 1, 2]);
+	});
+
+	test("has no division in a tournament with one starting bracket", async () => {
+		const { tournament } = await registeredPlayer();
+
+		const teams = await fetchTeams(tournament.id);
+
+		expect(teams[0].startingBracketIdx).toBe(0);
+		expect(teams[0].division).toBeNull();
 	});
 
 	test("has no placement or stats before the tournament has started", async () => {

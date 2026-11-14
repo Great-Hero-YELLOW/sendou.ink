@@ -186,6 +186,25 @@ function useTournamentWeaponReport({
 }) {
 	const tournament = useTournament();
 
+	function viewerPlayedMap(mapIndex: number) {
+		if (viewerUserId === undefined) return false;
+
+		// a played map remembers its roster, the map still to be played goes by the roster as it stands now
+		const result = data.results[mapIndex];
+		if (result) {
+			return result.participants.some((p) => p.userId === viewerUserId);
+		}
+
+		const team = tournament.teamMemberOfByUser({ id: viewerUserId });
+		if (!team) return false;
+
+		const activeRoster =
+			tournamentTeamToActiveRosterUserIds(team, tournament.minMembersPerTeam) ??
+			team.memberUserIds;
+
+		return activeRoster.includes(viewerUserId);
+	}
+
 	const playOrderMaps = (data.mapList ?? []).filter(
 		(m) => !m.bannedByTournamentTeamId,
 	);
@@ -205,6 +224,7 @@ function useTournamentWeaponReport({
 	const weaponReport = useMatchWeaponReport({
 		maps: weaponReportMaps,
 		pastReported,
+		weaponPoolIds: data.viewerWeaponPoolIds ?? undefined,
 	});
 
 	if (viewerUserId === undefined) return null;
@@ -216,25 +236,6 @@ function useTournamentWeaponReport({
 	if (weaponReportMaps.length === 0) return null;
 
 	return weaponReport;
-
-	function viewerPlayedMap(mapIndex: number) {
-		if (viewerUserId === undefined) return false;
-
-		// a played map remembers its roster, the map still to be played goes by the roster as it stands now
-		const result = data.results[mapIndex];
-		if (result) {
-			return result.participants.some((p) => p.userId === viewerUserId);
-		}
-
-		const team = tournament.teamMemberOfByUser({ id: viewerUserId });
-		if (!team) return false;
-
-		const activeRoster =
-			tournamentTeamToActiveRosterUserIds(team, tournament.minMembersPerTeam) ??
-			team.memberUserIds;
-
-		return activeRoster.includes(viewerUserId);
-	}
 }
 
 function buildSetEndingData({
@@ -253,17 +254,13 @@ function buildSetEndingData({
 	const memberToCommonUser = (m: {
 		userId: number;
 		username: string;
-		discordId: string;
-		discordAvatar: string | null;
 		customUrl: string | null;
-		customAvatarUrl: string | null;
+		avatar: string | null;
 	}): CommonUser => ({
 		id: m.userId,
 		username: m.username,
-		discordId: m.discordId,
-		discordAvatar: m.discordAvatar,
 		customUrl: m.customUrl,
-		customAvatarUrl: m.customAvatarUrl,
+		avatar: m.avatar,
 	});
 
 	const teamOneMembersMap = new Map(

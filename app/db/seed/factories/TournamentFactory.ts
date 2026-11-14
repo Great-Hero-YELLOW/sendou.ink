@@ -2,7 +2,7 @@ import { addMinutes } from "date-fns";
 import { sql } from "kysely";
 import * as R from "remeda";
 import { db } from "~/db/sql";
-import type { TournamentSettings } from "~/db/tables-json";
+import type { CastAccount, TournamentSettings } from "~/db/tables-json";
 import * as CalendarRepository from "~/features/calendar/CalendarRepository.server";
 import * as Standings from "~/features/tournament/core/Standings";
 import type { TournamentTierNumber } from "~/features/tournament/core/tiering";
@@ -20,6 +20,7 @@ import { resolveMatchMapList } from "~/features/tournament-match/core/mapList.se
 import { reportScore } from "~/features/tournament-match/core/reportScore.server";
 import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
 import { invariant } from "~/utils/invariant";
+import { actAs } from "../core/actAs";
 import { backdate } from "../core/backdate";
 import { defineFactory } from "../core/defineFactory";
 import { eventDefaults } from "./CalendarEventFactory";
@@ -31,7 +32,7 @@ const SINGLE_ELIMINATION: TournamentSettings["bracketProgression"] = [
 		type: "single_elimination",
 		requiresCheckIn: false,
 		settings: {
-			thirdPlaceMatch: false,
+			skippedRounds: ["THIRD_PLACE_MATCH"],
 		},
 	},
 ];
@@ -65,6 +66,8 @@ type Options = {
 	tiers?: Record<number, TournamentTierNumber>;
 	/** Marks the tournament a league. Leagues have no creation UI, the flag is set straight in the db. */
 	isLeague?: boolean;
+	/** Set like the admin stream page does. */
+	castAccounts?: CastAccount[];
 };
 
 /** The maps of each round the factory starts, or one list every round shares; `isPlayableAt` is when a league round opens. */
@@ -80,6 +83,8 @@ type StartBracketArgs = {
 type PlayMatchesFilter = {
 	roundNumbers?: number[];
 	matchIds?: number[];
+	/** Stop after this many maps, leaving unfinished sets in progress. */
+	mapCount?: number;
 };
 
 /** Bracket idx(s) in the progression, or `"all"` = every bracket then finalize. */
@@ -102,7 +107,10 @@ export const { create } = defineFactory({
 
 		return { id: tournamentId, eventId };
 	},
-	applyOptions: async (tournament, { tier, tiers, isLeague }: Options) => {
+	applyOptions: async (
+		tournament,
+		{ tier, tiers, isLeague, castAccounts }: Options,
+	) => {
 		if (isLeague) {
 			await db
 				.updateTable("Tournament")
@@ -111,6 +119,13 @@ export const { create } = defineFactory({
 				})
 				.where("id", "=", tournament.id)
 				.execute();
+		}
+
+		if (castAccounts) {
+			await TournamentRepository.updateCastAccounts({
+				tournamentId: tournament.id,
+				castAccounts,
+			});
 		}
 
 		const tierByBracketIdx = { ...(tier ? { 0: tier } : {}), ...tiers };
@@ -195,6 +210,16 @@ export async function playOut(
 	return matches;
 }
 
+/** Saves maps prepared for a bracket that has not started yet, as the organizer does from its preview. */
+export function prepareMaps({
+	authorId,
+	...args
+}: Parameters<typeof TournamentRepository.upsertPreparedMaps>[0] & {
+	authorId: number;
+}) {
+	return actAs(authorId, () => TournamentRepository.upsertPreparedMaps(args));
+}
+
 /**
  * Starts a bracket seeded by the teams in it, every round on `maps` (default SZ Bo3). Later brackets
  * are started by calling again once their source matches are played. Returns the matches created.
@@ -213,7 +238,7 @@ export async function startBracket(
 	const bracket = tournament.bracketByIdx(bracketIdx);
 	invariant(bracket, `Tournament has no bracket at index ${bracketIdx}`);
 
-	const seeding = bracket.seeding;
+	const seeding = bracket.previewSeeding;
 	invariant(seeding?.length, `Bracket at index ${bracketIdx} has no teams`);
 
 	const createInput: Engine.CreateBracketInput = {
@@ -263,17 +288,19 @@ export async function castMatch({
 	const tournament = await TournamentRepository.findById(tournamentId);
 	invariant(tournament, `Tournament ${tournamentId} not found`);
 
-	await TournamentRepository.updateCastTwitchAccounts({
+	const castAccount = { platform: "TWITCH" as const, account: twitchAccount };
+
+	await TournamentRepository.updateCastAccounts({
 		tournamentId,
-		castTwitchAccounts: [
-			...(tournament.castTwitchAccounts ?? []),
-			twitchAccount,
+		castAccounts: [
+			...(tournament.castAccounts ?? []),
+			{ ...castAccount, name: twitchAccount },
 		],
 	});
 	await TournamentRepository.setMatchAsCasted({
 		tournamentId,
 		matchId,
-		twitchAccount,
+		castAccount,
 	});
 
 	clearTournamentDataCache(tournamentId);
@@ -303,7 +330,7 @@ export async function playMatches(
 	const played = playableMatches(tournament, filter);
 	for (const match of played) {
 		await setActiveRosters(tournamentId, match);
-		await playOutMatch(tournamentId, match);
+		await playOutMatch(tournamentId, match, filter.mapCount);
 	}
 
 	clearTournamentDataCache(tournamentId);
@@ -502,11 +529,15 @@ async function setActiveRosters(tournamentId: number, match: PlayedMatch) {
 	}
 }
 
-async function playOutMatch(tournamentId: number, match: PlayedMatch) {
+async function playOutMatch(
+	tournamentId: number,
+	match: PlayedMatch,
+	mapCount = Number.POSITIVE_INFINITY,
+) {
 	let position = 0;
 	let setOver = false;
 
-	while (!setOver) {
+	while (!setOver && position < mapCount) {
 		// rehydrated per map, the previous report having moved the score on
 		const tournament = await tournamentFromDB(tournamentId);
 		const matchRow = await findMatch(match.id);
@@ -538,34 +569,36 @@ async function finalize(tournamentId: number) {
 		includeBadgePrizes: true,
 		includeTrophy: true,
 	});
-	const winner = winningTeam(tournament);
+	const winners = winningTeams(tournament);
 
 	await finalizeTournament({
 		tournament,
 		badgeReceivers: event?.badgePrizes?.length
-			? event.badgePrizes.map((badge) => ({
-					badgeId: badge.id,
-					tournamentTeamId: winner.team.id,
-					userIds: winner.team.memberUserIds,
-				}))
+			? event.badgePrizes.flatMap((badge) =>
+					winners.map((winner) => ({
+						badgeId: badge.id,
+						tournamentTeamId: winner.team.id,
+						userIds: winner.team.memberUserIds,
+					})),
+				)
 			: undefined,
 		trophyReceiver: event?.trophy
 			? {
 					trophyId: event.trophy.id,
-					userIds: winner.team.memberUserIds,
+					userIds: winners.flatMap((winner) => winner.team.memberUserIds),
 				}
 			: undefined,
 	});
 }
 
-/** Who the organizer typically assigns the prizes to. */
-function winningTeam(tournament: Awaited<ReturnType<typeof tournamentFromDB>>) {
-	const winner = Standings.flattenStandings(
-		Standings.tournamentStandings(tournament),
-	).find((standing) => standing.placement === 1);
-	invariant(winner, "Tournament to award prizes for has no winner");
+/** Who the organizer typically assigns the prizes to: every 1st place team. */
+function winningTeams(
+	tournament: Awaited<ReturnType<typeof tournamentFromDB>>,
+) {
+	const winners = Standings.winners(Standings.tournamentStandings(tournament));
+	invariant(winners.length > 0, "Tournament to award prizes for has no winner");
 
-	return winner;
+	return winners;
 }
 
 async function findMatch(matchId: number) {

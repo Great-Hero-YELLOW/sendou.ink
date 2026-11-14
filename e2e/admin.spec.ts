@@ -1,11 +1,12 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { addHours, addYears } from "date-fns";
-import { NZAP_TEST_DISCORD_ID } from "~/db/seed/constants";
+import { NZAP_TEST_ID } from "~/db/seed/constants";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
 import { SPLATOON_3_XP_BADGE_VALUES } from "~/features/badges/badges-constants";
 import {
 	expect,
+	expectUploadedImage,
 	impersonate,
 	isNotVisible,
 	navigate,
@@ -147,13 +148,13 @@ test.describe("Admin panel", () => {
 		).toContainText("+1");
 
 		const userPage = new UserPage(page);
-		await userPage.goto(NZAP_TEST_DISCORD_ID);
+		await userPage.goto(NZAP_TEST_ID);
 		await expect(userPage.widget("x-rank-peaks")).toBeVisible();
 		const playerPage = await userPage.openPlacements();
 		await expect(playerPage.locators.heading).toBeVisible();
 
 		// the old user kept their account, now reached via the new user's Discord id
-		await userPage.goto(LEAVER.discordId);
+		await userPage.gotoWithIdentifier(LEAVER.discordId);
 		await expect(userPage.usernameHeading(KEEPER.discordName)).toBeVisible();
 	});
 
@@ -189,6 +190,7 @@ test.describe("Admin panel", () => {
 		});
 
 		await expect(streams.streamLink("E2E Stream")).toBeVisible();
+		await expectUploadedImage(streams.streamLogo("E2E Stream"), "small");
 		await isNotVisible(streams.locators.noStreams);
 
 		await streams.deleteStream("E2E Stream");

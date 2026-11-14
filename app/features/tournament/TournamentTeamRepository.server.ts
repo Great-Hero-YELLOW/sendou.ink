@@ -1,12 +1,18 @@
+import { addDays } from "date-fns";
 import type { NotNull, Transaction } from "kysely";
 import { sql } from "kysely";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
+import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import type { MapPool } from "~/features/map-list-generator/core/map-pool";
-import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
-import { flatZip } from "~/utils/arrays";
-import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
+import type {
+	ModeShort,
+	ModeWithStage,
+	StageId,
+} from "~/modules/in-game-lists/types";
+import { RECENTLY_PLAYED_MAPS_WINDOW } from "~/modules/tournament-map-list-generator/constants";
+import { databaseTimestampNow, databaseTimestampToDate } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import { invariant } from "~/utils/invariant";
 import {
@@ -15,6 +21,9 @@ import {
 } from "~/utils/kysely.server";
 import { toDBBoolean } from "~/utils/sql";
 import * as TournamentAuditLogRepository from "./TournamentAuditLogRepository.server";
+
+const TEAM_CHAT_ROOM_LIFESPAN_DAYS = 7;
+const LEAGUE_TEAM_CHAT_ROOM_LIFESPAN_DAYS = 60;
 
 /** Teams owning the given chat rooms, with their members' user ids and the tournament they belong to. */
 export async function findAllByChatRoomIds(chatRoomIds: number[]) {
@@ -29,9 +38,11 @@ export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 			"TournamentTeam.tournamentId",
 		)
 		.select((eb) => [
+			"TournamentTeam.id",
 			"TournamentTeam.chatRoomId",
 			"TournamentTeam.name",
 			"TournamentTeam.tournamentId",
+			"TournamentTeam.isLooking",
 			"Tournament.isFinalized",
 			"CalendarEvent.name as tournamentName",
 			tournamentLogoWithDefault(eb).as("logoUrl"),
@@ -83,8 +94,11 @@ export function setActiveRoster({
 		.execute();
 }
 
-const regOpenTournamentTeamsByJoinedUserId = (userId: number) =>
-	db
+const regOpenTournamentTeamsByJoinedUserId = (
+	userId: number,
+	trx: Transaction<DB>,
+) =>
+	trx
 		.selectFrom("TournamentTeamMember")
 		.innerJoin(
 			"TournamentTeam",
@@ -145,11 +159,15 @@ export function updateMemberInGameName({
 /** Updates the acting user's in-game name in tournaments not yet started, returning the ids of those tournaments. */
 export async function updateOwnMemberInGameNameForNonStarted(
 	inGameName: string,
+	trx: Transaction<DB>,
 ): Promise<number[]> {
 	const userId = actorId();
-	const tournamentTeams = await regOpenTournamentTeamsByJoinedUserId(userId);
+	const tournamentTeams = await regOpenTournamentTeamsByJoinedUserId(
+		userId,
+		trx,
+	);
 
-	await db
+	await trx
 		.updateTable("TournamentTeamMember")
 		.set({ inGameName })
 		.where("TournamentTeamMember.userId", "=", userId)
@@ -166,6 +184,7 @@ export async function updateOwnMemberInGameNameForNonStarted(
 	return tournamentTeams.map((t) => t.tournamentId);
 }
 
+/** @returns the created team, or `null` when the owner is already on a team of the tournament. */
 export function insert({
 	team,
 	avatarImgId = null,
@@ -182,6 +201,8 @@ export function insert({
 	tournamentId: number;
 }) {
 	return db.transaction().execute(async (trx) => {
+		if (await isOnTournamentTeam(trx, { userId, tournamentId })) return null;
+
 		const tournamentTeam = await trx
 			.insertInto("TournamentTeam")
 			.values({
@@ -195,7 +216,7 @@ export function insert({
 			.returning("id")
 			.executeTakeFirstOrThrow();
 
-		const isSub = (await registrationClosedNow(trx, tournamentId)) ? 1 : 0;
+		const isSub = toDBBoolean(await registrationClosedNow(trx, tournamentId));
 
 		const inGameName = await resolveInGameName({ tournamentId, userId }, trx);
 
@@ -252,7 +273,10 @@ export function insert({
 			}
 		}
 
-		return tournamentTeam;
+		return {
+			...tournamentTeam,
+			roomsChangedUserIds: await ensureChatRoom(tournamentTeam.id, trx),
+		};
 	});
 }
 
@@ -492,7 +516,10 @@ export function upsertRegistration({
 			});
 		}
 
-		return { appliedTournamentNameChanges };
+		return {
+			appliedTournamentNameChanges,
+			roomsChangedUserIds: await ensureChatRoom(id, trx),
+		};
 	});
 }
 
@@ -519,6 +546,44 @@ async function registrationClosedNow(
 		.executeTakeFirstOrThrow();
 
 	return regClosesAt <= databaseTimestampNow();
+}
+
+/** Re-checked inside the writing transaction, the caller's check can be stale by the time it writes. LFG placeholder teams don't count. */
+async function isOnTournamentTeam(
+	trx: Transaction<DB>,
+	{
+		userId,
+		tournamentId,
+		onlyCheckedInTeams = false,
+	}: { userId: number; tournamentId: number; onlyCheckedInTeams?: boolean },
+) {
+	const membership = await trx
+		.selectFrom("TournamentTeamMember")
+		.innerJoin(
+			"TournamentTeam",
+			"TournamentTeam.id",
+			"TournamentTeamMember.tournamentTeamId",
+		)
+		.select("TournamentTeamMember.userId")
+		.where("TournamentTeamMember.userId", "=", userId)
+		.where("TournamentTeam.tournamentId", "=", tournamentId)
+		.where("TournamentTeam.isPlaceholder", "=", 0)
+		.$if(onlyCheckedInTeams, (qb) =>
+			qb.where(({ exists, selectFrom }) =>
+				exists(
+					selectFrom("TournamentTeamCheckIn")
+						.select("TournamentTeamCheckIn.tournamentTeamId")
+						.whereRef(
+							"TournamentTeamCheckIn.tournamentTeamId",
+							"=",
+							"TournamentTeam.id",
+						),
+				),
+			),
+		)
+		.executeTakeFirst();
+
+	return Boolean(membership);
 }
 
 async function resolveInGameName(
@@ -659,7 +724,7 @@ export function checkIn(
 		await trx
 			.insertInto("TournamentTeamCheckIn")
 			.values({
-				checkedInAt: dateToDatabaseTimestamp(new Date()),
+				checkedInAt: databaseTimestampNow(),
 				tournamentTeamId,
 				bracketIdx,
 			})
@@ -698,7 +763,7 @@ export function checkOut({
 			await trx
 				.insertInto("TournamentTeamCheckIn")
 				.values({
-					checkedInAt: dateToDatabaseTimestamp(new Date()),
+					checkedInAt: databaseTimestampNow(),
 					tournamentTeamId,
 					bracketIdx,
 					isCheckOut: 1,
@@ -769,12 +834,14 @@ export function undoDropOut(tournamentTeamId: number) {
 	});
 }
 
-/** @returns user ids whose chat room set changed, for `notifyRoomsChanged`. */
+/** @returns user ids whose chat room set changed, for `notifyRoomsChanged`, or `null` when the user is already on another team of the tournament and that isn't allowed. */
 export function join({
 	previousTeamIdToDelete,
 	newTeamId,
 	userId,
 	isOrganizerAdded = false,
+	allowOtherTeamMembership = false,
+	ignoreNotCheckedInTeams = false,
 }: {
 	/** Team to delete as the user joins, e.g. a solo team they leave behind. */
 	previousTeamIdToDelete?: number;
@@ -782,7 +849,11 @@ export function join({
 	userId: number;
 	/** Added by the organizer rather than joining on their own. */
 	isOrganizerAdded?: boolean;
-}): Promise<number[]> {
+	/** Lets the user stay on their other team of the tournament too, e.g. subbing in after the start. */
+	allowOtherTeamMembership?: boolean;
+	/** Only checked-in teams count as another team, e.g. after the start when the rest are out of the bracket. */
+	ignoreNotCheckedInTeams?: boolean;
+}): Promise<number[] | null> {
 	return db.transaction().execute(async (trx) => {
 		const roomsChangedUserIds: number[] = [];
 
@@ -810,12 +881,23 @@ export function join({
 			.executeTakeFirstOrThrow();
 		const tournamentId = newTeam.tournamentId;
 
+		if (
+			!allowOtherTeamMembership &&
+			(await isOnTournamentTeam(trx, {
+				userId,
+				tournamentId,
+				onlyCheckedInTeams: ignoreNotCheckedInTeams,
+			}))
+		) {
+			return null;
+		}
+
 		if (newTeam.chatRoomId !== null) {
 			roomsChangedUserIds.push(userId);
 		}
 
 		const inGameName = await resolveInGameName({ tournamentId, userId }, trx);
-		const isSub = (await registrationClosedNow(trx, tournamentId)) ? 1 : 0;
+		const isSub = toDBBoolean(await registrationClosedNow(trx, tournamentId));
 
 		await trx
 			.insertInto("TournamentTeamMember")
@@ -836,6 +918,8 @@ export function join({
 			},
 			trx,
 		);
+
+		roomsChangedUserIds.push(...(await ensureChatRoom(newTeamId, trx)));
 
 		return roomsChangedUserIds;
 	});
@@ -936,11 +1020,7 @@ async function replaceCounterpickMaps(
 		.execute();
 }
 
-async function findTeamRecentMaps(
-	teamId: number,
-	excludeMatchId: number,
-	limit: number,
-) {
+async function findTeamRecentMaps(teamId: number, excludeMatchId: number) {
 	return db
 		.selectFrom("TournamentMatchGameResult")
 		.innerJoin(
@@ -954,8 +1034,13 @@ async function findTeamRecentMaps(
 		])
 		.where("TournamentMatchGameResultParticipant.tournamentTeamId", "=", teamId)
 		.where("TournamentMatchGameResult.matchId", "!=", excludeMatchId)
-		.orderBy("TournamentMatchGameResult.createdAt", "desc")
-		.limit(limit)
+		.groupBy([
+			"TournamentMatchGameResult.mode",
+			"TournamentMatchGameResult.stageId",
+		])
+		.orderBy(({ fn }) => fn.max("TournamentMatchGameResult.createdAt"), "desc")
+		.orderBy(({ fn }) => fn.max("TournamentMatchGameResult.id"), "desc")
+		.limit(RECENTLY_PLAYED_MAPS_WINDOW)
 		.execute();
 }
 
@@ -1033,6 +1118,19 @@ export async function findInviteCodeById(tournamentTeamId: number) {
 	return row?.inviteCode ?? null;
 }
 
+/** Chat rooms of the given teams, left out for teams without one (only pickup teams formed via LFG have one). */
+export async function findAllChatRoomIdsByIds(tournamentTeamIds: number[]) {
+	if (tournamentTeamIds.length === 0) return [];
+
+	return db
+		.selectFrom("TournamentTeam")
+		.select(["TournamentTeam.id", "TournamentTeam.chatRoomId"])
+		.where("TournamentTeam.id", "in", tournamentTeamIds)
+		.where("TournamentTeam.chatRoomId", "is not", null)
+		.$narrowType<{ chatRoomId: NotNull }>()
+		.execute();
+}
+
 /** Whether some team of some tournament has this image as its pickup logo; organizers copy those when importing teams. */
 export async function isPickupAvatarImgId(imgId: number) {
 	const row = await db
@@ -1083,26 +1181,79 @@ export async function findMapPoolsByTeamIds(tournamentTeamIds: number[]) {
 	return result;
 }
 
+/** Each team's distinct recently played maps, most recent first, in the order of `teamIds`. */
 export async function findRecentlyPlayedMapsByIds({
 	teamIds,
 	excludeMatchId,
-	limit = 5,
 }: {
 	teamIds: [number, number];
 	/** The match the maps are resolved for, left out so its own played games don't change the map list mid-set. */
 	excludeMatchId: number;
-	/** Recent maps per team, default 5. */
-	limit?: number;
-}): Promise<Array<{ mode: ModeShort; stageId: StageId }>> {
-	const [teamOneMaps, teamTwoMaps] = await Promise.all([
-		findTeamRecentMaps(teamIds[0], excludeMatchId, limit),
-		findTeamRecentMaps(teamIds[1], excludeMatchId, limit),
-	]);
+}): Promise<[ModeWithStage[], ModeWithStage[]]> {
+	const teamOneMaps = await findTeamRecentMaps(teamIds[0], excludeMatchId);
+	const teamTwoMaps = await findTeamRecentMaps(teamIds[1], excludeMatchId);
 
-	return flatZip(teamOneMaps, teamTwoMaps);
+	return [teamOneMaps, teamTwoMaps];
 }
 
 /** @returns the members who lose the room when the team is deleted, empty when the team has none. */
+/**
+ * Gives the team its chat room once it has two members, lasting a week past the tournament's start (two months
+ * for a league). Called after members are added.
+ * @returns the members who gained the room, empty when none was created.
+ */
+export async function ensureChatRoom(
+	tournamentTeamId: number,
+	trx: Transaction<DB>,
+): Promise<number[]> {
+	const team = await trx
+		.selectFrom("TournamentTeam")
+		.innerJoin("Tournament", "Tournament.id", "TournamentTeam.tournamentId")
+		.innerJoin("CalendarEvent", "CalendarEvent.tournamentId", "Tournament.id")
+		.innerJoin(
+			"CalendarEventDate",
+			"CalendarEventDate.eventId",
+			"CalendarEvent.id",
+		)
+		.select([
+			"TournamentTeam.chatRoomId",
+			sql<number>`min("CalendarEventDate"."startsAt")`.as("startsAt"),
+			sql<number | null>`"Tournament"."settings" ->> 'isLeague'`.as("isLeague"),
+		])
+		.where("TournamentTeam.id", "=", tournamentTeamId)
+		.groupBy("TournamentTeam.id")
+		.executeTakeFirstOrThrow();
+
+	if (team.chatRoomId !== null) return [];
+
+	const members = await trx
+		.selectFrom("TournamentTeamMember")
+		.select("TournamentTeamMember.userId")
+		.where("TournamentTeamMember.tournamentTeamId", "=", tournamentTeamId)
+		.execute();
+	if (members.length < 2) return [];
+
+	const room = await ChatRepository.insertRoom(
+		{
+			type: "TOURNAMENT_TEAM",
+			expiresAt: addDays(
+				databaseTimestampToDate(team.startsAt),
+				team.isLeague
+					? LEAGUE_TEAM_CHAT_ROOM_LIFESPAN_DAYS
+					: TEAM_CHAT_ROOM_LIFESPAN_DAYS,
+			),
+		},
+		trx,
+	);
+	await trx
+		.updateTable("TournamentTeam")
+		.set({ chatRoomId: room.id })
+		.where("TournamentTeam.id", "=", tournamentTeamId)
+		.execute();
+
+	return members.map((member) => member.userId);
+}
+
 async function chatRoomMemberIds(
 	tournamentTeamId: number,
 	trx: Transaction<DB>,

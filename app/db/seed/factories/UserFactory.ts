@@ -4,11 +4,13 @@ import type { Tables } from "~/db/tables";
 import type { CustomTheme, Pronouns, UserPreferences } from "~/db/tables-json";
 import * as AdminRepository from "~/features/admin/AdminRepository.server";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
+import * as DiscordAvatar from "~/features/auth/core/DiscordAvatar.server";
 import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { invariant } from "~/utils/invariant";
 import {
+	DEV_TEST_ID,
 	ORG_ADMIN_TEST_ID,
 	REGULAR_USER_TEST_ID,
 	STAFF_TEST_ID,
@@ -20,6 +22,8 @@ import { pinUserId } from "../core/pinUserId";
 import * as SplatoonFaker from "../core/SplatoonFaker";
 
 type UpsertArgs = Parameters<typeof UserRepository.upsert>[0] & {
+	/** Discord avatar hash, stored as a synced avatar without copying any files to S3. */
+	discordAvatar?: string | null;
 	/** Profile fields, saved as the profile page saves them. `null` for a bare profile. */
 	profile?: Partial<ProfileArgs> | null;
 	/** Nintendo friend code, `null` for a user who never submitted one. */
@@ -99,25 +103,39 @@ export const { create, createMany } = defineFactory({
 		profile: fakeProfile(),
 		friendCode: fakeFriendCode(),
 	}),
-	insert: async ({ profile, friendCode, ...args }: UpsertArgs) => {
+	insert: async ({
+		profile,
+		friendCode,
+		discordAvatar,
+		...args
+	}: UpsertArgs) => {
 		const user = await UserRepository.upsert(args);
+
+		if (discordAvatar) {
+			await insertSyncedAvatar(user.id, discordAvatar);
+		}
 
 		if (profile && Object.keys(profile).length > 0) {
 			await updateProfile(user.id, profile);
 		}
 
 		if (friendCode) {
-			await UserRepository.insertFriendCode({
-				userId: user.id,
-				submitterUserId: user.id,
-				friendCode,
-			});
+			await setFriendCode(user.id, friendCode);
 		}
 
 		return user;
 	},
 	applyOptions: (user, options: Options) => grant(user.id, options),
 });
+
+/** Sets the user's friend code as submitted by themselves. */
+export function setFriendCode(userId: number, friendCode = fakeFriendCode()) {
+	return UserRepository.insertFriendCode({
+		userId,
+		submitterUserId: userId,
+		friendCode,
+	});
+}
 
 function fakeFriendCode() {
 	return `${faker.string.numeric(4)}-${faker.string.numeric(4)}-${faker.string.numeric(4)}`;
@@ -168,22 +186,13 @@ async function currentProfile(userId: number): Promise<ProfileArgs> {
 }
 
 /** Links the Twitch account the way logging in with it connected on Discord does. */
-export async function linkTwitch(userId: number, twitch: string | null) {
-	const user = await db
-		.selectFrom("User")
-		.select([
-			"discordId",
-			"discordName",
-			"discordAvatar",
-			"discordUniqueName",
-			"youtubeId",
-			"youtubeName",
-			"bsky",
-		])
-		.where("id", "=", userId)
-		.executeTakeFirstOrThrow();
+export function linkTwitch(userId: number, twitch: string | null) {
+	return linkConnections(userId, { twitch });
+}
 
-	await UserRepository.upsert({ ...user, twitch });
+/** Links the YouTube channel the way logging in with it connected on Discord does. */
+export function linkYoutube(userId: number, youtubeId: string | null) {
+	return linkConnections(userId, { youtubeId });
 }
 
 /** Subject and object forms as one JSON object, as the profile page saves them. */
@@ -250,30 +259,46 @@ export const createStaff = (
 	options?: Options,
 ) => createPinned(STAFF_TEST_ID, overrides, options);
 
+/** The dev id user. Create after every unpinned user so the ids in between stay free. */
+export const createDev = (
+	overrides?: Partial<UpsertArgs> | null,
+	options?: Options,
+) => createPinned(DEV_TEST_ID, overrides, options);
+
+function insertSyncedAvatar(userId: number, discordAvatar: string) {
+	return UserRepository.replaceSyncedAvatar({
+		userId,
+		discordAvatar,
+		fileName: DiscordAvatar.fileNameOf({ userId, hash: discordAvatar }),
+	});
+}
+
 async function createPinned(
 	pinnedId: number,
 	overrides?: Partial<UpsertArgs> | null,
 	options?: Options,
 ) {
 	// rows keyed by the user id have to wait until after the pinning changes it
-	const { profile, friendCode, ...upsertOverrides } = overrides ?? {};
+	const { profile, friendCode, discordAvatar, ...upsertOverrides } =
+		overrides ?? {};
 	const user = await create({
 		...upsertOverrides,
+		discordAvatar: null,
 		profile: null,
 		friendCode: null,
 	});
 	const id = await pinUserId(user.id, pinnedId);
+
+	if (discordAvatar) {
+		await insertSyncedAvatar(id, discordAvatar);
+	}
 
 	if (profile && Object.keys(profile).length > 0) {
 		await updateProfile(id, profile);
 	}
 
 	if (friendCode) {
-		await UserRepository.insertFriendCode({
-			userId: id,
-			submitterUserId: id,
-			friendCode,
-		});
+		await setFriendCode(id, friendCode);
 	}
 
 	if (options) {
@@ -398,4 +423,25 @@ async function setPlusTier(userId: number, plusTier: number) {
 		...others.map((other) => ({ userId: other.userId, plusTier: other.tier })),
 		{ userId, plusTier },
 	]);
+}
+
+async function linkConnections(
+	userId: number,
+	connections: { twitch: string | null } | { youtubeId: string | null },
+) {
+	const user = await db
+		.selectFrom("User")
+		.select([
+			"discordId",
+			"discordName",
+			"discordUniqueName",
+			"twitch",
+			"youtubeId",
+			"youtubeName",
+			"bsky",
+		])
+		.where("id", "=", userId)
+		.executeTakeFirstOrThrow();
+
+	await UserRepository.upsert({ ...user, ...connections });
 }

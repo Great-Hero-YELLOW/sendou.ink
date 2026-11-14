@@ -1,4 +1,3 @@
-import type { ActionFunction } from "react-router";
 import { redirect } from "react-router";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
@@ -8,19 +7,21 @@ import {
 	notifyTournamentStatusChanged,
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
+import {
+	tournamentChannel,
+	tournamentTeamChannel,
+} from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
-import * as UserRepository from "~/features/user-page/UserRepository.server";
+import { tournamentLFGChannel } from "~/features/tournament-lfg/tournament-lfg-utils";
+import { defineAction } from "~/form/define-action.server";
 import { invariant } from "~/utils/invariant";
 import { errorToastIfFalsy, notFoundIfNullish } from "~/utils/remix.server";
 import { tournamentPage, tournamentRegisterPage } from "~/utils/urls";
+import * as TeamEligibility from "../core/TeamEligibility.server";
 import { tournamentJoinSearchParams } from "../tournament-search-params";
 import { validateCanJoinTeam } from "../tournament-utils";
-import {
-	requireNotBannedByOrganization,
-	requireSendouQParticipationIfNeeded,
-} from "../tournament-utils.server";
 
-export const action: ActionFunction = async ({ params, url }) => {
+export const action = defineAction(async ({ params, url }) => {
 	const { tournament, tournamentId, user } = await tournamentFromParams(
 		params,
 		{ for: "action" },
@@ -32,14 +33,7 @@ export const action: ActionFunction = async ({ params, url }) => {
 		await TournamentTeamRepository.findByInviteCode(inviteCode),
 	);
 
-	await requireNotBannedByOrganization({
-		tournament,
-		user,
-	});
-	await requireSendouQParticipationIfNeeded({
-		tournament,
-		userId: user.id,
-	});
+	await TeamEligibility.requireEligible({ tournament, userId: user.id });
 
 	const teamToJoin = tournament.ctx.teams.find(
 		(team) => team.id === leanTeam.id,
@@ -68,21 +62,24 @@ export const action: ActionFunction = async ({ params, url }) => {
 		}) === "VALID",
 		"Cannot join this team or invite code is invalid",
 	);
-	errorToastIfFalsy(
-		(await UserRepository.findLeanById(user.id))?.friendCode,
-		"No friend code",
-	);
 
+	const leftLfgUserIds = await TournamentLFGRepository.leaveLfg({
+		userId: user.id,
+		tournamentId,
+	});
+	const joinedUserIds = await TournamentTeamRepository.join({
+		userId: user.id,
+		newTeamId: teamToJoin.id,
+		ignoreNotCheckedInTeams: tournament.hasStarted,
+	});
 	ChatSystemMessage.notifyRoomsChanged([
-		...(await TournamentLFGRepository.leaveLfg({
-			userId: user.id,
-			tournamentId,
-		})),
-		...(await TournamentTeamRepository.join({
-			userId: user.id,
-			newTeamId: teamToJoin.id,
-		})),
+		...leftLfgUserIds,
+		...(joinedUserIds ?? []),
 	]);
+	errorToastIfFalsy(
+		joinedUserIds,
+		"Leave your current team before joining another",
+	);
 
 	ShowcaseTournaments.addToCached({
 		tournamentId,
@@ -95,9 +92,17 @@ export const action: ActionFunction = async ({ params, url }) => {
 
 	await notifyTournamentStatusChanged(tournamentId, [user.id]);
 
+	ChatSystemMessage.send([
+		{ channel: tournamentLFGChannel(tournamentId) },
+		{ channel: tournamentChannel(tournamentId) },
+		{
+			channel: tournamentTeamChannel({ tournamentId, teamId: teamToJoin.id }),
+		},
+	]);
+
 	throw redirect(
 		tournament.registrationOpen
 			? tournamentRegisterPage(leanTeam.tournamentId)
 			: tournamentPage(leanTeam.tournamentId),
 	);
-};
+});

@@ -4,6 +4,7 @@ import { backdate } from "~/db/seed/core/backdate";
 import * as SplatoonFaker from "~/db/seed/core/SplatoonFaker";
 import * as SQGroupFactory from "~/db/seed/factories/SQGroupFactory";
 import * as SQMatchFactory from "~/db/seed/factories/SQMatchFactory";
+import * as SQReportedWeaponFactory from "~/db/seed/factories/SQReportedWeaponFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentTeamFactory from "~/db/seed/factories/TournamentTeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
@@ -20,6 +21,7 @@ import { dateToYYYYMMDD } from "~/utils/dates";
 import { invariant } from "~/utils/invariant";
 import { withUserId } from "~/utils/Test";
 import * as GroupMatchContinueVoteRepository from "./GroupMatchContinueVoteRepository.server";
+import * as ReportedWeaponRepository from "./ReportedWeaponRepository.server";
 import * as SQMatchRepository from "./SQMatchRepository.server";
 
 const setupMatch = async ({
@@ -201,6 +203,19 @@ describe("lockMatchWithoutSkillChange", () => {
 
 		expect((await fetchChatRoom(match.chatRoomId!)).inactive).toBe(1);
 	});
+
+	test("deletes the match's reported weapons", async () => {
+		const { match, alphaMembers } = await setupMatch();
+		await SQReportedWeaponFactory.createMany(1, () => ({
+			groupMatchId: match.id,
+			mapIndex: 0,
+			userId: alphaMembers[0].id,
+		}));
+
+		await SQMatchRepository.lockMatchWithoutSkillChange(match);
+
+		expect(await ReportedWeaponRepository.findByMatchId(match.id)).toBeNull();
+	});
 });
 
 describe("cancelMatch", () => {
@@ -367,9 +382,9 @@ describe("requestCancelMatch", () => {
 		expect(reports[0].groupId).toBe(setup.alphaGroupId);
 		expect(reports[0].authorUserId).toBe(setup.alphaMembers[0].id);
 		expect(reports[0].reason).toBe("Disconnect on both sides");
-		expect(reports[0].nominatedPlayers.map((p) => p.userId).sort()).toEqual(
-			nominated.sort(),
-		);
+		expect(
+			reports[0].nominatedPlayers.map((p) => p.userId).sort((a, b) => a - b),
+		).toEqual(nominated.sort((a, b) => a - b));
 	});
 
 	test("second request does not duplicate the report", async () => {
@@ -444,8 +459,12 @@ describe("acceptCancelMatch", () => {
 		expect(reports[0].groupId).toBe(setup.alphaGroupId);
 		expect(reports[1].groupId).toBe(setup.bravoGroupId);
 		expect(reports[1].reason).toBe("Accepter reason");
-		expect(reports[1].nominatedPlayers.map((p) => p.userId).sort()).toEqual(
-			[setup.bravoMembers[0].id, setup.bravoMembers[1].id].sort(),
+		expect(
+			reports[1].nominatedPlayers.map((p) => p.userId).sort((a, b) => a - b),
+		).toEqual(
+			[setup.bravoMembers[0].id, setup.bravoMembers[1].id].sort(
+				(a, b) => a - b,
+			),
 		);
 	});
 

@@ -1,0 +1,418 @@
+import {
+	DoorClosed,
+	DoorOpen,
+	Flag,
+	MoreHorizontal,
+	Undo2,
+} from "lucide-react";
+import * as React from "react";
+import { useTranslation } from "react-i18next";
+import { ActionButton } from "~/components/ActionButton";
+import { SendouButton } from "~/components/elements/Button";
+import { SendouMenu, SendouMenuItem } from "~/components/elements/Menu";
+import { SendouTabPanel } from "~/components/elements/Tabs";
+import { FormWithConfirm } from "~/components/FormWithConfirm";
+import { MatchActionTab } from "~/components/match-page/MatchActionTab";
+import { TAB_KEYS } from "~/components/match-page/MatchTabs";
+import { MatchTimeline } from "~/components/match-page/MatchTimeline";
+import { useMatchWeaponReport } from "~/components/match-page/useMatchWeaponReport";
+import { WeaponReporter } from "~/components/match-page/WeaponReporter";
+import { cooldownsPersisted } from "~/features/chat/chat-persisted";
+import * as Cooldowns from "~/features/chat/core/Cooldowns";
+import { useActionSubmit } from "~/hooks/useActionSubmit";
+import { useCooldown } from "~/hooks/useCooldown";
+import { useHasPermission } from "~/modules/permissions/hooks";
+import { usePersistedState } from "~/modules/persisted-state/hooks";
+import * as LobbySet from "../core/LobbySet";
+import {
+	DROP_AFTER_SET_COOLDOWN_KEY,
+	DROP_AFTER_SET_COOLDOWN_MS,
+	LOBBY_SIDE_TEAM_ID,
+	type LobbySide,
+} from "../lobbies-constants";
+import { type LobbySetData, useLobbyView } from "../lobbies-hooks";
+import { lobbyActionSchema } from "../lobbies-schemas";
+import styles from "./LobbyActionTab.module.css";
+import { usersOf } from "./LobbyMatchBanner";
+import { LobbyRolledWeapons } from "./LobbyRolledWeapons";
+
+/** Reporting the maps of the viewer's set, then confirming (or undoing) its result, and leaving the lobby after or during it. */
+export function LobbyActionTab() {
+	const { currentSet, viewerSide } = useLobbyView();
+
+	if (!currentSet || !viewerSide) return null;
+
+	return LobbySet.status(currentSet) === "REPORTING" ? (
+		<ReportingTab set={currentSet} viewerSide={viewerSide} />
+	) : (
+		<ConfirmationTab set={currentSet} viewerSide={viewerSide} />
+	);
+}
+
+function ReportingTab({
+	set,
+	viewerSide,
+}: {
+	set: LobbySetData;
+	viewerSide: LobbySide;
+}) {
+	const { t } = useTranslation(["lobbies", "q"]);
+	const reportMap = useActionSubmit(lobbyActionSchema);
+	const undoReport = useActionSubmit(lobbyActionSchema);
+	const weaponReport = useLobbyWeaponReport(set);
+
+	const currentIndex = LobbySet.currentGameIndex(set)!;
+	const currentGame = set.games[currentIndex];
+	const reportedCount = LobbySet.reportedCount(set);
+	const { alpha, bravo, mapsToWin } = LobbySet.score(set);
+
+	const sideOfTeamId = (teamId: number): LobbySide =>
+		teamId === LOBBY_SIDE_TEAM_ID.ALPHA ? "ALPHA" : "BRAVO";
+	const teams = useSideTeams();
+
+	const setEndingTeamIds = [
+		...(alpha + 1 === mapsToWin ? [LOBBY_SIDE_TEAM_ID.ALPHA] : []),
+		...(bravo + 1 === mapsToWin ? [LOBBY_SIDE_TEAM_ID.BRAVO] : []),
+	];
+	const rosters = {
+		alpha: usersOf(set, "ALPHA"),
+		bravo: usersOf(set, "BRAVO"),
+	};
+
+	return (
+		<MatchActionTab
+			key={reportedCount}
+			teams={[teams.ALPHA, teams.BRAVO]}
+			ownTeamId={LOBBY_SIDE_TEAM_ID[viewerSide]}
+			stageId={currentGame.stageId}
+			mode={currentGame.mode}
+			withKo={false}
+			isSubmitting={reportMap.state !== "idle"}
+			setEnding={
+				setEndingTeamIds.length > 0
+					? {
+							teams: {
+								alpha: { name: teams.ALPHA.name },
+								bravo: { name: teams.BRAVO.name },
+							},
+							score: { alpha, bravo },
+							maps: set.games
+								.filter((game) => game.winnerSide !== null)
+								.map((game) => ({
+									stageId: game.stageId,
+									mode: game.mode,
+									timestamp: Date.now(),
+									winner: game.winnerSide!,
+									rosters,
+								})),
+							currentRosters: rosters,
+							setEndingTeamIds,
+						}
+					: undefined
+			}
+			onSubmit={({ winnerId }) =>
+				reportMap.submit("REPORT_MAP", {
+					setId: set.id,
+					winnerSide: sideOfTeamId(winnerId),
+					reportedCount,
+				})
+			}
+			besideSubmit={
+				set.rolledWeapons
+					? [
+							<LobbyRolledWeapons
+								key="ALPHA"
+								weapons={set.rolledWeapons.ALPHA}
+								isOwnTeam={viewerSide === "ALPHA"}
+								narrowLabel={t("lobbies:side.ALPHA")}
+							/>,
+							<LobbyRolledWeapons
+								key="BRAVO"
+								weapons={set.rolledWeapons.BRAVO}
+								isOwnTeam={viewerSide === "BRAVO"}
+								narrowLabel={t("lobbies:side.BRAVO")}
+							/>,
+						]
+					: undefined
+			}
+			secondaryAction={<WeaponReporter {...weaponReport} />}
+			actionButtons={
+				<>
+					<SendouButton
+						variant="minimal-destructive"
+						size="miniscule"
+						icon={<Undo2 size={16} />}
+						isPending={undoReport.state !== "idle"}
+						isDisabled={reportedCount === 0}
+						onClick={() =>
+							undoReport.submit("UNDO_MAP_REPORT", {
+								setId: set.id,
+								reportedCount,
+							})
+						}
+					>
+						{t("q:match.undoReport")}
+					</SendouButton>
+					<LeaveActions set={set} />
+				</>
+			}
+		/>
+	);
+}
+
+function ConfirmationTab({
+	set,
+	viewerSide,
+}: {
+	set: LobbySetData;
+	viewerSide: LobbySide;
+}) {
+	const { t } = useTranslation(["lobbies", "q", "common"]);
+	const { data } = useLobbyView();
+	const confirmSet = useActionSubmit(lobbyActionSchema);
+	const disputeSet = useActionSubmit(lobbyActionSchema);
+	const undoReport = useActionSubmit(lobbyActionSchema);
+	const weaponReport = useLobbyWeaponReport(set);
+	const teams = useSideTeams();
+
+	const viewerId = data.viewer!.id;
+	const { alpha, bravo } = LobbySet.score(set);
+	const winner = LobbySet.winnerSide(set);
+	const ownScore =
+		viewerSide === "ALPHA" ? `${alpha}-${bravo}` : `${bravo}-${alpha}`;
+	const isDisputed = LobbySet.status(set) === "DISPUTED";
+	const isHost = useHasPermission(data.lobby, "MANAGE");
+	const canConfirm = LobbySet.canConfirm(set, viewerId);
+	const canUndo = LobbySet.canUndo(set, viewerId, { isHost });
+	const canHostConfirm = isHost && isDisputed && !canConfirm;
+
+	return (
+		<SendouTabPanel id={TAB_KEYS.ACTION}>
+			<div className={styles.confirmation}>
+				<MatchTimeline
+					compact
+					teams={{
+						alpha: { name: teams.ALPHA.name },
+						bravo: { name: teams.BRAVO.name },
+					}}
+					score={{ alpha, bravo }}
+					maps={[]}
+				/>
+				{isDisputed ? (
+					<p className="text-warning text-sm text-center">
+						{t("lobbies:confirm.disputed")}
+					</p>
+				) : null}
+				{canConfirm ? (
+					<p className="text-lighter text-xs text-center">
+						{t("q:match.confirmScore.check")}
+					</p>
+				) : null}
+				{LobbySet.canUndo(set, viewerId) && !isDisputed ? (
+					<p className="text-lighter text-sm text-center">
+						{t("q:match.waitingForConfirmation")}
+					</p>
+				) : null}
+				<div className="stack horizontal sm justify-center flex-wrap">
+					{canConfirm ? (
+						<SendouButton
+							variant={winner === viewerSide ? "success" : "destructive"}
+							isPending={confirmSet.state !== "idle"}
+							onClick={() =>
+								confirmSet.submit("CONFIRM_SET", { setId: set.id })
+							}
+							testId="lobby-confirm-set-button"
+						>
+							{winner === viewerSide
+								? t("q:match.confirmScore.win", { score: ownScore })
+								: t("q:match.confirmScore.loss", { score: ownScore })}
+						</SendouButton>
+					) : null}
+					{canUndo ? (
+						<SendouButton
+							variant="outlined"
+							isPending={undoReport.state !== "idle"}
+							onClick={() =>
+								undoReport.submit("UNDO_MAP_REPORT", {
+									setId: set.id,
+									reportedCount: LobbySet.reportedCount(set),
+								})
+							}
+						>
+							{t("q:match.undoReport")}
+						</SendouButton>
+					) : null}
+					{canHostConfirm ? (
+						<ActionButton
+							schema={lobbyActionSchema}
+							action="HOST_CONFIRM_SET"
+							fields={{ setId: set.id }}
+							testId="lobby-host-confirm-set-button"
+							confirm={{
+								dialogHeading: t("lobbies:hostDispute.heading", {
+									side: t(`lobbies:side.${winner!}`),
+									score:
+										winner === "ALPHA"
+											? `${alpha}-${bravo}`
+											: `${bravo}-${alpha}`,
+								}),
+								description: t("lobbies:hostDispute.explanation"),
+								submitButtonText: t("common:actions.confirm"),
+							}}
+						>
+							{t("lobbies:hostDispute.confirm")}
+						</ActionButton>
+					) : null}
+				</div>
+				{LobbySet.canDispute(set, viewerId) ? (
+					<div className="stack items-center">
+						<SendouButton
+							variant="minimal-destructive"
+							size="small"
+							isPending={disputeSet.state !== "idle"}
+							onClick={() =>
+								disputeSet.submit("DISPUTE_SET", { setId: set.id })
+							}
+						>
+							{t("q:match.confirmScore.wrong")}
+						</SendouButton>
+					</div>
+				) : null}
+				<div className="stack horizontal sm justify-center items-center">
+					<LeaveActions set={set} />
+				</div>
+				<WeaponReporter {...weaponReport} />
+			</div>
+		</SendouTabPanel>
+	);
+}
+
+function LeaveActions({ set }: { set: LobbySetData }) {
+	const { t } = useTranslation(["lobbies"]);
+	const { data } = useLobbyView();
+	const isDroppingAfterSet = data.viewer!.isDroppingAfterSet;
+	const [cooldowns] = usePersistedState(cooldownsPersisted);
+	const cooldownSecondsLeft = useCooldown(
+		cooldowns[DROP_AFTER_SET_COOLDOWN_KEY] ?? null,
+	);
+	const isOnCooldown = !isDroppingAfterSet && cooldownSecondsLeft > 0;
+
+	return (
+		<>
+			<ActionButton
+				schema={lobbyActionSchema}
+				action="TOGGLE_DROP_AFTER_SET"
+				size="miniscule"
+				variant="minimal"
+				icon={
+					isDroppingAfterSet ? <DoorClosed size={16} /> : <DoorOpen size={16} />
+				}
+				testId="lobby-drop-after-set-button"
+				isDisabled={isOnCooldown}
+				onClick={() => {
+					if (!isDroppingAfterSet) return;
+					Cooldowns.start(
+						[DROP_AFTER_SET_COOLDOWN_KEY],
+						DROP_AFTER_SET_COOLDOWN_MS,
+					);
+				}}
+			>
+				{isDroppingAfterSet
+					? t("lobbies:actions.stayAfterSet")
+					: isOnCooldown
+						? t("lobbies:actions.dropAfterSetCooldown", {
+								seconds: cooldownSecondsLeft,
+							})
+						: t("lobbies:actions.dropAfterSet")}
+			</ActionButton>
+			<LeaveNowMenu isForfeiting={LobbySet.reportedCount(set) > 0} />
+		</>
+	);
+}
+
+/** Menu with the viewer's option to leave mid-set, kept out of sight so it isn't pressed by accident. */
+function LeaveNowMenu({ isForfeiting }: { isForfeiting: boolean }) {
+	const { t } = useTranslation(["lobbies"]);
+	const [isConfirming, setIsConfirming] = React.useState(false);
+	const { submit } = useActionSubmit(lobbyActionSchema);
+
+	const leaveNowText = isForfeiting
+		? t("lobbies:actions.leaveNowForfeit")
+		: t("lobbies:actions.leaveNowCallOff");
+
+	return (
+		<>
+			<SendouMenu
+				trigger={
+					<SendouButton
+						size="miniscule"
+						variant="minimal"
+						icon={<MoreHorizontal size={16} />}
+						aria-label="More actions"
+						testId="lobby-viewer-menu-button"
+					/>
+				}
+			>
+				<SendouMenuItem
+					icon={<Flag />}
+					isDestructive
+					onAction={() => setIsConfirming(true)}
+					data-testid="lobby-leave-now-menu-item"
+				>
+					{leaveNowText}
+				</SendouMenuItem>
+			</SendouMenu>
+			<FormWithConfirm
+				isOpen={isConfirming}
+				onOpenChange={setIsConfirming}
+				dialogHeading={
+					isForfeiting
+						? t("lobbies:leave.forfeitHeading")
+						: t("lobbies:leave.heading")
+				}
+				description={
+					isForfeiting
+						? t("lobbies:leave.forfeitWarning")
+						: t("lobbies:leave.callOffWarning")
+				}
+				submitButtonText={leaveNowText}
+				onConfirm={() => submit("LEAVE")}
+			/>
+		</>
+	);
+}
+
+function useSideTeams() {
+	const { t } = useTranslation(["lobbies"]);
+
+	return {
+		ALPHA: { id: LOBBY_SIDE_TEAM_ID.ALPHA, name: t("lobbies:side.ALPHA") },
+		BRAVO: { id: LOBBY_SIDE_TEAM_ID.BRAVO, name: t("lobbies:side.BRAVO") },
+	};
+}
+
+function useLobbyWeaponReport(set: LobbySetData) {
+	const { data } = useLobbyView();
+	const viewerId = data.viewer!.id;
+	const playableCount = Math.min(
+		set.games.length,
+		LobbySet.reportedCount(set) + (LobbySet.winnerSide(set) ? 0 : 1),
+	);
+
+	return useMatchWeaponReport({
+		maps: set.games.slice(0, playableCount).map((game) => ({
+			mapIndex: game.index,
+			stageId: game.stageId,
+			mode: game.mode,
+		})),
+		pastReported: data.reportedWeapons
+			.filter(
+				(weapon) => weapon.lobbySetId === set.id && weapon.userId === viewerId,
+			)
+			.map((weapon) => ({
+				mapIndex: weapon.mapIndex,
+				weaponSplId: weapon.weaponSplId,
+			})),
+		weaponPoolIds: data.viewer?.weaponPool,
+	});
+}

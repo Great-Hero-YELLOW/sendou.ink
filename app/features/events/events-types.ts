@@ -3,6 +3,9 @@ import type {
 	RevalidateScope,
 } from "~/features/chat/chat-types";
 
+/** How often the server writes a heartbeat to an open SSE connection, so the client can tell a silently dead one apart. */
+export const HEARTBEAT_INTERVAL_MS = 25_000;
+
 /** Prefix of each entity scoped channel, joined to the entity's id by the channel's builder. */
 export const CHANNEL_PREFIX = {
 	user: "user__",
@@ -10,6 +13,7 @@ export const CHANNEL_PREFIX = {
 	tournament: "tournament__",
 	tournamentMatch: "match__",
 	sqGroup: "sq-group__",
+	lobby: "lobby__",
 } as const;
 
 /** Channel delivering events addressed to the user across all of their connections. */
@@ -27,4 +31,7 @@ export type ServerEvent =
 	| { kind: "revalidate"; scope?: RevalidateScope; authorUserId?: number }
 	| { kind: "notificationsChanged" }
 	| { kind: "roomsChanged" }
-	| { kind: "statusChanged" };
+	| { kind: "statusChanged" }
+	| { kind: "voicePresence"; roomId: number; userIds: number[] }
+	/** Only sent by the e2e stand-in of Daily, which has no call connection to end. */
+	| { kind: "voiceEjected"; roomId: number; token: string };

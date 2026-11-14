@@ -168,10 +168,13 @@ export function createFormHelpers<T extends v.ObjectEntries>(
 				const isChecked = await locator.isChecked();
 				const shouldBeChecked = itemValues.includes(item.value);
 
-				if (shouldBeChecked && !isChecked) {
-					await locator.click();
-				} else if (!shouldBeChecked && isChecked) {
-					await locator.click();
+				if (shouldBeChecked !== isChecked) {
+					// chip radios hide the input visually, so the label takes the click
+					const inputId = await locator.getAttribute("id");
+					await (inputId
+						? page.locator(`label[for="${inputId}"]`)
+						: locator
+					).click();
 				}
 			}
 		},
@@ -213,8 +216,9 @@ export function createFormHelpers<T extends v.ObjectEntries>(
 			await expect(comboboxButton).not.toBeDisabled();
 			await comboboxButton.click();
 			await searchInput.fill(userName);
-			await expect(option).toBeVisible();
-			await page.keyboard.press("Enter");
+			// clicking rather than pressing Enter: a result is in the DOM one commit
+			// before the effect that registers it and focuses it for Enter has run
+			await option.click();
 		},
 
 		async selectWeapons(_name, weaponNames) {
@@ -241,6 +245,12 @@ export function createFormHelpers<T extends v.ObjectEntries>(
 		async setImage(name, filePath) {
 			const label = getLabel(String(name));
 			await page.getByLabel(label).setInputFiles(filePath);
+			await page
+				.getByRole("dialog", { name: "Edit image" })
+				.getByRole("button", { name: "Apply" })
+				.click();
+			// the crop is applied asynchronously, the file input goes away once the field holds the image
+			await page.getByLabel(label).waitFor({ state: "detached" });
 		},
 
 		async submit() {

@@ -1,10 +1,12 @@
-import { isWithinInterval, sub } from "date-fns";
 import { redirect } from "react-router";
 import * as R from "remeda";
 import type { DBBoolean } from "~/db/tables";
 import type { AuthenticatedUser } from "~/features/auth/core/user.server";
+import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
+import * as MapVotes from "~/features/match-profile/core/MapVotes";
 import * as Seasons from "~/features/mmr/core/Seasons";
-import { defaultOrdinal } from "~/features/mmr/mmr-utils";
+import { LOWEST_TIER } from "~/features/mmr/mmr-constants";
+import { defaultOrdinal, tierOfOrdinal } from "~/features/mmr/mmr-utils";
 import { type TieredSkill, userSkills } from "~/features/mmr/tiered.server";
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import * as SendouQMatch from "~/features/sendouq-match/core/SendouQMatch";
@@ -12,8 +14,6 @@ import type * as SkillDifference from "~/features/sendouq-match/core/SkillDiffer
 import type * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
 import { modesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort } from "~/modules/in-game-lists/types";
-import { databaseTimestampToDate } from "~/utils/dates";
-import { IS_E2E_TEST_RUN } from "~/utils/e2e";
 import type { SerializeFrom } from "~/utils/remix";
 import {
 	SENDOUQ_LOOKING_PAGE,
@@ -24,9 +24,8 @@ import {
 } from "~/utils/urls";
 import { FULL_GROUP_SIZE } from "../q-constants";
 import type { TierRange } from "../q-types";
-import { getTierIndex } from "../q-utils.server";
-import { isInLookingPool } from "./groups";
-import { tierDifferenceToRangeOrExact } from "./groups.server";
+import { groupExpiryStatus, isInLookingPool } from "./groups";
+import { getTierIndex, tierDifferenceToRangeOrExact } from "./groups.server";
 import * as ReadyCheck from "./ready-check.server";
 
 type DBGroupRow = Awaited<
@@ -51,17 +50,13 @@ export type SQOwnGroup = SerializeFrom<
 export type SQMatch = SerializeFrom<ReturnType<SendouQClass["mapMatch"]>>;
 export type SQGroupMember = NonNullable<SQGroup["members"]>[number];
 
-const FALLBACK_TIER = { isPlus: false, name: "IRON" } as const;
-const SECONDS_TILL_STALE =
-	process.env.NODE_ENV === "development" || IS_E2E_TEST_RUN ? 1_000_000 : 1_800;
-
 class SendouQClass {
 	groups;
 	readonly #recentMatches;
 	readonly #isAccurateTiers;
 	readonly #userSkills;
 	readonly #intervals;
-	readonly #receivedLikeCounts;
+	readonly #receivedLikerGroupIds;
 	usersInQueue;
 
 	constructor(
@@ -72,9 +67,9 @@ class SendouQClass {
 			userSkills: calculatedUserSkills,
 			isAccurateTiers,
 		}: Awaited<ReturnType<typeof userSkills>>,
-		receivedLikeCounts: Map<number, number>,
+		receivedLikerGroupIds: Map<number, number[]>,
 	) {
-		this.#receivedLikeCounts = receivedLikeCounts;
+		this.#receivedLikerGroupIds = receivedLikerGroupIds;
 		this.#recentMatches = recentMatches;
 		this.#isAccurateTiers = isAccurateTiers;
 		this.#userSkills = calculatedUserSkills;
@@ -112,18 +107,6 @@ class SendouQClass {
 		}));
 	}
 
-	/** The current view state for a user based on their group status. */
-	currentViewByUserId(userId: number) {
-		const ownGroup = this.findOwnGroup(userId);
-
-		if (!ownGroup) return "default";
-		if (ownGroup.status === "PREPARING") return "preparing";
-		if (ownGroup.matchId) return "match";
-		if (ownGroup.status === "READY_CHECK") return "ready";
-
-		return "looking";
-	}
-
 	/** The user's group, or undefined if not in one. */
 	findOwnGroup(userId: number) {
 		return this.groups.find((group) =>
@@ -131,9 +114,28 @@ class SendouQClass {
 		);
 	}
 
-	/** Pending likes/challenges the group has received, 0 when none. */
+	/** Pending likes/challenges the group has received from groups it can see in the looking pool, 0 when none. */
 	likesReceivedCount(groupId: number) {
-		return this.#receivedLikeCounts.get(groupId) ?? 0;
+		const group = this.findUncensoredGroupById(groupId);
+		if (!group) return 0;
+
+		const visibleGroupIds = new Set(
+			this.#suitableLookingGroupsFor(group).map((visible) => visible.id),
+		);
+
+		return (this.#receivedLikerGroupIds.get(groupId) ?? []).filter(
+			(likerGroupId) => visibleGroupIds.has(likerGroupId),
+		).length;
+	}
+
+	/** {@link likesReceivedCount} of every group that has received any likes, keyed by group id. */
+	likesReceivedCounts() {
+		return new Map(
+			Array.from(this.#receivedLikerGroupIds.keys(), (groupId) => [
+				groupId,
+				this.likesReceivedCount(groupId),
+			]),
+		);
 	}
 
 	/** A group by id without censoring sensitive data. */
@@ -155,14 +157,13 @@ class SendouQClass {
 		});
 		const isTeamAlphaMember = viewerSide === "ALPHA";
 		const isTeamBravoMember = viewerSide === "BRAVO";
-		const isMatchInsider = viewerSide !== null || user?.roles.includes("STAFF");
-		const happenedInLastMonth = isWithinInterval(
-			databaseTimestampToDate(match.createdAt),
-			{
-				start: sub(new Date(), { months: 1 }),
-				end: new Date(),
-			},
-		);
+		const isStaff = user?.roles.includes("STAFF") ?? false;
+		const isMatchInsider = viewerSide !== null || isStaff;
+		const showFriendCodes = SendouQMatch.canSeeFriendCodes({
+			matchCreatedAt: match.createdAt,
+			isParticipant: viewerSide !== null,
+			isStaff,
+		});
 
 		const matchGroupCensorer = (
 			group: DBMatch["groupAlpha"] | DBMatch["groupBravo"],
@@ -184,10 +185,7 @@ class SendouQClass {
 							typeof member.isContinuing === "number"
 								? Boolean(member.isContinuing)
 								: null,
-						friendCode:
-							isMatchInsider && happenedInLastMonth
-								? member.friendCode
-								: undefined,
+						friendCode: showFriendCodes ? member.friendCode : undefined,
 					};
 				}),
 			};
@@ -213,7 +211,7 @@ class SendouQClass {
 						currentMap: currentMapRaw,
 						groupAlpha: alphaCensored,
 						groupBravo: bravoCensored,
-						pools: matchMapPools(match),
+						preferences: matchMapPreferences(match),
 					}),
 				}
 			: undefined;
@@ -243,6 +241,14 @@ class SendouQClass {
 		const ownGroup = this.findOwnGroup(userId);
 		if (!ownGroup) return [];
 
+		return this.#suitableLookingGroupsFor(ownGroup)
+			.map(this.#getGroupReplayMapper(userId))
+			.sort(this.#getSkillSortComparator(ownGroup.tier))
+			.map(this.#getAddTierRangeMapper(ownGroup.tier))
+			.map((group) => this.#censorGroup(group));
+	}
+
+	#suitableLookingGroupsFor(ownGroup: SendouQClass["groups"][number]) {
 		const currentMemberCountOptions =
 			ownGroup.members.length === 4
 				? [4]
@@ -252,18 +258,13 @@ class SendouQClass {
 						? [1, 2]
 						: [1, 2, 3];
 
-		return this.groups
-			.filter((group) =>
-				this.#isSuitableLookingGroup({
-					group,
-					ownGroupId: ownGroup.id,
-					currentMemberCountOptions,
-				}),
-			)
-			.map(this.#getGroupReplayMapper(userId))
-			.sort(this.#getSkillSortComparator(ownGroup.tier))
-			.map(this.#getAddTierRangeMapper(ownGroup.tier))
-			.map((group) => this.#censorGroup(group));
+		return this.groups.filter((group) =>
+			this.#isSuitableLookingGroup({
+				group,
+				ownGroupId: ownGroup.id,
+				currentMemberCountOptions,
+			}),
+		);
 	}
 
 	#getGroupReplayMapper(userId: number) {
@@ -306,9 +307,9 @@ class SendouQClass {
 			}
 
 			const tierRangeOrExact = tierDifferenceToRangeOrExact({
-				ourTier: ownTier ?? FALLBACK_TIER,
-				theirTier: group.tier ?? FALLBACK_TIER,
-				hasLeviathan: this.#isAccurateTiers,
+				ourTier: ownTier ?? LOWEST_TIER,
+				theirTier: group.tier ?? LOWEST_TIER,
+				isAccurateTiers: this.#isAccurateTiers,
 			});
 
 			if (tierRangeOrExact.type === "exact") {
@@ -336,7 +337,7 @@ class SendouQClass {
 					{ name: "IRON", isPlus: false } as TieredSkill["tier"],
 					{ name: "LEVIATHAN", isPlus: true } as TieredSkill["tier"],
 				],
-				diff: 0,
+				diff: [0, 0] as [number, number],
 			},
 			tier: null,
 		};
@@ -461,7 +462,7 @@ class SendouQClass {
 		currentMap,
 		groupAlpha,
 		groupBravo,
-		pools,
+		preferences,
 	}: {
 		currentMap: DBMatch["mapList"][number];
 		groupAlpha: {
@@ -469,8 +470,7 @@ class SendouQClass {
 			members: Array<{
 				id: number;
 				username: string;
-				discordId: string;
-				discordAvatar: string | null;
+				avatar: string | null;
 			}>;
 		};
 		groupBravo: {
@@ -478,11 +478,10 @@ class SendouQClass {
 			members: Array<{
 				id: number;
 				username: string;
-				discordId: string;
-				discordAvatar: string | null;
+				avatar: string | null;
 			}>;
 		};
-		pools: ReturnType<typeof matchMapPools>;
+		preferences: ReturnType<typeof matchMapPreferences>;
 	}) {
 		const pickerGroups = [groupAlpha, groupBravo].filter(
 			(g) => currentMap.source === "BOTH" || String(g.id) === currentMap.source,
@@ -490,28 +489,22 @@ class SendouQClass {
 		if (pickerGroups.length === 0) return [];
 
 		return pickerGroups.flatMap((pickerGroup) =>
-			pools.flatMap(({ userId, pool }) => {
-				const member = pickerGroup.members.find((m) => m.id === userId);
+			preferences.flatMap((player) => {
+				const member = pickerGroup.members.find((m) => m.id === player.userId);
 				if (!member) return [];
-				const modePool = pool.find((p) => p.mode === currentMap.mode);
-				if (!modePool?.stages.includes(currentMap.stageId)) return [];
+				if (!MapVotes.votesFor(player.preferences, currentMap)) return [];
 				return [
 					{
 						id: member.id,
 						username: member.username,
-						discordId: member.discordId,
-						discordAvatar: member.discordAvatar,
+						avatar: member.avatar,
 					},
 				];
 			}),
 		);
 	}
 
-	#groupTier(
-		group: DBGroupRow | DBMatch["groupAlpha"] | DBMatch["groupBravo"],
-	): TieredSkill["tier"] | undefined {
-		if (!group.members) return;
-
+	#groupTier(group: DBGroupRow): TieredSkill["tier"] {
 		const skills = group.members.map(
 			(m) => this.#userSkills[String(m.id)] ?? { ordinal: defaultOrdinal() },
 		);
@@ -519,13 +512,7 @@ class SendouQClass {
 		const averageOrdinal =
 			skills.reduce((acc, s) => acc + s.ordinal, 0) / skills.length;
 
-		return (
-			this.#intervals.find(
-				(i) =>
-					typeof i.neededOrdinal === "number" &&
-					averageOrdinal >= i.neededOrdinal,
-			) ?? { isPlus: false, name: "IRON" }
-		);
+		return tierOfOrdinal(this.#intervals, averageOrdinal);
 	}
 
 	#isSuitableLookingGroup({
@@ -546,33 +533,21 @@ class SendouQClass {
 			return false;
 		}
 
-		const staleThreshold = sub(new Date(), { seconds: SECONDS_TILL_STALE });
-		const groupLastAction = databaseTimestampToDate(group.latestActionAt);
-		return groupLastAction >= staleThreshold;
+		return groupExpiryStatus(group.latestActionAt) !== "EXPIRED";
 	}
 }
 
 /**
- * Map pools of everyone in a match, which its current map's vote count is read from.
- * A group queuing as a team plays on the team's pool rather than on its members' own,
- * and modes a pool's owner avoids are no vote of theirs.
+ * Map preferences of everyone in a match, which its current map's voters are read from.
+ * A group queuing as a team plays on the team's preferences rather than on its members' own.
  */
-function matchMapPools(match: DBMatch) {
+function matchMapPreferences(match: DBMatch) {
 	return [match.groupAlpha, match.groupBravo].flatMap((group) =>
 		group.members.flatMap((member) => {
 			const preferences =
 				group.team?.mapModePreferences ?? member.mapModePreferences;
-			if (!preferences) return [];
 
-			const avoidedModes = preferences.modes
-				.filter((mode) => mode.preference === "AVOID")
-				.map((mode) => mode.mode);
-			const pool = preferences.pool.filter(
-				(candidate) => !avoidedModes.includes(candidate.mode),
-			);
-			if (pool.length === 0) return [];
-
-			return [{ userId: member.id, pool }];
+			return preferences ? [{ userId: member.id, preferences }] : [];
 		}),
 	);
 }
@@ -580,24 +555,44 @@ function matchMapPools(match: DBMatch) {
 /** Global SendouQ manager: all active groups and matchmaking state. */
 export let SendouQ = await freshSendouQInstance();
 
-/** Reloads the global SendouQ instance from the database; call after any change to groups or matches. */
+let likesReceivedCounts = SendouQ.likesReceivedCounts();
+
+/** Reloads the global SendouQ instance from the database; call after any change to groups or matches. Notifies the groups whose received likes count changed, e.g. a liker left the looking pool or went stale since the last reload. */
 export async function refreshSendouQInstance() {
 	SendouQ = await freshSendouQInstance();
+
+	const previousLikesReceivedCounts = likesReceivedCounts;
+	likesReceivedCounts = SendouQ.likesReceivedCounts();
+
+	const changedGroupIds = R.unique([
+		...previousLikesReceivedCounts.keys(),
+		...likesReceivedCounts.keys(),
+	]).filter(
+		(groupId) =>
+			(previousLikesReceivedCounts.get(groupId) ?? 0) !==
+			(likesReceivedCounts.get(groupId) ?? 0),
+	);
+
+	ChatSystemMessage.notifyStatusChanged(
+		changedGroupIds.flatMap(
+			(groupId) =>
+				SendouQ.findUncensoredGroupById(groupId)?.members.map(
+					(member) => member.id,
+				) ?? [],
+		),
+	);
 }
 
 async function freshSendouQInstance() {
 	const season = Seasons.currentOrPrevious();
 
-	const [groups, recentMatches, skills, receivedLikeCounts] = await Promise.all(
-		[
-			SQGroupRepository.findCurrentGroups(),
-			SQGroupRepository.findRecentlyFinishedMatches(),
-			userSkills(season!.nth),
-			SQGroupRepository.findCurrentReceivedLikeCounts(),
-		],
-	);
+	const groups = await SQGroupRepository.findCurrentGroups();
+	const recentMatches = await SQGroupRepository.findRecentlyFinishedMatches();
+	const skills = await userSkills(season!.nth);
+	const receivedLikerGroupIds =
+		await SQGroupRepository.findCurrentReceivedLikerGroupIds();
 
-	return new SendouQClass(groups, recentMatches, skills, receivedLikeCounts);
+	return new SendouQClass(groups, recentMatches, skills, receivedLikerGroupIds);
 }
 
 /** Throws a redirect when the user loads a page other than the one their SendouQ group status puts them on. */

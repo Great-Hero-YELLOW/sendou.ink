@@ -1,4 +1,3 @@
-import clsx from "clsx";
 import generalI18next from "i18next";
 import NProgress from "nprogress";
 import * as React from "react";
@@ -6,13 +5,13 @@ import { ErrorBoundary as ClientErrorBoundary } from "react-error-boundary";
 import { useTranslation } from "react-i18next";
 import type { LoaderFunctionArgs, MetaFunction } from "react-router";
 import {
-	data,
 	Links,
 	Meta,
 	Outlet,
 	Scripts,
 	ScrollRestoration,
 	type ShouldRevalidateFunction,
+	UNSAFE_FrameworkContext,
 	useFetchers,
 	useLoaderData,
 	useLocation,
@@ -20,10 +19,12 @@ import {
 	useNavigate,
 	useNavigation,
 	useRevalidator,
+	useRouteLoaderData,
 	useSearchParams,
 } from "react-router";
 import { Config } from "~/config";
 import type { CustomTheme } from "~/db/tables-json";
+import { devToolsServerHooks } from "~/features/dev-tools/dev-tools-server-hooks.server";
 import { resolveLayoutData } from "~/features/layout/core/layout.server";
 import { useDebounce } from "~/hooks/useDebounce";
 import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
@@ -32,13 +33,18 @@ import type { SendouRouteHandle } from "~/utils/remix.server";
 import type { Route } from "./+types/root";
 import { Catcher } from "./components/Catcher";
 import { SendouToastRegion, toastQueue } from "./components/elements/Toast";
-import { FusePageInit } from "./components/fuse/Fuse";
+import {
+	FusePageInit,
+	SimulatedStickyFooterAd,
+	useAdsShown,
+} from "./components/fuse/Fuse";
 import { Layout, NPROGRESS_ANCHOR_ID } from "./components/layout";
+import { UserProvider } from "./features/auth/core/user";
 import { getUser } from "./features/auth/core/user.server";
 import { userMiddleware } from "./features/auth/core/user-middleware.server";
 import { ChatProvider } from "./features/chat/ChatProvider";
 import { resolveRoomList } from "./features/chat/chat-room-list.server";
-import { isMatchResultsScopedRevalidation } from "./features/chat/revalidation-scope";
+import { isBroadcastRevalidation } from "./features/chat/revalidation-scope";
 import { GlobalStatusProvider } from "./features/global-status/GlobalStatusProvider";
 import { getSidenavSession } from "./features/layout/core/sidenav-session.server";
 import { LayoutDataProvider } from "./features/layout/LayoutDataProvider";
@@ -53,15 +59,18 @@ import {
 } from "./features/theme/core/provider";
 import { getThemeSession } from "./features/theme/core/theme-session.server";
 import { timezoneMiddleware } from "./features/timezone/timezone-middleware.server";
+import { TranslationPreview } from "./features/translate/components/TranslationPreview";
+import { VoiceCallHost } from "./features/voice/components/VoiceCallHost";
 import { UnsavedChangesGuard } from "./form/UnsavedChangesGuard";
 import { useHydrated } from "./hooks/useHydrated";
 import {
 	ALWAYS_LOADED_NAMESPACES,
 	DEFAULT_LANGUAGE,
 } from "./modules/i18n/config";
+import { languageSearchParams } from "./modules/i18n/i18n-search-params";
 import {
+	getGameLanguage,
 	getLocale,
-	i18nCookie,
 	i18nMiddleware,
 } from "./modules/i18n/i18next.server";
 import { localePreloadUrls } from "./modules/i18n/locale-preload.server";
@@ -78,17 +87,15 @@ import "~/styles/fonts.css";
 import "~/styles/vars.css";
 import "~/styles/normalize.css";
 import "~/styles/common.css";
+import "~/styles/scrollbar.css";
 import "~/styles/utils.css";
 import "~/styles/flags.css";
 import "nprogress/nprogress.css";
-import {
-	OpenModalsContext,
-	useHoverCursorForViewTransitions,
-} from "~/utils/view-transition";
 
 const PRELOAD_TRANSLATION_TIMEOUT_MS = 3000;
 
 export const middleware: Route.MiddlewareFunction[] = [
+	...(devToolsServerHooks ? [devToolsServerHooks.middleware] : []),
 	redirectsMiddleware,
 	requestContextMiddleware,
 	sessionIdMiddleware,
@@ -96,6 +103,14 @@ export const middleware: Route.MiddlewareFunction[] = [
 	i18nMiddleware,
 	timezoneMiddleware,
 ];
+
+const DevToolbar = import.meta.env.DEV
+	? React.lazy(() =>
+			import("./features/dev-tools/components/DevToolbar").then((module) => ({
+				default: module.DevToolbar,
+			})),
+		)
+	: null;
 
 // anchors the loading bar to the header (between the sidebars); at module scope so
 // even the very first navigation's NProgress.start doesn't render over the sidebar
@@ -112,7 +127,7 @@ const DEV_FAVICON_COLORS: Record<string, DevFaviconColors | undefined> = {
 };
 
 export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
-	if (isMatchResultsScopedRevalidation(args)) return false;
+	if (isBroadcastRevalidation(args)) return false;
 	if (isRevalidation(args)) return true;
 
 	if (args.formData?.get("revalidateRoot") === "true") return true;
@@ -120,8 +135,8 @@ export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
 	const json = args.json as Record<string, unknown> | undefined;
 	if (json?.revalidateRoot === true) return true;
 
-	// biome-ignore lint/plugin: presence check only, before any route's definition has parsed the URL
-	if (args.nextUrl.searchParams.has("lng")) return true;
+	const { lng, gameLng } = languageSearchParams.parse(args.nextUrl);
+	if (lng || gameLng) return true;
 
 	return false;
 };
@@ -142,44 +157,39 @@ export type LoggedInUser = NonNullable<RootLoaderData["user"]>;
 export const loader = async ({ request }: LoaderFunctionArgs) => {
 	const user = getUser();
 	const locale = getLocale();
+	const gameLanguage = getGameLanguage();
 	const themeSession = await getThemeSession(request);
 	const sidenavSession = await getSidenavSession(request);
 
 	const layoutData = await resolveLayoutData(user);
 
-	return data(
-		{
-			locale,
-			chatRoomList: user ? await resolveRoomList(user) : [],
-			i18nPreloadUrls: localePreloadUrls(locale),
-			theme: themeSession.getTheme(),
-			sidenavCollapsed: sidenavSession.getCollapsed(),
-			user: user
-				? {
-						username: user.username,
-						discordAvatar: user.discordAvatar,
-						discordId: user.discordId,
-						id: user.id,
-						customUrl: user.customUrl,
-						customAvatarUrl: user.customAvatarUrl,
-						inGameName: user.inGameName,
-						friendCode: user.friendCode,
-						preferences: user.preferences ?? {},
-						languages: user.languages ?? [],
-						plusTier: user.plusTier,
-						roles: user.roles,
-						createdAt: user.createdAt,
-						team: user.team,
-					}
-				: undefined,
-			customTheme: isSupporter(user) ? user?.customTheme : undefined,
-			devFaviconColors: devFaviconColors(request),
-			...layoutData,
-		},
-		{
-			headers: { "Set-Cookie": await i18nCookie.serialize(locale) },
-		},
-	);
+	return {
+		locale,
+		gameLanguage,
+		chatRoomList: user ? await resolveRoomList(user) : [],
+		i18nPreloadUrls: localePreloadUrls({ locale, gameLanguage }),
+		theme: themeSession.getTheme(),
+		sidenavCollapsed: sidenavSession.getCollapsed(),
+		user: user
+			? {
+					username: user.username,
+					id: user.id,
+					customUrl: user.customUrl,
+					avatar: user.avatar,
+					inGameName: user.inGameName,
+					friendCode: user.friendCode,
+					preferences: user.preferences ?? {},
+					languages: user.languages ?? [],
+					plusTier: user.plusTier,
+					roles: user.roles,
+					createdAt: user.createdAt,
+					team: user.team,
+				}
+			: undefined,
+		customTheme: isSupporter(user) ? user?.customTheme : undefined,
+		devFaviconColors: devFaviconColors(request),
+		...layoutData,
+	};
 };
 
 export const handle: SendouRouteHandle = {
@@ -196,13 +206,14 @@ function Document({
 	const { htmlThemeClass } = useTheme();
 	const { i18n } = useTranslation();
 	const locale = rootData?.locale ?? DEFAULT_LANGUAGE;
+	const gameLanguage = rootData?.gameLanguage ?? DEFAULT_LANGUAGE;
 	const customThemeStyle = useCustomThemeVars();
+	const adsShown = useAdsShown(rootData?.user);
 
-	useChangeLanguage(locale);
+	useChangeLanguage({ locale, gameLanguage });
 	usePreloadTranslation();
 	useLoadingIndicator();
 	useTriggerToasts();
-	useHoverCursorForViewTransitions();
 
 	const htmlStyle: Record<string, string | number> = {
 		...Object.fromEntries(customThemeStyle),
@@ -214,14 +225,11 @@ function Document({
 	return (
 		<html
 			lang={locale}
+			data-game-language={gameLanguage}
 			dir={i18n.dir()}
-			className={clsx(htmlThemeClass, "scrollbar")}
+			className={htmlThemeClass}
 			style={htmlStyle}
-			data-fuse={
-				Config.fuseEnabled && !rootData?.user?.roles.includes("MINOR_SUPPORT")
-					? "true"
-					: undefined
-			}
+			data-fuse={adsShown ? "true" : undefined}
 			suppressHydrationWarning
 		>
 			<head>
@@ -247,6 +255,7 @@ function Document({
 				<meta name="mobile-web-app-capable" content="yes" />
 				<meta name="theme-color" content="#010115" />
 				<Meta />
+				<StylesheetPreloads />
 				<Links />
 				{rootData?.i18nPreloadUrls?.map((url) => (
 					<link
@@ -268,23 +277,28 @@ function Document({
 			<body>
 				{IS_E2E_TEST_RUN ? <HydrationTestIndicator /> : null}
 				<React.StrictMode>
-					<SearchParamsProvider>
-						<SendouToastRegion />
-						<UnsavedChangesGuard />
-						<MyFuse data={rootData} />
-						<ChatProvider
-							user={rootData?.user}
-							roomList={rootData?.chatRoomList}
-						>
-							<NotificationsProvider user={rootData?.user}>
-								<LayoutDataProvider data={rootData}>
-									<GlobalStatusProvider user={rootData?.user}>
-										<Layout data={rootData}>{children}</Layout>
-									</GlobalStatusProvider>
-								</LayoutDataProvider>
-							</NotificationsProvider>
-						</ChatProvider>
-					</SearchParamsProvider>
+					<UserProvider user={rootData?.user}>
+						<SearchParamsProvider>
+							<SendouToastRegion />
+							<UnsavedChangesGuard />
+							<TranslationPreview />
+							{DevToolbar ? <DevToolbarMount Toolbar={DevToolbar} /> : null}
+							<MyFuse data={rootData} />
+							<ChatProvider
+								user={rootData?.user}
+								roomList={rootData?.chatRoomList}
+							>
+								{rootData?.user ? <VoiceCallHost /> : null}
+								<NotificationsProvider user={rootData?.user}>
+									<LayoutDataProvider data={rootData}>
+										<GlobalStatusProvider user={rootData?.user}>
+											<Layout data={rootData}>{children}</Layout>
+										</GlobalStatusProvider>
+									</LayoutDataProvider>
+								</NotificationsProvider>
+							</ChatProvider>
+						</SearchParamsProvider>
+					</UserProvider>
 				</React.StrictMode>
 				<ScrollRestoration />
 				<Scripts />
@@ -367,18 +381,28 @@ function useScrollBeforeToast() {
 }
 
 function useLoadingIndicator() {
-	const transition = useNavigation();
+	const navigation = useNavigation();
+	const fetchers = useFetchers();
+
+	// submissions already show a pending state on their submit button
+	const isSubmissionFollowUp =
+		navigation.formMethod !== undefined ||
+		fetchers.some(
+			(fetcher) =>
+				fetcher.state === "loading" && fetcher.formMethod !== undefined,
+		);
+	const isLoading = navigation.state === "loading" && !isSubmissionFollowUp;
 
 	useDebounce(
 		() => {
-			if (transition.state === "loading") {
+			if (isLoading) {
 				NProgress.start();
-			} else if (transition.state === "idle") {
+			} else {
 				NProgress.done();
 			}
 		},
 		150,
-		[transition.state],
+		[isLoading],
 	);
 }
 
@@ -431,29 +455,53 @@ function useCustomThemeVars() {
 
 export default function App() {
 	const rootData = useLoaderData<RootLoaderData>();
-	const [openModals, setOpenModals] = React.useState(0);
 
 	return (
-		<OpenModalsContext value={{ count: openModals, setCount: setOpenModals }}>
-			<ThemeProvider
-				specifiedTheme={isTheme(rootData.theme) ? rootData.theme : null}
-				themeSource="user-preference"
-			>
-				<Document data={rootData}>
-					<Outlet />
-				</Document>
-			</ThemeProvider>
-		</OpenModalsContext>
+		<ThemeProvider
+			specifiedTheme={isTheme(rootData.theme) ? rootData.theme : null}
+			themeSource="user-preference"
+		>
+			<Document data={rootData}>
+				<Outlet />
+			</Document>
+		</ThemeProvider>
 	);
 }
 
 export function ErrorBoundary() {
+	const rootData = useRouteLoaderData<RootLoaderData>("root");
+
+	if (!rootData) {
+		return (
+			<ThemeProvider themeSource="static" specifiedTheme={Theme.DARK}>
+				<Document>
+					<Catcher />
+				</Document>
+			</ThemeProvider>
+		);
+	}
+
 	return (
-		<ThemeProvider themeSource="static" specifiedTheme={Theme.DARK}>
-			<Document>
+		<ThemeProvider
+			specifiedTheme={isTheme(rootData.theme) ? rootData.theme : null}
+			themeSource="user-preference"
+		>
+			<Document data={rootData}>
 				<Catcher />
 			</Document>
 		</ThemeProvider>
+	);
+}
+
+function DevToolbarMount({ Toolbar }: { Toolbar: React.ComponentType }) {
+	const isHydrated = useHydrated();
+
+	if (!isHydrated) return null;
+
+	return (
+		<React.Suspense fallback={null}>
+			<Toolbar />
+		</React.Suspense>
 	);
 }
 
@@ -490,6 +538,7 @@ function HydrationTestIndicator() {
 			// the rendered search trails the browser's by a commit: once the toast params are
 			// gone from here the forms keyed on the location (see SendouForm) have remounted
 			data-location-search={location.search}
+			data-location-pathname={location.pathname}
 		/>
 	);
 }
@@ -512,6 +561,27 @@ function DevFavicon({ colors }: { colors: DevFaviconColors }) {
 			href={`data:image/svg+xml,${encodeURIComponent(svg)}`}
 		/>
 	);
+}
+
+/**
+ * React's SSR hoists every `<link>` but a plain stylesheet above the stylesheets, so without these
+ * the CSS is requested after the ~200 modulepreloads of `<Scripts />` and first paint waits for the JS.
+ */
+function StylesheetPreloads() {
+	const frameworkContext = React.useContext(UNSAFE_FrameworkContext);
+	const matches = useMatches();
+
+	if (!frameworkContext) return null;
+
+	const hrefs = new Set(
+		matches.flatMap(
+			(match) => frameworkContext.manifest.routes[match.id]?.css ?? [],
+		),
+	);
+
+	return [...hrefs].map((href) => (
+		<link key={href} rel="preload" as="style" href={href} />
+	));
 }
 
 function Fonts() {
@@ -748,6 +818,7 @@ function MyFuse({ data: rootData }: { data: RootLoaderData | undefined }) {
 	return (
 		<ClientErrorBoundary fallback={null}>
 			<FusePageInit />
+			<SimulatedStickyFooterAd />
 		</ClientErrorBoundary>
 	);
 }

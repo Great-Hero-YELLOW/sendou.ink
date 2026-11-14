@@ -1,8 +1,5 @@
-import {
-	type ActionFunction,
-	type ActionFunctionArgs,
-	redirect,
-} from "react-router";
+import { type Params, redirect } from "react-router";
+import type * as v from "valibot";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
 import * as ShowcaseTournaments from "~/features/front-page/core/ShowcaseTournaments.server";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
@@ -14,37 +11,59 @@ import {
 	clearTournamentDataCache,
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
+import {
+	tournamentChannel,
+	tournamentTeamChannel,
+} from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
-import { parseFormDataWithImages } from "~/form/parse.server";
+import { tournamentLFGChannel } from "~/features/tournament-lfg/tournament-lfg-utils";
+import { defineAction } from "~/form/define-action.server";
+import type { ResolvedImages } from "~/form/parse.server";
 import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import { errorToastIfFalsy } from "~/utils/remix.server";
 import { tournamentAdminPage } from "~/utils/urls";
+import type { adminRegistrationFormSchema } from "../tournament-admin-registration-schemas";
 import { adminRegistrationFormSchemaServer } from "../tournament-admin-registration-schemas.server";
 
-export const action: ActionFunction = (args) =>
-	upsertRegistrationAction(args, { allowTournamentNameUpdates: true });
+export const action = defineAction(
+	{ body: registrationBodySchema },
+	async (args) =>
+		upsertRegistration(args, { allowTournamentNameUpdates: true }),
+);
 
-/** Shared with the public API, which passes `allowTournamentNameUpdates: false` as it may only read tournament names. */
-export const upsertRegistrationAction = async (
-	{ request, params }: ActionFunctionArgs,
+/** {@link action} for the public API, which may only read tournament names. */
+export const apiUpsertRegistrationAction = defineAction(
+	{ body: registrationBodySchema },
+	async (args) =>
+		upsertRegistration(args, { allowTournamentNameUpdates: false }),
+);
+
+type AdminRegistrationFormData = v.InferOutput<
+	typeof adminRegistrationFormSchema
+>;
+
+async function upsertRegistration(
+	{
+		params,
+		resolveImages,
+	}: {
+		params: Params<string>;
+		resolveImages: (opts: {
+			isCurrentImgId: (imgId: number) => Promise<boolean>;
+		}) => Promise<ResolvedImages<AdminRegistrationFormData>>;
+	},
 	{ allowTournamentNameUpdates }: { allowTournamentNameUpdates: boolean },
-) => {
+) {
 	const { tournament, tournamentId, user } = await tournamentFromParams(
 		params,
 		{ for: "organizer" },
 	);
 
-	const result = await parseFormDataWithImages({
-		request,
-		schema: adminRegistrationFormSchemaServer({ tournament }),
+	const data = await resolveImages({
 		// the team's own logo, or one imported along with a team of another tournament
 		isCurrentImgId: TournamentTeamRepository.isPickupAvatarImgId,
 	});
-	if (!result.success) {
-		return { fieldErrors: result.fieldErrors };
-	}
-	const data = result.data;
 
 	const submittedMembers = data.members;
 	const ownerUserId = Number(data.ownerId);
@@ -106,7 +125,17 @@ export const upsertRegistrationAction = async (
 			? new MapPool(data.mapPool)
 			: undefined;
 
-	const { appliedTournamentNameChanges } =
+	// before joining, otherwise the user's first looking group could be the team they join
+	for (const addId of membersToAdd) {
+		ChatSystemMessage.notifyRoomsChanged(
+			await TournamentLFGRepository.leaveLfg({
+				userId: addId,
+				tournamentId,
+			}),
+		);
+	}
+
+	const { appliedTournamentNameChanges, roomsChangedUserIds } =
 		await TournamentTeamRepository.upsertRegistration({
 			tournamentTeamId: team?.id,
 			tournamentId,
@@ -122,6 +151,8 @@ export const upsertRegistrationAction = async (
 			mapPool,
 		});
 
+	ChatSystemMessage.notifyRoomsChanged(roomsChangedUserIds);
+
 	for (const change of appliedTournamentNameChanges) {
 		logger.info(
 			`Tournament name updated: subject user id: ${change.userId} - "${change.previousTournamentName ?? ""}" -> "${change.tournamentName ?? ""}" - by user id: ${user.id} - tournament id: ${tournamentId}`,
@@ -129,12 +160,6 @@ export const upsertRegistrationAction = async (
 	}
 
 	for (const addId of membersToAdd) {
-		ChatSystemMessage.notifyRoomsChanged(
-			await TournamentLFGRepository.leaveLfg({
-				userId: addId,
-				tournamentId,
-			}),
-		);
 		ShowcaseTournaments.addToCached({
 			tournamentId,
 			type: "participant",
@@ -176,5 +201,21 @@ export const upsertRegistrationAction = async (
 
 	clearTournamentDataCache(tournamentId);
 
+	ChatSystemMessage.send([
+		{ channel: tournamentLFGChannel(tournamentId) },
+		{ channel: tournamentChannel(tournamentId) },
+		...(team
+			? [{ channel: tournamentTeamChannel({ tournamentId, teamId: team.id }) }]
+			: []),
+	]);
+
 	return redirect(tournamentAdminPage(tournamentId));
-};
+}
+
+async function registrationBodySchema({ params }: { params: Params<string> }) {
+	const { tournament } = await tournamentFromParams(params, {
+		for: "organizer",
+	});
+
+	return adminRegistrationFormSchemaServer({ tournament });
+}

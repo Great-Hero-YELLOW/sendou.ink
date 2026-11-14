@@ -3,11 +3,12 @@ import { Config } from "~/config";
 import type { Tables } from "~/db/tables";
 import type { Notification } from "~/features/notifications/notifications-types";
 import type { MainWeaponId, ModeShort } from "~/modules/in-game-lists/types";
+import { toDBBoolean } from "~/utils/sql";
 import {
 	getArtFilename,
 	SEED_ART_URLS,
 } from "../../../../scripts/seed-art-urls";
-import { NZAP_TEST_DISCORD_ID } from "../constants";
+import { NZAP_TEST_ID, NZAP_YOUTUBE_ID } from "../constants";
 import { faker } from "../core/faker";
 import placements from "../data/placements.json";
 import * as ArtFactory from "../factories/ArtFactory";
@@ -23,6 +24,19 @@ import type { SeededTournaments } from "./tournaments";
 import type { SeededUsers } from "./users";
 
 const NZAP_PLAYER_SPL_ID = "qx6imlx72tfeqrhqfnmm";
+const NZAP_XP_TROPHY_PLACEMENTS: Array<{
+	weaponSplId: MainWeaponId;
+	power: number;
+	region: Tables["XRankPlacement"]["region"];
+	mode: ModeShort;
+	month: number;
+}> = [
+	{ weaponSplId: 40, power: 3621.4, region: "WEST", mode: "SZ", month: 2 },
+	{ weaponSplId: 40, power: 3544.9, region: "JPN", mode: "TC", month: 3 },
+	{ weaponSplId: 2030, power: 3238.2, region: "WEST", mode: "RM", month: 4 },
+	{ weaponSplId: 1010, power: 3071.6, region: "JPN", mode: "CB", month: 5 },
+	{ weaponSplId: 6000, power: 4012.8, region: "WEST", mode: "SZ", month: 6 },
+];
 const FRIEND_COUNT = 8;
 /** Friends of the admin, none of them a teammate, so that friends-only surfaces have something to show. */
 const ADMIN_FRIEND_COUNT = 3;
@@ -50,8 +64,14 @@ export async function seedMisc({
 
 	const showcaseStreamerIds = users.showcaseIds.slice(0, STREAM_COUNT);
 	await LiveStreamFactory.replaceAll([
-		{ userId: users.nzapId, twitch: "nzap_stream" },
-		...showcaseStreamerIds.map((userId) => ({ userId })),
+		{ userId: users.nzapId, account: "nzap_stream" },
+		{ userId: users.nzapId, platform: "YOUTUBE", account: NZAP_YOUTUBE_ID },
+		...showcaseStreamerIds.flatMap(showcaseStreams),
+		...tournaments.castAccounts.map(({ platform, account }) => ({
+			userId: null,
+			platform,
+			account,
+		})),
 		// the league sets live right now have a member of theirs on, unless they already are
 		...tournaments.luti.streamerUserIds
 			.filter(
@@ -63,6 +83,21 @@ export async function seedMisc({
 	await SplatoonRotationFactory.replaceAll();
 
 	return { adminFriendIds: adminFriendIds(users) };
+}
+
+/** Mostly Twitch, every fifth streamer on YouTube instead and every fifth on both. */
+function showcaseStreams(
+	userId: number,
+	index: number,
+): Parameters<typeof LiveStreamFactory.replaceAll>[0] {
+	switch (index % 5) {
+		case 1:
+			return [{ userId, platform: "YOUTUBE" }];
+		case 3:
+			return [{ userId }, { userId, platform: "YOUTUBE" }];
+		default:
+			return [{ userId }];
+	}
 }
 
 async function seedXRankPlacements(users: SeededUsers) {
@@ -77,15 +112,26 @@ async function seedXRankPlacements(users: SeededUsers) {
 					? unaffiliatedTopPlayerId
 					: undefined;
 
+		await XRankPlacementFactory.create({
+			...placement,
+			mode: placement.mode as ModeShort,
+			region: placement.region as Tables["XRankPlacement"]["region"],
+			weaponSplId: placement.weaponSplId as MainWeaponId,
+			playerUserId,
+		});
+	}
+
+	for (const [i, placement] of NZAP_XP_TROPHY_PLACEMENTS.entries()) {
+		const isLast = i === NZAP_XP_TROPHY_PLACEMENTS.length - 1;
 		await XRankPlacementFactory.create(
 			{
 				...placement,
-				mode: placement.mode as ModeShort,
-				region: placement.region as Tables["XRankPlacement"]["region"],
-				weaponSplId: placement.weaponSplId as MainWeaponId,
-				playerUserId,
+				year: 2024,
+				rank: 10 + i,
+				playerSplId: NZAP_PLAYER_SPL_ID,
+				playerUserId: users.nzapId,
 			},
-			{ refreshPeakXp: i === placements.length - 1 },
+			{ refreshPeakXp: isLast, recalculateBuildSortValues: isLast },
 		);
 	}
 }
@@ -96,10 +142,10 @@ async function seedArts(users: SeededUsers) {
 	for (const authorId of [users.nzapId, ...users.artistIds]) {
 		const artCount = faker.helpers.arrayElement([1, 2, 3, 3, 4]);
 
-		for (let i = 0; i < artCount; i++) {
+		for (let i = 0; i < artCount && nextUrl < SEED_ART_URLS.length; i++) {
 			await ArtFactory.create({
 				authorId,
-				url: getArtFilename(nextUrl++ % SEED_ART_URLS.length),
+				url: getArtFilename(nextUrl++),
 				description:
 					faker.number.float(1) < 0.5 ? faker.lorem.paragraph() : null,
 				linkedUsers:
@@ -192,7 +238,7 @@ async function seedNotifications(
 			type: "TAGGED_TO_ART",
 			meta: {
 				adderUsername: "N-ZAP",
-				adderDiscordId: NZAP_TEST_DISCORD_ID,
+				adderId: NZAP_TEST_ID,
 				artId: 1,
 			},
 		},
@@ -232,8 +278,8 @@ async function seedNotifications(
 			{
 				notification,
 				users: [
-					{ userId: users.adminId, seen: i <= 7 ? 1 : 0 },
-					{ userId: users.nzapId, seen: i <= 7 ? 1 : 0 },
+					{ userId: users.adminId, seen: toDBBoolean(i <= 7) },
+					{ userId: users.nzapId, seen: toDBBoolean(i <= 7) },
 				],
 			},
 			{ createdAt },

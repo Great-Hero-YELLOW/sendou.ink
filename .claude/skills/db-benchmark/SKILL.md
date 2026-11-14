@@ -5,7 +5,7 @@ description: Add or update repository READ function benchmark cases in the DB be
 
 # DB Benchmark Cases
 
-The DB benchmark (`pnpm bench:db`) times repository READ functions against `db-prod.sqlite3` to find the slowest queries. Every exported READ function in a `*Repository.server.ts` file should have a case registered — when adding a new read function to a repository, add a matching benchmark case.
+The DB benchmark (`pnpm bench:db`) times repository READ functions against `db-sandbox.sqlite3` (local copy of production data) to find the slowest queries. Every exported READ function in a `*Repository.server.ts` file should have a case registered — when adding a new read function to a repository, add a matching benchmark case.
 
 ## Files
 
@@ -14,7 +14,6 @@ The DB benchmark (`pnpm bench:db`) times repository READ functions against `db-p
 | `scripts/benchmark-db.ts` | Harness: CLI, timing loop, stats, output. Rarely needs changes. |
 | `scripts/benchmark-db/cases.ts` | Case registry, grouped by repository file. **New cases go here.** |
 | `scripts/benchmark-db/fixtures.ts` | Resolves worst-case arguments (heavy rows) from the DB. New argument kinds go here. |
-| `scripts/seed-chat.ts` | Fills the production copy with chat data, which it ships without (`pnpm run bench:db:seed-chat`). Run once before the chat cases mean anything. |
 
 ## Adding a case
 
@@ -40,7 +39,7 @@ add(
 
 Rules:
 
-- **READ functions only.** Never register inserts, updates, deletes, upserts or transactional helpers — the benchmark runs against real data in `db-prod.sqlite3`.
+- **READ functions only.** Never register inserts, updates, deletes, upserts or transactional helpers — writes would skew the data later runs measure.
 - **Case name** is `FileBasename.functionName`. For multiple variants of one function, suffix with a label: `BuildRepository.abilityPointAverages.all` / `.byWeapon`. The two `SkillRepository` files are disambiguated as `MmrSkillRepository` (mmr) — sendouq-match's has no reads.
 - **Arguments should be worst-case**, not minimal: heaviest user, largest tournament, `showPrivate`/`withMembers`/`include*` options enabled, short search query (`SEARCH_QUERY`). The point is surfacing slow queries.
 - Functions calling `actorId()`/`actorIdOrNull()` work: the harness runs all cases inside `userAsyncLocalStorage` with the heavy user as actor.
@@ -73,7 +72,7 @@ async function resolveHeavyBuildUserId() {
 ## Verifying
 
 ```bash
-pnpm run typecheck:scripts
+pnpm run typecheck
 pnpm exec biome check --error-on-warnings --write scripts/benchmark-db.ts scripts/benchmark-db
 DB_PATH=db-prod.sqlite3 pnpm exec vite-node scripts/benchmark-db.ts -- --filter <caseName> --iterations 3
 ```

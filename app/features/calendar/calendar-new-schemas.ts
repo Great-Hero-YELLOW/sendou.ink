@@ -13,25 +13,39 @@ import {
 	hidden,
 	idConstantOptional,
 	image,
+	mapPoolOptional,
 	numberFieldOptional,
 	radioGroup,
-	select,
 	selectDynamicOptional,
 	textAreaOptional,
 	textField,
 	textFieldOptional,
 	toggle,
 } from "~/form/fields";
+import type { FormStepDefinition } from "~/form/types";
 import { modesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort } from "~/modules/in-game-lists/types";
-import { id, modeShort, type ValidationCtx } from "~/utils/schema";
-import { CALENDAR_EVENT, REG_CLOSES_AT_OPTIONS } from "./calendar-constants";
+import { id, modeShort, superRefine, type ValidationCtx } from "~/utils/schema";
+import { CALENDAR_EVENT } from "./calendar-constants";
 import {
 	bracketsFormField,
 	progressionFormField,
 	validateBracketProgressionFormValues,
 } from "./calendar-progression-form";
+import type { CalendarEventTag } from "./calendar-types";
 import { calendarEventMaxDate, calendarEventMinDate } from "./calendar-utils";
+import * as CalendarEvent from "./core/CalendarEvent";
+
+// the league tag is derived from the league setting, never picked by hand
+const PICKABLE_TAGS = CALENDAR_EVENT.TAGS.filter((tag) => tag !== "LEAGUE");
+
+/** The `tags` field as rendered for tournaments, their team size tag is derived from `minMembersPerTeam` instead. */
+export const tournamentTagsField = checkboxGroup({
+	label: "labels.tags",
+	items: tagItems(
+		PICKABLE_TAGS.filter((tag) => !CalendarEvent.isVersusTag(tag)),
+	),
+});
 
 /** Single date row of the {@link calendarNewBaseSchema} `date` array (calendar events). */
 const calendarEventDateField = datetime({
@@ -43,6 +57,7 @@ const calendarEventDateField = datetime({
 // extracted so the literal item values don't widen to `string` in the object's inferred value type
 const mapPickingStyleField = radioGroup({
 	label: "labels.mapPickingStyle",
+	variant: "chip",
 	items: [
 		{ value: "TO", label: "options.mapPickingStyle.TO" },
 		{ value: "AUTO", label: "options.mapPickingStyle.AUTO" },
@@ -120,14 +135,11 @@ export const calendarNewBaseSchema = v.object({
 		label: "labels.discordInvite",
 		maxLength: CALENDAR_EVENT.DISCORD_INVITE_CODE_MAX_LENGTH,
 		leftAddon: "https://discord.gg/",
+		inputMode: "url",
 	}),
 	tags: checkboxGroup({
 		label: "labels.tags",
-		// derived from the league setting, never picked by hand
-		items: CALENDAR_EVENT.TAGS.filter((tag) => tag !== "LEAGUE").map((tag) => ({
-			value: tag,
-			label: `options.tag.${tag}` as const,
-		})),
+		items: tagItems(PICKABLE_TAGS),
 	}),
 	badges: badges({ label: "labels.badges", maxCount: 50 }),
 	trophyId: customField({ initialValue: null }, v.nullish(id)),
@@ -136,16 +148,15 @@ export const calendarNewBaseSchema = v.object({
 		bottomText: "bottomTexts.avatarValidation",
 		autoValidate: true,
 	}),
-	regClosesAt: select({
+	regClosesAt: datetimeOptional({
 		label: "labels.regClosesAt",
-		bottomText: "bottomTexts.regClosesAt",
-		items: REG_CLOSES_AT_OPTIONS.map((option) => ({
-			value: option,
-			label: `options.regClosesAt.${option}` as const,
-		})),
+		bottomText: "bottomTexts.regClosesAtDate",
+		min: calendarEventMinDate,
+		max: calendarEventMaxDate,
 	}),
-	minMembersPerTeam: select({
+	minMembersPerTeam: radioGroup({
 		label: "labels.playersCount",
+		variant: "chip",
 		items: [4, 3, 2, 1].map((count) => ({
 			value: String(count),
 			label: () => `${count}v${count}`,
@@ -160,7 +171,7 @@ export const calendarNewBaseSchema = v.object({
 	teamPickCounts: teamPickCountsField,
 	teamPickPool: teamPickPoolField,
 	// organizer's map pool: of a calendar event, a "TO" tournament or the custom pool of a team picked one
-	pool: customField({ initialValue: "" }, v.optional(v.string())),
+	pool: mapPoolOptional({ label: "labels.mapPool" }),
 	// only rendered (and validated) for tournaments, calendar events keep the empty initial values
 	brackets: bracketsFormField,
 	progression: progressionFormField,
@@ -197,14 +208,81 @@ export const calendarNewBaseSchema = v.object({
 		label: "labels.draft",
 		bottomText: "bottomTexts.draftInfo",
 	}),
-	requireSendouQParticipation: toggle({
-		label: "labels.requireSendouQ",
-		bottomText: "bottomTexts.requireSendouQ",
-	}),
 });
 
-/** Shared sync cross-field rules, reused by the server schema (see `*.server.ts`). */
-export function calendarNewSyncRefine(
+/** {@link calendarNewBaseSchema} with its cross-field rules, so the form catches e.g. bracket progression errors before submitting. */
+export const calendarNewSchema = v.pipe(
+	calendarNewBaseSchema,
+	superRefine(calendarNewSyncRefine),
+);
+
+/** Steps of the tournament form. Calendar events use a single page. */
+export const TOURNAMENT_FORM_STEPS: ReadonlyArray<
+	FormStepDefinition<keyof typeof calendarNewBaseSchema.entries>
+> = [
+	{
+		name: "basics",
+		label: "steps.tournament.basics",
+		fields: [
+			"name",
+			"startTime",
+			"regClosesAt",
+			"organizationId",
+			"description",
+			"rules",
+			"avatarImgId",
+			"discordInviteCode",
+			"tags",
+		],
+	},
+	{
+		name: "teams",
+		label: "steps.tournament.teams",
+		fields: [
+			"minMembersPerTeam",
+			"maxMembersPerTeam",
+			"isInvitational",
+			"requireInGameNames",
+			"enableSubs",
+			"autonomousSubs",
+			"enableNoScreenToggle",
+			"isRanked",
+			"isLeague",
+			"isTest",
+			"isDraft",
+		],
+	},
+	{
+		name: "maps",
+		label: "steps.tournament.maps",
+		fields: [
+			"mapPickingStyle",
+			"teamPickModes",
+			"teamPickCounts",
+			"teamPickPool",
+			"pool",
+		],
+	},
+	{
+		name: "format",
+		label: "steps.tournament.format",
+		fields: ["brackets", "progression"],
+	},
+	{
+		name: "prizes",
+		label: "steps.tournament.prizes",
+		fields: ["badges", "trophyId"],
+	},
+];
+
+function tagItems<T extends CalendarEventTag>(tags: Array<T>) {
+	return tags.map((tag) => ({
+		value: tag,
+		label: `options.tag.${tag}` as const,
+	}));
+}
+
+function calendarNewSyncRefine(
 	data: v.InferOutput<typeof calendarNewBaseSchema>,
 	ctx: ValidationCtx,
 ) {
@@ -243,11 +321,36 @@ export function calendarNewSyncRefine(
 				data.progression,
 				ctx,
 			);
+			validateBracketStartTimes(data, ctx);
 		}
+	}
+
+	if (
+		data.toToolsEnabled &&
+		!data.isInvitational &&
+		data.startTime &&
+		data.regClosesAt &&
+		data.regClosesAt > data.startTime
+	) {
+		ctx.addIssue({
+			path: ["regClosesAt"],
+			message: "forms:errors.regClosesAfterTournamentStart",
+		});
 	}
 
 	if (data.toToolsEnabled && data.mapPickingStyle === "AUTO") {
 		validateTeamPick(data, ctx);
+	}
+
+	if (
+		data.toToolsEnabled &&
+		data.mapPickingStyle === "TO" &&
+		(!data.pool || MapPool.toDbList(data.pool).length === 0)
+	) {
+		ctx.addIssue({
+			path: ["pool"],
+			message: "forms:errors.mapPoolRequired",
+		});
 	}
 
 	if (data.trophyId && data.badges.length > 0) {
@@ -267,6 +370,29 @@ export function calendarNewSyncRefine(
 			path: ["maxMembersPerTeam"],
 			message: "forms:errors.maxMembersRange",
 		});
+	}
+}
+
+function validateBracketStartTimes(
+	data: Pick<
+		v.InferOutput<typeof calendarNewBaseSchema>,
+		"startTime" | "brackets" | "progression"
+	>,
+	ctx: ValidationCtx,
+) {
+	if (!data.startTime) return;
+
+	for (const [bracketIdx, bracket] of data.brackets.entries()) {
+		const isFollowUp =
+			bracketIdx > 0 && data.progression[bracketIdx]?.source === "BRACKET";
+		if (!isFollowUp || !bracket.startTime) continue;
+
+		if (bracket.startTime < data.startTime) {
+			ctx.addIssue({
+				path: ["brackets", bracketIdx, "startTime"],
+				message: "forms:errors.bracketStartBeforeTournamentStart",
+			});
+		}
 	}
 }
 

@@ -20,9 +20,11 @@ import {
 } from "~/features/mmr/mmr-constants";
 import { identifierToUserIds } from "~/features/mmr/mmr-utils";
 import type { TieredSkill } from "~/features/mmr/tiered.server";
+import * as ScannerIngestRepository from "~/features/scanner-ingest/ScannerIngestRepository.server";
 import { serializeMaplistSource } from "~/modules/tournament-map-list-generator/source";
 import type { TournamentMapListMap } from "~/modules/tournament-map-list-generator/types";
 import {
+	databaseTimestampNow,
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
@@ -72,6 +74,17 @@ export async function exists(id: number) {
 	return Boolean(row);
 }
 
+/** The match's chat room id, null when it has none or doesn't exist. */
+export async function findChatRoomIdById(id: number) {
+	const row = await db
+		.selectFrom("GroupMatch")
+		.select("chatRoomId")
+		.where("id", "=", id)
+		.executeTakeFirst();
+
+	return row?.chatRoomId ?? null;
+}
+
 /** Matches owning the given chat rooms, with both groups' members' user ids. */
 export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 	if (chatRoomIds.length === 0) return [];
@@ -106,13 +119,22 @@ export async function findAllByChatRoomIds(chatRoomIds: number[]) {
 		.execute();
 }
 
-/** Just enough of a match to tell still being played apart from over, for the header status. */
+/** Just enough of a match to tell still being played apart from over and which game is on, for the header status. */
 export async function findLiveStateById(id: number) {
 	return db
 		.selectFrom("GroupMatch")
 		.select((eb) => [
 			isLockedSubquery(eb, id).as("isLocked"),
 			isCanceledSubquery(eb, id).as("isCanceled"),
+			"GroupMatch.alphaGroupId",
+			"GroupMatch.bravoGroupId",
+			jsonArrayFrom(
+				eb
+					.selectFrom("GroupMatchMap")
+					.select("GroupMatchMap.winnerGroupId")
+					.where("GroupMatchMap.matchId", "=", id)
+					.orderBy("GroupMatchMap.index", "asc"),
+			).as("mapList"),
 		])
 		.where("GroupMatch.id", "=", id)
 		.executeTakeFirst();
@@ -1036,7 +1058,7 @@ export function insert({
 				alphaGroupId,
 				bravoGroupId,
 				chatRoomId: chatRoom.id,
-				noScreen: memberPreferringNoScreen ? 1 : 0,
+				noScreen: toDBBoolean(Boolean(memberPreferringNoScreen)),
 			})
 			.returningAll()
 			.executeTakeFirstOrThrow();
@@ -1158,6 +1180,7 @@ async function validateCreatedMatch(
 	}
 }
 
+/** @internal */
 export async function lockMatchWithoutSkillChange(
 	match: { id: number; chatRoomId: number | null },
 	trx?: Transaction<DB>,
@@ -1176,6 +1199,7 @@ export async function lockMatchWithoutSkillChange(
 		})
 		.execute();
 	await ChatRepository.updateRoomsInactive([match.chatRoomId], true, trx);
+	await ReportedWeaponRepository.deleteByMatchId(match.id, trx);
 }
 
 export type CancelMatchResult =
@@ -1205,7 +1229,7 @@ export async function cancelMatch({
 				.updateTable("GroupMatchMap")
 				.set({
 					winnerGroupId: null,
-					reportedAt: dateToDatabaseTimestamp(new Date()),
+					reportedAt: databaseTimestampNow(),
 					reportedByUserId,
 				})
 				.where("matchId", "=", matchId)
@@ -1257,7 +1281,7 @@ export async function cancelMatch({
 				.updateTable("GroupMatchMap")
 				.set({
 					winnerGroupId: null,
-					reportedAt: dateToDatabaseTimestamp(new Date()),
+					reportedAt: databaseTimestampNow(),
 					reportedByUserId,
 				})
 				.where("matchId", "=", matchId)
@@ -1537,7 +1561,7 @@ export async function reportMapWinner({
 			.updateTable("GroupMatchMap")
 			.set({
 				winnerGroupId: winnerId,
-				reportedAt: dateToDatabaseTimestamp(new Date()),
+				reportedAt: databaseTimestampNow(),
 				reportedByUserId,
 			})
 			.where("id", "=", currentMap.id)
@@ -1567,7 +1591,7 @@ export async function reportMapWinner({
 			.updateTable("GroupMatchMap")
 			.set({
 				winnerGroupId: winnerId,
-				reportedAt: dateToDatabaseTimestamp(new Date()),
+				reportedAt: databaseTimestampNow(),
 				reportedByUserId,
 			})
 			.where("id", "=", currentMap.id)
@@ -1710,7 +1734,7 @@ async function handleStaffFinalization({
 				.updateTable("GroupMatchMap")
 				.set({
 					winnerGroupId,
-					reportedAt: dateToDatabaseTimestamp(new Date()),
+					reportedAt: databaseTimestampNow(),
 					reportedByUserId,
 				})
 				.where("id", "=", currentMap.id)
@@ -1773,7 +1797,7 @@ async function finalizeMatch({
 		await trx
 			.updateTable("GroupMatch")
 			.set({
-				confirmedAt: dateToDatabaseTimestamp(new Date()),
+				confirmedAt: databaseTimestampNow(),
 				confirmedByUserId,
 				cancelRequestedByUserId: null,
 			})
@@ -1964,6 +1988,10 @@ export async function undoMatchReport({
 			{ matchId, mapIndex: decidingMapIndex },
 			trx,
 		);
+		await ScannerIngestRepository.deleteLinksByGroupMatchMapId(
+			decidingMap.id,
+			trx,
+		);
 
 		await trx
 			.deleteFrom("GroupMatchContinueVote")
@@ -2015,6 +2043,10 @@ export async function undoMapReport({
 			.execute();
 
 		await ReportedWeaponRepository.deleteByMapIndex({ matchId, mapIndex }, trx);
+		await ScannerIngestRepository.deleteLinksByGroupMatchMapId(
+			targetMap.id,
+			trx,
+		);
 
 		await trx
 			.deleteFrom("GroupMatchContinueVote")

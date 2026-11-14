@@ -32,7 +32,10 @@ export function matchStatus(data: BracketData, matchId: number): MatchStatus {
 	return resolveStatus(match, bracketContext(data));
 }
 
-/** Whether at least one game has been reported. */
+/**
+ * Whether at least one game has been reported.
+ * @internal
+ */
 export function isMatchStarted(match: MatchResults): boolean {
 	return (
 		match.opponent1?.score !== undefined || match.opponent2?.score !== undefined
@@ -68,7 +71,7 @@ export function isSetOverByScore({
 	}
 
 	const matchOverAtXWins = Math.ceil(count / 2);
-	return scores[0] === matchOverAtXWins || scores[1] === matchOverAtXWins;
+	return scores[0] >= matchOverAtXWins || scores[1] >= matchOverAtXWins;
 }
 
 /** `undefined` while the set is not over (or a play all set ended in a tie). */

@@ -2,7 +2,7 @@ import type { ExpressionBuilder, Transaction } from "kysely";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
-import * as ChatRepository from "~/features/chat/ChatRepository.server";
+import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import { databaseTimestampNow } from "~/utils/dates";
 import { shortNanoid } from "~/utils/id";
 import { invariant } from "~/utils/invariant";
@@ -11,14 +11,17 @@ import {
 	concatUserSubmittedImagePrefix,
 	matchProfileWeapons,
 } from "~/utils/kysely.server";
-import { errorIsSqliteForeignKeyConstraintFailure } from "~/utils/sql";
+import {
+	errorIsSqliteForeignKeyConstraintFailure,
+	toDBBoolean,
+} from "~/utils/sql";
 import { randomTeamName } from "~/utils/team-name";
 
-/** @returns user ids whose chat room set changed, for `notifyRoomsChanged`. */
-export function startLooking(args: {
-	teamId: number;
-	chatRoomExpiresAt: Date;
-}): Promise<number[]> {
+/**
+ * Puts a registered team in the queue to look for more members, giving it a chat room once it has two members.
+ * @returns user ids whose chat room set changed, for `notifyRoomsChanged`.
+ */
+export function startLooking(args: { teamId: number }): Promise<number[]> {
 	return db.transaction().execute(async (trx) => {
 		await trx
 			.updateTable("TournamentTeam")
@@ -26,7 +29,7 @@ export function startLooking(args: {
 			.where("id", "=", args.teamId)
 			.execute();
 
-		return ensurePickupChatRoom(args.teamId, args.chatRoomExpiresAt, trx);
+		return TournamentTeamRepository.ensureChatRoom(args.teamId, trx);
 	});
 }
 
@@ -36,37 +39,41 @@ type CreatePlaceholderTeamArgs = {
 	isStayAsSub?: boolean;
 	lfgNote?: string;
 };
+/** Puts a player without a team in the queue as a placeholder team of their own. */
 export function insertPlaceholderTeam(args: CreatePlaceholderTeamArgs) {
-	return db.transaction().execute(async (trx) => {
-		const createdTeam = await trx
-			.insertInto("TournamentTeam")
-			.values({
-				tournamentId: args.tournamentId,
-				name: randomTeamName(),
-				inviteCode: shortNanoid(),
-				isPlaceholder: 1,
-				isLooking: 1,
-				lfgNote: args.lfgNote ?? null,
-			})
-			.returning("id")
-			.executeTakeFirstOrThrow();
+	return db.transaction().execute((trx) => insertPlaceholderTeamTrx(args, trx));
+}
 
+/**
+ * Adds the user's sub post, a placeholder that stays as sub. Replaces the placeholder left over from them looking for a
+ * team without staying as sub while registration was open, so the user keeps a single placeholder.
+ */
+export function insertSubPost(
+	args: Omit<CreatePlaceholderTeamArgs, "isStayAsSub">,
+) {
+	return db.transaction().execute(async (trx) => {
 		await trx
-			.insertInto("TournamentTeamMember")
-			.values({
-				tournamentTeamId: createdTeam.id,
-				userId: args.userId,
-				role: "OWNER",
-				isStayAsSub: args.isStayAsSub ? 1 : 0,
-			})
+			.deleteFrom("TournamentTeam")
+			.where("TournamentTeam.tournamentId", "=", args.tournamentId)
+			.where("TournamentTeam.isPlaceholder", "=", 1)
+			.where("TournamentTeam.id", "in", (eb) =>
+				eb
+					.selectFrom("TournamentTeamMember")
+					.select("TournamentTeamMember.tournamentTeamId")
+					.where("TournamentTeamMember.userId", "=", args.userId),
+			)
 			.execute();
 
-		return createdTeam;
+		return insertPlaceholderTeamTrx({ ...args, isStayAsSub: true }, trx);
 	});
 }
 
+/**
+ * Groups in the tournament's queue, placeholders and registered teams looking for more members alike. The owner and
+ * managers of a group handle its invitations, only the owner its members' roles and its note.
+ */
 export async function findLookingTeamsByTournamentId(tournamentId: number) {
-	return db
+	const rows = await db
 		.selectFrom("TournamentTeam")
 		.innerJoin(
 			"TournamentTeamMember",
@@ -94,8 +101,27 @@ export async function findLookingTeamsByTournamentId(tournamentId: number) {
 		.where("TournamentTeam.isLooking", "=", 1)
 		.groupBy("TournamentTeam.id")
 		.execute();
+
+	return rows.map((row) => {
+		const ownerIds = row.members
+			.filter((member) => member.role === "OWNER")
+			.map((member) => member.id);
+		const managerIds = row.members
+			.filter((member) => member.role !== "REGULAR")
+			.map((member) => member.id);
+
+		return {
+			...row,
+			permissions: {
+				MANAGE_INVITATIONS: managerIds,
+				MANAGE_ROLES: ownerIds,
+				EDIT_NOTE: ownerIds,
+			},
+		};
+	});
 }
 
+/** Sub posts of the tournament: placeholders of players who stay as sub, listed once registration has closed. */
 export async function findSubGroups(tournamentId: number) {
 	const rows = await db
 		.selectFrom("TournamentTeam")
@@ -120,17 +146,22 @@ export async function findSubGroups(tournamentId: number) {
 	return rows;
 }
 
-/** @returns user ids whose chat room set changed, for `notifyRoomsChanged`. */
+/**
+ * Moves the members of `otherTeamId` to `survivingTeamId` (its owner becoming a manager) and deletes the other team. The
+ * merged team is a registered one, leaving the queue once full. Clears the likes of the surviving team.
+ * @returns user ids whose chat room set changed, for `notifyRoomsChanged`.
+ */
 export function mergeTeams({
 	survivingTeamId,
 	otherTeamId,
 	maxGroupSize,
-	chatRoomExpiresAt,
+	requireInGameNames,
 }: {
 	survivingTeamId: number;
 	otherTeamId: number;
 	maxGroupSize: number;
-	chatRoomExpiresAt: Date;
+	/** Fills the in-game name of members who don't have one yet, as registering does. */
+	requireInGameNames: boolean;
 }): Promise<number[]> {
 	return db.transaction().execute(async (trx) => {
 		const otherMembers = await trx
@@ -150,6 +181,20 @@ export function mergeTeams({
 				})
 				.where("TournamentTeamMember.tournamentTeamId", "=", otherTeamId)
 				.where("TournamentTeamMember.userId", "=", member.userId)
+				.execute();
+		}
+
+		if (requireInGameNames) {
+			await trx
+				.updateTable("TournamentTeamMember")
+				.set((eb) => ({
+					inGameName: eb
+						.selectFrom("User")
+						.select("User.inGameName")
+						.whereRef("User.id", "=", "TournamentTeamMember.userId"),
+				}))
+				.where("TournamentTeamMember.tournamentTeamId", "=", survivingTeamId)
+				.where("TournamentTeamMember.inGameName", "is", null)
 				.execute();
 		}
 
@@ -176,13 +221,14 @@ export function mergeTeams({
 			.where("id", "=", survivingTeamId)
 			.execute();
 
-		await ensurePickupChatRoom(survivingTeamId, chatRoomExpiresAt, trx);
+		await TournamentTeamRepository.ensureChatRoom(survivingTeamId, trx);
 
 		// merged-in members lost their old room or gained the surviving team's, which may itself be new
 		return memberUserIds;
 	});
 }
 
+/** One group inviting another, a no-op when already invited or when either has left the queue since. */
 export async function insertLike({
 	likerTeamId,
 	targetTeamId,
@@ -206,6 +252,7 @@ export async function insertLike({
 	}
 }
 
+/** Withdraws an invitation. */
 export function deleteLike({
 	likerTeamId,
 	targetTeamId,
@@ -220,6 +267,7 @@ export function deleteLike({
 		.execute();
 }
 
+/** Invitations the group has given and received, each as the id of the other group. */
 export async function findAllLikesByTeamId(teamId: number) {
 	const rows = await db
 		.selectFrom("TournamentLFGLike")
@@ -242,6 +290,7 @@ export async function findAllLikesByTeamId(teamId: number) {
 	};
 }
 
+/** Sets the note shown on the group's card, `null` to remove it. */
 export function updateTeamNote({
 	teamId,
 	value,
@@ -256,6 +305,7 @@ export function updateTeamNote({
 		.execute();
 }
 
+/** Makes a member of the group a manager or a regular member. @throws if `role` is `OWNER`. */
 export function updateMemberRole({
 	userId,
 	teamId,
@@ -277,6 +327,7 @@ export function updateMemberRole({
 		.execute();
 }
 
+/** Sets whether the acting user stays as sub if their group finds no members before registration closes. */
 export function updateOwnStayAsSub({
 	teamId,
 	value,
@@ -286,13 +337,17 @@ export function updateOwnStayAsSub({
 }) {
 	return db
 		.updateTable("TournamentTeamMember")
-		.set({ isStayAsSub: value ? 1 : 0 })
+		.set({ isStayAsSub: toDBBoolean(value) })
 		.where("tournamentTeamId", "=", teamId)
 		.where("userId", "=", actorId())
 		.execute();
 }
 
-/** @returns user ids whose chat room set changed, for `notifyRoomsChanged`. */
+/**
+ * Takes the user's group out of the queue: a placeholder (sub posts included) is deleted, a registered team only stops
+ * looking, losing its likes and its members' stay as sub preference.
+ * @returns user ids whose chat room set changed, for `notifyRoomsChanged`.
+ */
 export function leaveLfg({
 	userId,
 	tournamentId,
@@ -315,7 +370,13 @@ export function leaveLfg({
 			])
 			.where("TournamentTeamMember.userId", "=", userId)
 			.where("TournamentTeam.tournamentId", "=", tournamentId)
-			.where("TournamentTeam.isLooking", "=", 1)
+			// starting a bracket clears isLooking, also from sub posts
+			.where((eb) =>
+				eb.or([
+					eb("TournamentTeam.isLooking", "=", 1),
+					eb("TournamentTeam.isPlaceholder", "=", 1),
+				]),
+			)
 			.executeTakeFirst();
 
 		if (!userTeam) return [];
@@ -348,6 +409,7 @@ export function leaveLfg({
 	});
 }
 
+/** Ids of the tournament's users who stay as sub. */
 export async function findAllSubsByTournamentId(tournamentId: number) {
 	const rows = await db
 		.selectFrom("TournamentTeamMember")
@@ -378,6 +440,36 @@ function lfgMembersAgg(
 	});
 }
 
+async function insertPlaceholderTeamTrx(
+	args: CreatePlaceholderTeamArgs,
+	trx: Transaction<DB>,
+) {
+	const createdTeam = await trx
+		.insertInto("TournamentTeam")
+		.values({
+			tournamentId: args.tournamentId,
+			name: randomTeamName(),
+			inviteCode: shortNanoid(),
+			isPlaceholder: 1,
+			isLooking: 1,
+			lfgNote: args.lfgNote ?? null,
+		})
+		.returning("id")
+		.executeTakeFirstOrThrow();
+
+	await trx
+		.insertInto("TournamentTeamMember")
+		.values({
+			tournamentTeamId: createdTeam.id,
+			userId: args.userId,
+			role: "OWNER",
+			isStayAsSub: toDBBoolean(args.isStayAsSub ?? false),
+		})
+		.execute();
+
+	return createdTeam;
+}
+
 function deleteLikesByTeamId(teamId: number, trx: Transaction<DB>) {
 	return trx
 		.deleteFrom("TournamentLFGLike")
@@ -401,35 +493,4 @@ async function findMemberUserIds(
 		.execute();
 
 	return members.map((member) => member.userId);
-}
-
-/** @returns the members who gained a room, empty when none was created. */
-async function ensurePickupChatRoom(
-	teamId: number,
-	chatRoomExpiresAt: Date,
-	trx: Transaction<DB>,
-): Promise<number[]> {
-	const team = await trx
-		.selectFrom("TournamentTeam")
-		.select("chatRoomId")
-		.where("id", "=", teamId)
-		.executeTakeFirstOrThrow();
-
-	if (team.chatRoomId !== null) return [];
-
-	const memberUserIds = await findMemberUserIds(teamId, trx);
-	if (memberUserIds.length < 2) return [];
-
-	const room = await ChatRepository.insertRoom(
-		{ type: "TOURNAMENT_TEAM", expiresAt: chatRoomExpiresAt },
-		trx,
-	);
-
-	await trx
-		.updateTable("TournamentTeam")
-		.set({ chatRoomId: room.id })
-		.where("id", "=", teamId)
-		.execute();
-
-	return memberUserIds;
 }

@@ -55,6 +55,19 @@ const setupTeam = async () => {
 	return { team, members };
 };
 
+/** Each member of the group mapped to who quick added them. */
+const addedByUserIds = async (groupId: number) => {
+	const members = await db
+		.selectFrom("GroupMember")
+		.select(["userId", "addedByUserId"])
+		.where("groupId", "=", groupId)
+		.execute();
+
+	return new Map(
+		members.map((member) => [member.userId, member.addedByUserId]),
+	);
+};
+
 const groupChatRoomId = async (groupId: number) => {
 	const group = await db
 		.selectFrom("Group")
@@ -196,6 +209,28 @@ describe("insert", () => {
 		expect(votes.filter((vote) => vote.isContinuing)).toHaveLength(
 			FULL_GROUP_SIZE - 1,
 		);
+		expect(result.chatRoomIdToRevalidate).toBeNull();
+	});
+
+	test("leaves a passed vote alone when a member who voted yes leaves the successor group and queues again", async () => {
+		const { alphaGroupId, alphaMembers } = await setupConcludedMatch();
+
+		for (const member of alphaMembers) {
+			await castYesVote(member.id, alphaGroupId);
+		}
+		await SQGroupRepository.insertFromPrevious({
+			previousGroupId: alphaGroupId,
+			memberUserIds: alphaMembers.map((member) => member.id),
+		});
+		const votesBefore = await fetchVotes(alphaGroupId);
+
+		await SQGroupRepository.leaveGroup(alphaMembers[0].id);
+		const result = await SQGroupRepository.insert({
+			status: "ACTIVE",
+			userId: alphaMembers[0].id,
+		});
+
+		expect(await fetchVotes(alphaGroupId)).toEqual(votesBefore);
 		expect(result.chatRoomIdToRevalidate).toBeNull();
 	});
 
@@ -354,10 +389,39 @@ describe("insertFromPrevious", () => {
 		expect(await groupChatRoomId(successor.id)).toBe(previousChatRoomId);
 		expect(await groupChatRoomId(alphaGroupId)).toBeNull();
 	});
+
+	test("carries quick adds over only while the one who quick added stays", async () => {
+		const [adder, friend, otherAdder, otherFriend] =
+			await UserFactory.createMany(4);
+		const previousGroup = await SQGroupFactory.create({
+			memberUserIds: [adder.id, otherAdder.id],
+			quickAddedMembers: [
+				{ userId: friend.id, addedByUserId: adder.id },
+				{ userId: otherFriend.id, addedByUserId: otherAdder.id },
+			],
+		});
+		await backdate("Group", previousGroup.id, {
+			latestActionAt: sub(new Date(), { hours: 2 }),
+		});
+		await SQGroupRepository.setOldGroupsAsInactive();
+
+		const successor = await SQGroupRepository.insertFromPrevious({
+			previousGroupId: previousGroup.id,
+			memberUserIds: [adder.id, friend.id, otherFriend.id],
+		});
+
+		expect(await addedByUserIds(successor.id)).toEqual(
+			new Map([
+				[adder.id, null],
+				[friend.id, adder.id],
+				[otherFriend.id, null],
+			]),
+		);
+	});
 });
 
 describe("morphGroups", () => {
-	test("gives the survivor a fresh chat room and deletes both old rooms", async () => {
+	test("the survivor keeps its chat room and the other group's room is deleted", async () => {
 		const [userOne, userTwo] = await UserFactory.createMany(2);
 		const survivingGroup = await SQGroupFactory.create({
 			memberUserIds: [userOne.id],
@@ -372,15 +436,70 @@ describe("morphGroups", () => {
 			otherGroupId: otherGroup.id,
 		});
 
-		const survivorChatRoomId = await groupChatRoomId(survivingGroup.id);
-		expect(survivorChatRoomId).not.toBe(oldChatRoomId);
+		expect(await groupChatRoomId(survivingGroup.id)).toBe(oldChatRoomId);
 
 		const rooms = await allChatRooms();
-		expect(rooms.map((room) => room.id)).toEqual([survivorChatRoomId]);
+		expect(rooms.map((room) => room.id)).toEqual([oldChatRoomId]);
 	});
 });
 
 describe("leaveGroup", () => {
+	test("takes the members the leaver quick added along, and the ones they quick added in turn", async () => {
+		const [leaver, friend, friendOfFriend, stayer] =
+			await UserFactory.createMany(4);
+		const group = await SQGroupFactory.create({
+			memberUserIds: [leaver.id, stayer.id],
+			quickAddedMembers: [
+				{ userId: friend.id, addedByUserId: leaver.id },
+				{ userId: friendOfFriend.id, addedByUserId: friend.id },
+			],
+		});
+
+		const { leftUserIds } = await SQGroupRepository.leaveGroup(leaver.id);
+
+		expect(leftUserIds).toEqual([leaver.id, friend.id, friendOfFriend.id]);
+		expect(await addedByUserIds(group.id)).toEqual(
+			new Map([[stayer.id, null]]),
+		);
+	});
+
+	test("deletes the group when only members the leaver quick added would remain", async () => {
+		const [leaver, friend] = await UserFactory.createMany(2);
+		const group = await SQGroupFactory.create({
+			memberUserIds: [leaver.id],
+			quickAddedMembers: [{ userId: friend.id, addedByUserId: leaver.id }],
+		});
+
+		await SQGroupRepository.leaveGroup(leaver.id);
+
+		const groupRow = await db
+			.selectFrom("Group")
+			.selectAll()
+			.where("id", "=", group.id)
+			.executeTakeFirst();
+		expect(groupRow).toBeUndefined();
+	});
+
+	test("leaves the members the leaver quick added in the group, no longer tied to the leaver, when told to keep them", async () => {
+		const [kicked, friend, kicker] = await UserFactory.createMany(3);
+		const group = await SQGroupFactory.create({
+			memberUserIds: [kicked.id, kicker.id],
+			quickAddedMembers: [{ userId: friend.id, addedByUserId: kicked.id }],
+		});
+
+		const { leftUserIds } = await SQGroupRepository.leaveGroup(kicked.id, {
+			keepQuickAddedMembers: true,
+		});
+
+		expect(leftUserIds).toEqual([kicked.id]);
+		expect(await addedByUserIds(group.id)).toEqual(
+			new Map([
+				[kicker.id, null],
+				[friend.id, null],
+			]),
+		);
+	});
+
 	test("deletes the group and its chat room when the last member leaves", async () => {
 		const user = await UserFactory.create();
 		const group = await SQGroupFactory.create({ memberUserIds: [user.id] });

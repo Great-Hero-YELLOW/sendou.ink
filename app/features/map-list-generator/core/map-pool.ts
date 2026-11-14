@@ -29,12 +29,22 @@ export class MapPool {
 		return new MapPool(init).serialized;
 	}
 
-	static parse(init: MapPoolObject | string | DbMapPoolList) {
-		return new MapPool(init).parsed;
-	}
-
 	static toDbList(init: MapPoolObject | string | DbMapPoolList) {
 		return new MapPool(init).dbList;
+	}
+
+	/** Reads a map pool typed or pasted by a user: a link with a `pool` param, a query string or a bare serialized pool. Null if no stages could be read. */
+	static fromUserInput(input: string): MapPool | null {
+		const serialized = extractSerializedPool(input);
+		if (!serialized) return null;
+
+		try {
+			const pool = new MapPool(serialized);
+			if (pool.isEmpty()) return null;
+			return pool;
+		} catch {
+			return null;
+		}
 	}
 
 	get serialized(): string {
@@ -63,12 +73,6 @@ export class MapPool {
 		return this.asObject;
 	}
 
-	get dbList(): DbMapPoolList {
-		return Object.entries(this.parsed).flatMap(([mode, stages]) =>
-			stages.flatMap((stageId) => ({ mode: mode as ModeShort, stageId })),
-		);
-	}
-
 	get stages() {
 		return Object.values(this.parsed).flat();
 	}
@@ -79,10 +83,15 @@ export class MapPool {
 		) as ModeShort[];
 	}
 
-	get stageModePairs() {
+	get stageModePairs(): DbMapPoolList {
 		return Object.entries(this.parsed).flatMap(([mode, stages]) =>
 			stages.map((stageId) => ({ mode: mode as ModeShort, stageId })),
 		);
+	}
+
+	/** Same pairs as `stageModePairs`, in the shape the database stores. */
+	get dbList(): DbMapPoolList {
+		return this.stageModePairs;
 	}
 
 	has({ stageId, mode }: { stageId: StageId; mode: ModeShort }) {
@@ -99,10 +108,6 @@ export class MapPool {
 		);
 	}
 
-	overlaps(other: MapPool): boolean {
-		return this.stageModePairs.some((pair) => other.has(pair));
-	}
-
 	isEmpty(): boolean {
 		return Object.values(this.parsed).every((stages) => stages.length === 0);
 	}
@@ -113,10 +118,6 @@ export class MapPool {
 
 	get length() {
 		return this.stageModePairs.length;
-	}
-
-	getClonedObject() {
-		return structuredClone(this.parsed) as MapPoolObject;
 	}
 
 	toString() {
@@ -182,20 +183,30 @@ export class MapPool {
 		...MapPool.EMPTY.parsed,
 		SZ: [...stageIds],
 	});
-	static TC = new MapPool({
-		...MapPool.EMPTY.parsed,
-		TC: [...stageIds],
-	});
 	static CB = new MapPool({
 		...MapPool.EMPTY.parsed,
 		CB: [...stageIds],
 	});
-	static RM = new MapPool({
-		...MapPool.EMPTY.parsed,
-		RM: [...stageIds],
-	});
-	static TW = new MapPool({
-		...MapPool.EMPTY.parsed,
-		TW: [...stageIds],
-	});
+}
+
+function extractSerializedPool(input: string): string | null {
+	const trimmed = input.trim();
+	if (!trimmed) return null;
+
+	if (trimmed.includes("://")) {
+		try {
+			const url = new URL(trimmed);
+			// biome-ignore lint/plugin: URL pasted by the user, not one this app routed to
+			return url.searchParams.get("pool");
+		} catch {
+			return null;
+		}
+	}
+
+	if (trimmed.includes("pool=")) {
+		const queryString = trimmed.slice(trimmed.indexOf("?") + 1);
+		return new URLSearchParams(queryString).get("pool");
+	}
+
+	return trimmed;
 }

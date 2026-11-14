@@ -5,7 +5,13 @@ interface Subscriber {
 	wake: (() => void) | null;
 }
 
-const subscribersByChannel = new Map<string, Set<Subscriber>>();
+declare global {
+	var __eventBusSubscribersByChannel: Map<string, Set<Subscriber>> | undefined;
+}
+
+// on globalThis so open streams survive the dev server re-evaluating this module
+globalThis.__eventBusSubscribersByChannel ??= new Map();
+const subscribersByChannel = globalThis.__eventBusSubscribersByChannel;
 
 /** Delivers the event to every live subscriber of the channels, once each even when listening on several. */
 export function publish(channels: string[], event: ServerEvent): void {
@@ -81,7 +87,10 @@ export function subscribe(
 	return { [Symbol.asyncIterator]: () => iterator };
 }
 
-/** Number of live subscribers on a channel. */
+/**
+ * Number of live subscribers on a channel.
+ * @internal
+ */
 export function subscriberCount(channel: string): number {
 	return subscribersByChannel.get(channel)?.size ?? 0;
 }

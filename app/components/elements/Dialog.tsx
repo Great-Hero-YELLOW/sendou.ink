@@ -9,10 +9,6 @@ import {
 } from "~/components/elements/Button";
 import { useHydrated } from "~/hooks/useHydrated";
 import { useScrollLockWhileOpen } from "~/hooks/useScrollLock";
-import {
-	useReportModalOpen,
-	useTopLayerViewTransitionStyle,
-} from "~/utils/view-transition";
 import styles from "./Dialog.module.css";
 
 interface DialogElementProps {
@@ -22,6 +18,8 @@ interface DialogElementProps {
 	blurredBackdrop?: boolean;
 	isDismissable?: boolean;
 	onClose?: () => void;
+	/** Escape and outside clicks call this instead of closing, the caller closes by unmounting. */
+	onCloseRequest?: () => void;
 	"aria-label"?: string;
 	"aria-labelledby"?: string;
 	children: React.ReactNode;
@@ -40,7 +38,6 @@ interface DialogElementProps {
  */
 export function SendouModal({ ref, ...rest }: DialogElementProps) {
 	const isHydrated = useHydrated();
-	useReportModalOpen(isHydrated);
 	if (!isHydrated) return null;
 
 	return createPortal(
@@ -68,14 +65,17 @@ function DialogElement({
 	blurredBackdrop,
 	isDismissable,
 	onClose,
+	onCloseRequest,
 	"aria-label": ariaLabel,
 	"aria-labelledby": ariaLabelledby,
 	children,
 	ref,
 }: DialogElementProps) {
-	const topLayerStyle = useTopLayerViewTransitionStyle();
 	const dialogRef = React.useRef<HTMLDialogElement>(null);
-	const backdropPressHandlers = useBackdropDismiss(isDismissable);
+	const backdropPressHandlers = useBackdropDismiss(
+		isDismissable,
+		onCloseRequest,
+	);
 	useScrollLockWhileOpen(dialogRef);
 
 	return (
@@ -89,7 +89,6 @@ function DialogElement({
 				}
 			}}
 			id={id}
-			style={topLayerStyle}
 			className={clsx(className, {
 				[styles.blurredBackdrop]: blurredBackdrop,
 			})}
@@ -98,16 +97,42 @@ function DialogElement({
 			tabIndex={-1}
 			closedby="closerequest"
 			onClose={onClose}
+			onCancel={
+				onCloseRequest
+					? (event) => {
+							event.preventDefault();
+							onCloseRequest();
+						}
+					: undefined
+			}
+			// a portal doesn't stop React events from bubbling to an outer form
+			onSubmit={(e) => e.stopPropagation()}
 			{...backdropPressHandlers}
 		>
+			<InitialFocusSink />
 			{children}
 		</dialog>
 	);
 }
 
+// Opening natively focuses the first control (Chromium ignores `autofocus` on the dialog itself),
+// and then moving focus to the dialog blurs it, which e.g. shows a required field's error at once
+function InitialFocusSink() {
+	return (
+		<span
+			ref={(sink) => sink?.setAttribute("autofocus", "")}
+			tabIndex={-1}
+			className={styles.initialFocusSink}
+		/>
+	);
+}
+
 // Native `closedby` closes on pointer up so the click can land on stuff like buttons underneath the backdrop
 // We just roll our own click handler here because that can't "leak" through
-function useBackdropDismiss(enabled: boolean | undefined) {
+function useBackdropDismiss(
+	enabled: boolean | undefined,
+	onCloseRequest: (() => void) | undefined,
+) {
 	const pressStartedOnBackdropRef = React.useRef(false);
 
 	if (!enabled) return {};
@@ -118,7 +143,11 @@ function useBackdropDismiss(enabled: boolean | undefined) {
 		},
 		onClick: (event: React.MouseEvent<HTMLDialogElement>) => {
 			if (pressStartedOnBackdropRef.current && isOnBackdrop(event)) {
-				event.currentTarget.close();
+				if (onCloseRequest) {
+					onCloseRequest();
+				} else {
+					event.currentTarget.close();
+				}
 			}
 		},
 	};
@@ -223,7 +252,6 @@ function TriggeredDialog({
 	const dialogId = React.useId();
 	const dialogRef = React.useRef<HTMLDialogElement>(null);
 	const [open, setOpen] = React.useState(false);
-	useReportModalOpen(open);
 
 	const [contentKey, remountContent] = React.useReducer(
 		(key: number) => key + 1,
@@ -282,8 +310,12 @@ function TriggeredDialog({
 				command: "show-modal",
 				onClick: (event) => {
 					trigger.props.onClick?.(event);
-					if (!supportsInvokerCommands()) {
-						dialogRef.current?.showModal();
+					const dialog = document.getElementById(dialogId);
+					if (
+						!supportsInvokerCommands() &&
+						dialog instanceof HTMLDialogElement
+					) {
+						dialog.showModal();
 					}
 				},
 			})}
@@ -320,14 +352,25 @@ function PortaledDialog({
 		}
 	};
 
+	// stays open until the route unmounts it, so a blocked navigation (unsaved changes) keeps it under the guard dialog
+	const navigateToCloseTarget =
+		!onOpenChange && chrome.onCloseTo
+			? () => navigate(chrome.onCloseTo!)
+			: undefined;
+
 	if (!isOpen) return null;
 
 	return (
 		<SendouModal
 			id={dialogId}
 			{...dialogElementProps(chrome, dialogId, handleClosed)}
+			onCloseRequest={navigateToCloseTarget}
 		>
-			<DialogChrome {...chrome} dialogId={dialogId}>
+			<DialogChrome
+				{...chrome}
+				dialogId={dialogId}
+				onCloseRequest={navigateToCloseTarget}
+			>
 				{children}
 			</DialogChrome>
 		</SendouModal>
@@ -346,7 +389,7 @@ function dialogElementProps(
 	onClose: () => void,
 ) {
 	return {
-		className: clsx(className, styles.modal, "scrollbar", {
+		className: clsx(className, styles.modal, {
 			[styles.fullScreenModal]: isFullScreen,
 		}),
 		blurredBackdrop: true,
@@ -369,8 +412,14 @@ function DialogChrome({
 	showCloseButton,
 	onClose,
 	onCloseTo,
+	onCloseRequest,
 	children,
-}: DialogChromeProps & { dialogId: string; children: React.ReactNode }) {
+}: DialogChromeProps & {
+	dialogId: string;
+	/** The close button calls this instead of closing the dialog */
+	onCloseRequest?: () => void;
+	children: React.ReactNode;
+}) {
 	if (!showHeading) return children;
 
 	return (
@@ -392,10 +441,12 @@ function DialogChrome({
 						variant="minimal-destructive"
 						className="ml-auto"
 						aria-label="Close"
-						commandfor={dialogId}
-						command="close"
+						commandfor={onCloseRequest ? undefined : dialogId}
+						command={onCloseRequest ? undefined : "close"}
 						onClick={(event) => {
-							if (!supportsInvokerCommands()) {
+							if (onCloseRequest) {
+								onCloseRequest();
+							} else if (!supportsInvokerCommands()) {
 								event.currentTarget.closest("dialog")?.close();
 							}
 						}}

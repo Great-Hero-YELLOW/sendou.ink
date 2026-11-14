@@ -3,7 +3,13 @@ import * as RouteChatRooms from "~/features/chat/RouteChatRooms.server";
 import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
-import { notFoundIfNullish } from "../../../utils/remix.server";
+import {
+	forbidden,
+	notFound,
+	notFoundIfNullish,
+	parseParams,
+} from "../../../utils/remix.server";
+import { idObject } from "../../../utils/schema";
 import {
 	type AuthenticatedUser,
 	requireUser,
@@ -16,17 +22,16 @@ import * as ScrimPostRepository from "../ScrimPostRepository.server";
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
 	const user = requireUser();
+	const { id: postId } = parseParams({ params, schema: idObject });
 
-	const post = notFoundIfNullish(
-		await ScrimPostRepository.findById(Number(params.id)),
-	);
+	const post = notFoundIfNullish(await ScrimPostRepository.findById(postId));
 
 	if (!Scrim.isAccepted(post)) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	if (!Scrim.isParticipating(post, user.id) && !user.roles.includes("STAFF")) {
-		throw new Response(null, { status: 403 });
+		forbidden();
 	}
 
 	await resolveNotifications({
@@ -73,16 +78,16 @@ async function resolveMapByMap({
 	post: NonNullable<Awaited<ReturnType<typeof ScrimPostRepository.findById>>>;
 	user: AuthenticatedUser;
 }) {
-	const [mapLists, maps] = await Promise.all([
-		ScrimMapListRepository.findMapListsByScrimPostId(post.id),
-		ScrimMapRepository.findMapsByScrimPostId(post.id),
-	]);
+	const mapLists = await ScrimMapListRepository.findMapListsByScrimPostId(
+		post.id,
+	);
+	const maps = await ScrimMapRepository.findMapsByScrimPostId(post.id);
 
 	const pool = mapLists.length > 0 ? ScrimMapByMap.unionPool(mapLists) : null;
 	const currentMap = maps.find((m) => m.reportedAt === null) ?? null;
 	const viewerSide = Scrim.sideOfUser(post, user.id);
 	const locked = Scrim.isTrackingLocked({
-		startTime: Scrim.getStartTime(post),
+		startTime: post.startsAt,
 		maps,
 		mapLists,
 	});

@@ -3,62 +3,60 @@ import { type SelectQueryBuilder, sql } from "kysely";
 import { db } from "~/db/sql";
 import type { DB, DBBoolean } from "~/db/tables";
 import { actorId } from "~/features/auth/core/user.server";
-import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { databaseTimestampNow, dateToDatabaseTimestamp } from "~/utils/dates";
 import { commonUserSelect } from "~/utils/kysely.server";
 import { toDBBoolean } from "~/utils/sql";
 import { FRIEND } from "./friends-constants";
 
 export async function findByUserIdWithActivity(userId: number) {
-	const [friendRows, teamMemberRows] = await Promise.all([
-		withLfgJoins(
-			db
-				.selectFrom("Friendship")
-				.innerJoin("User", (join) =>
-					join.on((eb) =>
-						eb.or([
-							eb.and([
-								eb("Friendship.userOneId", "=", userId),
-								eb("User.id", "=", eb.ref("Friendship.userTwoId")),
-							]),
-							eb.and([
-								eb("Friendship.userTwoId", "=", userId),
-								eb("User.id", "=", eb.ref("Friendship.userOneId")),
-							]),
-						]),
-					),
-				)
-				.where((eb) =>
+	const friendRows = await withLfgJoins(
+		db
+			.selectFrom("Friendship")
+			.innerJoin("User", (join) =>
+				join.on((eb) =>
 					eb.or([
-						eb("Friendship.userOneId", "=", userId),
-						eb("Friendship.userTwoId", "=", userId),
+						eb.and([
+							eb("Friendship.userOneId", "=", userId),
+							eb("User.id", "=", eb.ref("Friendship.userTwoId")),
+						]),
+						eb.and([
+							eb("Friendship.userTwoId", "=", userId),
+							eb("User.id", "=", eb.ref("Friendship.userOneId")),
+						]),
 					]),
 				),
-		)
-			.select((eb) => [
-				"Friendship.id as friendshipId",
-				"Friendship.createdAt as friendshipCreatedAt",
-				eb
-					.case()
-					.when("Friendship.userOneId", "=", userId)
-					.then(eb.ref("Friendship.isPinnedByUserOne"))
-					.else(eb.ref("Friendship.isPinnedByUserTwo"))
-					.end()
-					.as("isPinned"),
-			])
-			.orderBy("Friendship.createdAt", "desc")
-			.execute(),
-		withLfgJoins(
-			db
-				.selectFrom("TeamMemberWithSecondary as myMembership")
-				.innerJoin("TeamMemberWithSecondary as otherMembership", (join) =>
-					join
-						.onRef("otherMembership.teamId", "=", "myMembership.teamId")
-						.on("otherMembership.userId", "!=", userId),
-				)
-				.innerJoin("User", "User.id", "otherMembership.userId")
-				.where("myMembership.userId", "=", userId),
-		).execute(),
-	]);
+			)
+			.where((eb) =>
+				eb.or([
+					eb("Friendship.userOneId", "=", userId),
+					eb("Friendship.userTwoId", "=", userId),
+				]),
+			),
+	)
+		.select((eb) => [
+			"Friendship.id as friendshipId",
+			"Friendship.createdAt as friendshipCreatedAt",
+			eb
+				.case()
+				.when("Friendship.userOneId", "=", userId)
+				.then(eb.ref("Friendship.isPinnedByUserOne"))
+				.else(eb.ref("Friendship.isPinnedByUserTwo"))
+				.end()
+				.as("isPinned"),
+		])
+		.orderBy("Friendship.createdAt", "desc")
+		.execute();
+	const teamMemberRows = await withLfgJoins(
+		db
+			.selectFrom("TeamMemberWithSecondary as myMembership")
+			.innerJoin("TeamMemberWithSecondary as otherMembership", (join) =>
+				join
+					.onRef("otherMembership.teamId", "=", "myMembership.teamId")
+					.on("otherMembership.userId", "!=", userId),
+			)
+			.innerJoin("User", "User.id", "otherMembership.userId")
+			.where("myMembership.userId", "=", userId),
+	).execute();
 
 	return [
 		...friendRows,
@@ -73,7 +71,7 @@ export async function findByUserIdWithActivity(userId: number) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function withLfgJoins<QB extends SelectQueryBuilder<any, any, any>>(qb: QB) {
-	const nowTimestamp = dateToDatabaseTimestamp(new Date());
+	const nowTimestamp = databaseTimestampNow();
 
 	return (qb as SelectQueryBuilder<DB, keyof DB, Record<string, never>>)
 		.leftJoin("TournamentTeamMember", (join) =>
@@ -95,19 +93,18 @@ function withLfgJoins<QB extends SelectQueryBuilder<any, any, any>>(qb: QB) {
 								"=",
 								"TournamentTeamMember.tournamentTeamId",
 							)
-							.where((innerEb) =>
-								innerEb.or([
-									innerEb(
-										sql`json_extract("LookingTournament"."settings", '$.regClosesAt')`,
-										"is",
-										null,
-									),
-									innerEb(
-										sql<number>`json_extract("LookingTournament"."settings", '$.regClosesAt')`,
-										">",
-										nowTimestamp,
-									),
-								]),
+							.where(
+								sql<number>`coalesce(
+									"LookingTournament"."settings" ->> 'regClosesAt',
+									(
+										select min("CalendarEventDate"."startsAt")
+										from "CalendarEventDate"
+										inner join "CalendarEvent" on "CalendarEvent"."id" = "CalendarEventDate"."eventId"
+										where "CalendarEvent"."tournamentId" = "LookingTournament"."id"
+									)
+								)`,
+								">",
+								nowTimestamp,
 							),
 					),
 				),

@@ -40,6 +40,10 @@ export const navItems = [
 		url: "scrims",
 	},
 	{
+		name: "lobbies",
+		url: "lobbies",
+	},
+	{
 		name: "lfg",
 		url: "lfg",
 	},
@@ -70,6 +74,10 @@ export const navItems = [
 	{
 		name: "vods",
 		url: "vods",
+	},
+	{
+		name: "scanner",
+		url: "scanner",
 	},
 	{
 		name: "art",

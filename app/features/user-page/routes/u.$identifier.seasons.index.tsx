@@ -3,6 +3,7 @@ import { Gauge, Users } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link, useLoaderData } from "react-router";
+import * as R from "remeda";
 import { Avatar } from "~/components/Avatar";
 import { EmptyState } from "~/components/EmptyState";
 import {
@@ -20,9 +21,13 @@ import type {
 } from "~/features/sendouq-match/SQMatchRepository.server";
 import { useSearchParamPagination } from "~/hooks/useSearchParamPagination";
 import { useSearchParam } from "~/modules/search-params/hooks";
-import { roundToNDecimalPlaces } from "~/utils/number";
 import type { SendouRouteHandle } from "~/utils/remix.server";
-import { navIconUrl, sendouQMatchPage, tournamentTeamPage } from "~/utils/urls";
+import {
+	navIconUrl,
+	sendouQMatchPage,
+	smallImageUrl,
+	tournamentTeamPage,
+} from "~/utils/urls";
 import {
 	loader,
 	type UserSeasonResultsLoaderData,
@@ -298,7 +303,7 @@ function MatchMembers({
 		<div className={styles.members}>
 			{members.map((member) => (
 				<Avatar
-					key={member.discordId}
+					key={member.id}
 					user={member}
 					size="xxsm"
 					alt={member.username}
@@ -331,7 +336,7 @@ function TournamentResult({ result }: { result: SeasonTournamentResult }) {
 					)}
 				>
 					<img
-						src={result.logoUrl}
+						src={smallImageUrl(result.logoUrl)}
 						width={24}
 						height={24}
 						alt=""
@@ -373,7 +378,7 @@ function TournamentResult({ result }: { result: SeasonTournamentResult }) {
 						) : (
 							<>
 								<Gauge size={14} />
-								{roundToNDecimalPlaces(result.teamSp)}SP
+								{R.round(result.teamSp, 2)}SP
 							</>
 						)}
 					</span>

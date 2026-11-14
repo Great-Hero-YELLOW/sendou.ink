@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	Image,
@@ -6,6 +7,7 @@ import {
 	SubWeaponImage,
 	WeaponImage,
 } from "~/components/Image";
+import type { RangeVariantKey } from "~/features/build-analyzer/analyzer-types";
 import { mainWeaponParams } from "~/features/build-analyzer/core/utils";
 import {
 	LETHAL_DAMAGE,
@@ -16,7 +18,8 @@ import type {
 	DamageCombo,
 	DamageSegment,
 } from "~/features/comp-analyzer/comp-analyzer-types";
-import { getWeaponsWithRange } from "~/features/comp-analyzer/core/weapon-range";
+import * as SpecialWeaponRange from "~/features/comp-analyzer/core/SpecialWeaponRange";
+import * as WeaponRange from "~/features/comp-analyzer/core/WeaponRange";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { COMP_ANALYZER_URL, navIconUrl } from "~/utils/urls";
 import styles from "./CompGraphic.module.css";
@@ -40,6 +43,9 @@ export function CompGraphic({
 	title,
 	showRanges = true,
 	showCombos = true,
+	enabledVariantKeys,
+	hiddenRangeWeaponIds = [],
+	showSpecialRanges = false,
 }: {
 	weaponIds: MainWeaponId[];
 	/** Without a title the whole header is left out */
@@ -48,10 +54,21 @@ export function CompGraphic({
 	combos: DamageCombo[];
 	showRanges?: boolean;
 	showCombos?: boolean;
+	/** Ways of shooting each weapon drawn in the range chart, its default when none */
+	enabledVariantKeys?: (weaponId: MainWeaponId) => RangeVariantKey[];
+	/** Weapons left out of the range chart */
+	hiddenRangeWeaponIds?: MainWeaponId[];
+	showSpecialRanges?: boolean;
 }) {
 	const { t } = useTranslation(["analyzer"]);
 
-	const weaponsWithRange = getWeaponsWithRange(weaponIds);
+	const weaponsWithRange = WeaponRange.ofWeapons(
+		weaponIds,
+		enabledVariantKeys,
+	).filter((weapon) => !hiddenRangeWeaponIds.includes(weapon.weaponId));
+	const specialRanges = showSpecialRanges
+		? SpecialWeaponRange.ofWeapons(weaponIds)
+		: [];
 	const topCombos = combos.slice(0, MAX_COMBOS);
 
 	return (
@@ -78,12 +95,15 @@ export function CompGraphic({
 					/>
 				))}
 			</div>
-			{showRanges && weaponsWithRange.length > 0 ? (
+			{showRanges && weaponsWithRange.length + specialRanges.length > 0 ? (
 				<>
 					<GraphicSectionDivider>
 						{t("analyzer:comp.weaponRanges")}
 					</GraphicSectionDivider>
-					<RangeChart weapons={weaponsWithRange} />
+					<RangeChart
+						weapons={weaponsWithRange}
+						specialRanges={specialRanges}
+					/>
 				</>
 			) : null}
 			{showCombos && topCombos.length > 0 ? (
@@ -124,68 +144,145 @@ function WeaponRow({
 				<WeaponImage weaponSplId={weaponId} variant="badge" size={44} />
 			</div>
 			<div className={styles.weaponInfo}>
-				<div className={styles.weaponName}>{t(`weapons:MAIN_${weaponId}`)}</div>
-				<div className={styles.weaponRoles}>
-					<span>{t(`analyzer:comp.subCategory.${subCategory}`)}</span>
-					<span className={styles.weaponRoleSeparator}>·</span>
-					<span>{t(`analyzer:comp.specialCategory.${specialCategory}`)}</span>
+				<div className={clsx(styles.weaponName, "truncate")}>
+					{t(`weapons:MAIN_${weaponId}`)}
 				</div>
-			</div>
-			<div className={styles.kit}>
-				<SubWeaponImage subWeaponId={params.subWeaponId} size={26} />
-				<SpecialWeaponImage
-					specialWeaponId={params.specialWeaponId}
-					size={26}
-				/>
+				<div className={styles.kit}>
+					<KitRole
+						image={
+							<SubWeaponImage subWeaponId={params.subWeaponId} size={20} />
+						}
+						label={t(`analyzer:comp.subCategory.${subCategory}`)}
+					/>
+					<KitRole
+						image={
+							<SpecialWeaponImage
+								specialWeaponId={params.specialWeaponId}
+								size={20}
+							/>
+						}
+						label={t(`analyzer:comp.specialCategory.${specialCategory}`)}
+					/>
+				</div>
 			</div>
 		</div>
 	);
 }
 
+/** A `span` so the export does not freeze it to its content width */
+function KitRole({ image, label }: { image: ReactNode; label: string }) {
+	return (
+		<span className={styles.kitRole}>
+			{image}
+			{label}
+		</span>
+	);
+}
+
 function RangeChart({
 	weapons,
+	specialRanges,
 }: {
-	weapons: Array<{
-		weaponId: MainWeaponId;
-		range: number;
-		blastRadius?: number;
-		slot: number;
-	}>;
+	weapons: WeaponRange.WeaponWithRange[];
+	specialRanges: SpecialWeaponRange.CompSpecialWithRange[];
 }) {
+	const { t } = useTranslation(["analyzer"]);
+
 	return (
 		<div className={styles.rangeChart}>
-			{weapons.map((weapon) => (
-				<div
-					key={`${weapon.weaponId}-${weapon.slot}`}
-					className={styles.rangeRow}
-				>
-					<WeaponImage
-						weaponSplId={weapon.weaponId}
-						variant="build"
+			{weapons.flatMap((weapon) =>
+				weapon.variants.map((variant, index) => (
+					<div
+						key={`${weapon.weaponId}-${weapon.slot}-${variant.key}`}
+						className={styles.rangeRow}
+					>
+						{index === 0 ? (
+							<WeaponImage
+								weaponSplId={weapon.weaponId}
+								variant="build"
+								size={28}
+							/>
+						) : (
+							<div className={styles.rangeIconSpacer} />
+						)}
+						<RangeTrack
+							slot={weapon.slot}
+							range={variant.range}
+							blastRadius={variant.blastRadius}
+							shorterReach={WeaponRange.shorterReach(weapon) ?? undefined}
+							isAlternate={!variant.isDefault}
+							label={
+								variant.key && weapon.variants.length > 1
+									? t(`analyzer:comp.rangeVariant.${variant.key}`)
+									: undefined
+							}
+						/>
+						<div className={styles.rangeValue}>{variant.range.toFixed(1)}</div>
+					</div>
+				)),
+			)}
+			{specialRanges.map((special) => (
+				<div key={`special-${special.slot}`} className={styles.rangeRow}>
+					<SpecialWeaponImage
+						specialWeaponId={special.specialWeaponId}
 						size={28}
 					/>
-					<div className={styles.rangeTrack}>
-						<div
-							className={clsx(styles.rangeBar, styles.slot, {
-								[styles.rangeBarWithBlast]: Boolean(weapon.blastRadius),
-							})}
-							data-slot={weapon.slot}
-							style={{ width: rangePercentage(weapon.range) }}
-						/>
-						{weapon.blastRadius ? (
-							<div
-								className={clsx(styles.rangeBlast, styles.slot)}
-								data-slot={weapon.slot}
-								style={{
-									left: rangePercentage(weapon.range),
-									width: rangePercentage(weapon.blastRadius),
-								}}
-							/>
-						) : null}
-					</div>
-					<div className={styles.rangeValue}>{weapon.range.toFixed(1)}</div>
+					<RangeTrack
+						slot={special.slot}
+						range={special.range}
+						blastRadius={special.blastRadius}
+					/>
+					<div className={styles.rangeValue}>{special.range.toFixed(1)}</div>
 				</div>
 			))}
+		</div>
+	);
+}
+
+function RangeTrack({
+	slot,
+	range,
+	blastRadius,
+	shorterReach,
+	isAlternate = false,
+	label,
+}: {
+	slot: number;
+	range: number;
+	blastRadius?: number;
+	/** Where the weapon's other, shorter way of shooting ends */
+	shorterReach?: number;
+	isAlternate?: boolean;
+	label?: string;
+}) {
+	return (
+		<div className={styles.rangeTrack}>
+			<div
+				className={clsx(styles.rangeBar, styles.slot, {
+					[styles.rangeBarWithBlast]: Boolean(blastRadius),
+					[styles.rangeBarAlternate]: isAlternate,
+				})}
+				data-slot={slot}
+				style={{ width: rangePercentage(range) }}
+			>
+				{label ? <span className={styles.rangeLabel}>{label}</span> : null}
+			</div>
+			{blastRadius ? (
+				<div
+					className={clsx(styles.rangeBlast, styles.slot)}
+					data-slot={slot}
+					style={{
+						left: rangePercentage(range),
+						width: rangePercentage(blastRadius),
+					}}
+				/>
+			) : null}
+			{shorterReach ? (
+				<div
+					className={styles.rangeShorterReachTick}
+					style={{ left: rangePercentage(shorterReach) }}
+				/>
+			) : null}
 		</div>
 	);
 }

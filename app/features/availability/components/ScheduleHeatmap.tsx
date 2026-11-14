@@ -17,9 +17,6 @@ import styles from "./ScheduleHeatmap.module.css";
 import { ClockAxis, useClockWindow } from "./ScheduleTracks";
 import trackStyles from "./ScheduleTracks.module.css";
 
-const MINUTE_IN_SECONDS = 60;
-/** Counts past this all read as the strongest shade. */
-const MAX_SHADE_COUNT = 5;
 /** One block per hour: a member counts in it when free for the whole hour. */
 const CELL_MINUTES = 60;
 
@@ -28,7 +25,7 @@ type TeamMember = TeamLoaderData["team"]["members"][number];
 type MemberRow = WeekData["members"][number] & { member: TeamMember };
 
 /**
- * The week as day tracks shaded by how many of the counted members are free at once. Chips
+ * The week as day tracks colored by whether enough of the counted members are free at once to play. Chips
  * pick who counts, so pairing off for a duo or pulling a sub in is the same view with fewer
  * or different members; the playable windows below follow the pick.
  */
@@ -76,8 +73,16 @@ export function ScheduleHeatmap({
 		range: TimeRange,
 		day: WeekData["days"][number],
 	): DayTimeRange => ({
-		start: (range.startsAt - day.startsAt) / MINUTE_IN_SECONDS,
-		end: (range.endsAt - day.startsAt) / MINUTE_IN_SECONDS,
+		start: Availability.timestampToDayMinutes({
+			date: day.date,
+			timestamp: range.startsAt,
+			timezone: week.timezone,
+		}),
+		end: Availability.timestampToDayMinutes({
+			date: day.date,
+			timestamp: range.endsAt,
+			timezone: week.timezone,
+		}),
 	});
 
 	const clockWindow = useClockWindow({
@@ -97,10 +102,19 @@ export function ScheduleHeatmap({
 		day,
 		dayIndex,
 		cells: cellStarts.map((startMinutes) => {
-			const startsAt = day.startsAt + startMinutes * MINUTE_IN_SECONDS;
-			const endsAt = startsAt + CELL_MINUTES * MINUTE_IN_SECONDS;
+			const startsAt = Availability.dayMinutesToTimestamp({
+				date: day.date,
+				minutes: startMinutes,
+				timezone: week.timezone,
+			});
+			const endsAt = Availability.dayMinutesToTimestamp({
+				date: day.date,
+				minutes: startMinutes + CELL_MINUTES,
+				timezone: week.timezone,
+			});
 
 			return {
+				startMinutes,
 				startsAt,
 				endsAt,
 				userIds: selectedRows
@@ -151,8 +165,12 @@ export function ScheduleHeatmap({
 			})
 			.join(", ")}`;
 
-	const shadeClass = (count: number) =>
-		styles[`count${Math.min(count, MAX_SHADE_COUNT)}`];
+	const tierClass = (count: number) => {
+		if (count === 0) return undefined;
+		if (count >= minPlayers) return styles.tierFull;
+		if (count === minPlayers - 1) return styles.tierOneShort;
+		return styles.tierFew;
+	};
 
 	const unreportedNames = selectedRows
 		.filter((row) => !row.reported)
@@ -216,12 +234,10 @@ export function ScheduleHeatmap({
 								{cells.map((cell) => (
 									// biome-ignore lint/a11y/noStaticElementInteractions: hover-only detail, the list view and summary carry the same info
 									<div
-										key={cell.startsAt}
+										key={cell.startMinutes}
 										className={clsx(
 											styles.cell,
-											cell.userIds.length > 0
-												? shadeClass(cell.userIds.length)
-												: undefined,
+											tierClass(cell.userIds.length),
 										)}
 										onMouseEnter={(event) =>
 											setHoveredCell({
@@ -231,7 +247,9 @@ export function ScheduleHeatmap({
 										}
 										data-testid="schedule-heatmap-cell"
 										data-count={cell.userIds.length}
-									/>
+									>
+										{cell.userIds.length > 0 ? cell.userIds.length : null}
+									</div>
 								))}
 							</div>
 							{/* keeps the day rows in step with the axis row's "later" expander */}
@@ -258,7 +276,7 @@ export function ScheduleHeatmap({
 											<span
 												className={clsx(
 													styles.legendSwatch,
-													shadeClass(segment.userIds.length),
+													tierClass(segment.userIds.length),
 												)}
 											/>
 											{rangeText(segment)} ·{" "}
@@ -314,20 +332,28 @@ export function ScheduleHeatmap({
 			) : null}
 			{selectedRows.length > 0 ? (
 				<div className={styles.legend}>
-					{R.range(1, Math.min(selectedRows.length, MAX_SHADE_COUNT) + 1).map(
-						(count) => (
-							<span key={count} className={styles.legendItem}>
-								<span
-									className={clsx(styles.legendSwatch, shadeClass(count))}
-								/>
-								{count === MAX_SHADE_COUNT &&
-								selectedRows.length > MAX_SHADE_COUNT
-									? `${count}+`
-									: count}
-							</span>
-						),
-					)}
-					<span>{t("schedule:team.legendFreeAtOnce")}</span>
+					<span className={styles.legendItem}>
+						<span className={clsx(styles.legendSwatch, styles.tierFull)} />
+						{t("schedule:picker.legend.full", { players: minPlayers })}
+					</span>
+					{minPlayers > 1 ? (
+						<span className={styles.legendItem}>
+							<span
+								className={clsx(styles.legendSwatch, styles.tierOneShort)}
+							/>
+							{t("schedule:picker.legend.oneShort", {
+								players: minPlayers - 1,
+							})}
+						</span>
+					) : null}
+					{minPlayers > 2 ? (
+						<span className={styles.legendItem}>
+							<span className={clsx(styles.legendSwatch, styles.tierFew)} />
+							{t("schedule:picker.free", {
+								amount: minPlayers === 3 ? "1" : `1–${minPlayers - 2}`,
+							})}
+						</span>
+					) : null}
 				</div>
 			) : null}
 			{unreportedNames.length > 0 ? (

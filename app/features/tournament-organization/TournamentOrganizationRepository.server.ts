@@ -15,13 +15,18 @@ import {
 	dateToDatabaseTimestamp,
 } from "~/utils/dates";
 import {
+	calendarEventNameMatchesSeries,
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
+	containsIgnoringCase,
 	jsonArrayFrom,
 	tournamentLogoWithDefault,
+	tournamentRegisteredTeamCount,
 } from "~/utils/kysely.server";
 import { toDBBoolean } from "~/utils/sql";
+import { removeDiacritics } from "~/utils/strings";
 import { mySlugify } from "~/utils/urls";
+import * as Series from "./core/Series";
 import { TOURNAMENT_SERIES_EVENTS_PER_PAGE } from "./tournament-organization-constants";
 
 interface CreateArgs {
@@ -201,11 +206,10 @@ export function searchByName({
 				"avatarUrl",
 			),
 		])
-		.where(({ eb, ref }) =>
-			eb(
+		.where(({ ref }) =>
+			containsIgnoringCase(
 				sql`unaccent(${ref("TournamentOrganization.name")})`,
-				"like",
-				sql`unaccent(${`%${query}%`})`,
+				removeDiacritics(query),
 			),
 		)
 		.orderBy("TournamentOrganization.name", "asc")
@@ -401,24 +405,15 @@ export function findAllOrganizedTournamentTeamCounts({
 			"CalendarEventDate.eventId",
 			"CalendarEvent.id",
 		)
+		.innerJoin("Tournament", "Tournament.id", "CalendarEvent.tournamentId")
 		.select((eb) => [
 			"CalendarEvent.name",
 			"CalendarEvent.organizationId",
 			eb.fn.min("CalendarEventDate.startsAt").as("startsAt"),
-			eb
-				.selectFrom("TournamentTeam")
-				.select(({ fn }) => fn.countAll<number>().as("count"))
-				.whereRef(
-					"TournamentTeam.tournamentId",
-					"=",
-					"CalendarEvent.tournamentId",
-				)
-				.where("TournamentTeam.isPlaceholder", "=", 0)
-				.as("teamCount"),
+			tournamentRegisteredTeamCount(eb).as("teamCount"),
 		])
 		.$narrowType<{ organizationId: NotNull; teamCount: NotNull }>()
 		.where("CalendarEvent.organizationId", "is not", null)
-		.where("CalendarEvent.tournamentId", "is not", null)
 		.where("CalendarEvent.hidden", "=", 0)
 		.where("CalendarEventDate.startsAt", ">=", startedAfter)
 		.where("CalendarEventDate.startsAt", "<=", databaseTimestampNow())
@@ -436,15 +431,6 @@ export function findAllUnfinalizedEvents(organizationId: number) {
 		.where("CalendarEvent.organizationId", "=", organizationId)
 		.execute();
 }
-
-const nameMatchesSeries =
-	(substringMatches: string[]) =>
-	(eb: ExpressionBuilder<DB, "CalendarEvent">) =>
-		eb.or(
-			substringMatches.map((match) =>
-				eb("CalendarEvent.name", "like", `%${match}%`),
-			),
-		);
 
 export async function findPaginatedEventsBySeries({
 	organizationId,
@@ -467,7 +453,7 @@ export async function findPaginatedEventsBySeries({
 		.select("CalendarEvent.id")
 		.where("CalendarEvent.organizationId", "=", organizationId)
 		.where("CalendarEvent.hidden", "=", 0)
-		.where(nameMatchesSeries(substringMatches))
+		.where(calendarEventNameMatchesSeries(substringMatches))
 		.groupBy("CalendarEvent.id")
 		.orderBy(({ fn }) => fn.min("CalendarEventDate.startsAt"), "desc")
 		.limit(TOURNAMENT_SERIES_EVENTS_PER_PAGE)
@@ -507,7 +493,7 @@ export async function findAllEventsBySeries({
 		])
 		.where("CalendarEvent.organizationId", "=", organizationId)
 		.where("CalendarEvent.hidden", "=", 0)
-		.where(nameMatchesSeries(substringMatches))
+		.where(calendarEventNameMatchesSeries(substringMatches))
 		.groupBy("CalendarEvent.id")
 		.orderBy("CalendarEventDate.startsAt", "desc")
 		.execute();
@@ -552,65 +538,59 @@ export async function findAllSeriesWinsByUserId({
 		eb.and([
 			eb("CalendarEvent.organizationId", "=", organizationId),
 			eb("CalendarEvent.hidden", "=", 0),
-			eb.or(
-				substringMatches.map((match) =>
-					eb("CalendarEvent.name", "like", `%${match}%`),
-				),
-			),
+			calendarEventNameMatchesSeries(substringMatches)(eb),
 		]);
 
-	const [tournamentWins, reportedWins] = await Promise.all([
-		db
-			.selectFrom("TournamentResult")
-			.innerJoin(
-				"CalendarEvent",
-				"CalendarEvent.tournamentId",
-				"TournamentResult.tournamentId",
-			)
-			.innerJoin(
-				"CalendarEventDate",
-				"CalendarEventDate.eventId",
-				"CalendarEvent.id",
-			)
-			.select(({ fn }) => [
-				"CalendarEvent.name",
-				fn.min("CalendarEventDate.startsAt").as("startsAt"),
-			])
-			.where("TournamentResult.userId", "=", userId)
-			.where("TournamentResult.placement", "=", 1)
-			.where("TournamentResult.tournamentId", "!=", excludeTournamentId)
-			.where(isEventOfTheSeries)
-			.groupBy("CalendarEvent.id")
-			.execute(),
-		db
-			.selectFrom("CalendarEventResultPlayer")
-			.innerJoin(
-				"CalendarEventResultTeam",
-				"CalendarEventResultTeam.id",
-				"CalendarEventResultPlayer.teamId",
-			)
-			.innerJoin(
-				"CalendarEvent",
-				"CalendarEvent.id",
-				"CalendarEventResultTeam.eventId",
-			)
-			.innerJoin(
-				"CalendarEventDate",
-				"CalendarEventDate.eventId",
-				"CalendarEvent.id",
-			)
-			.select(({ fn }) => [
-				"CalendarEvent.name",
-				fn.min("CalendarEventDate.startsAt").as("startsAt"),
-			])
-			.where("CalendarEventResultPlayer.userId", "=", userId)
-			.where("CalendarEventResultTeam.placement", "=", 1)
-			// a tournament of the site reports its own results, counted above
-			.where("CalendarEvent.tournamentId", "is", null)
-			.where(isEventOfTheSeries)
-			.groupBy("CalendarEvent.id")
-			.execute(),
-	]);
+	const tournamentWins = await db
+		.selectFrom("TournamentResult")
+		.innerJoin(
+			"CalendarEvent",
+			"CalendarEvent.tournamentId",
+			"TournamentResult.tournamentId",
+		)
+		.innerJoin(
+			"CalendarEventDate",
+			"CalendarEventDate.eventId",
+			"CalendarEvent.id",
+		)
+		.select(({ fn }) => [
+			"CalendarEvent.name",
+			fn.min("CalendarEventDate.startsAt").as("startsAt"),
+		])
+		.where("TournamentResult.userId", "=", userId)
+		.where("TournamentResult.placement", "=", 1)
+		.where("TournamentResult.tournamentId", "!=", excludeTournamentId)
+		.where(isEventOfTheSeries)
+		.groupBy("CalendarEvent.id")
+		.execute();
+	const reportedWins = await db
+		.selectFrom("CalendarEventResultPlayer")
+		.innerJoin(
+			"CalendarEventResultTeam",
+			"CalendarEventResultTeam.id",
+			"CalendarEventResultPlayer.teamId",
+		)
+		.innerJoin(
+			"CalendarEvent",
+			"CalendarEvent.id",
+			"CalendarEventResultTeam.eventId",
+		)
+		.innerJoin(
+			"CalendarEventDate",
+			"CalendarEventDate.eventId",
+			"CalendarEvent.id",
+		)
+		.select(({ fn }) => [
+			"CalendarEvent.name",
+			fn.min("CalendarEventDate.startsAt").as("startsAt"),
+		])
+		.where("CalendarEventResultPlayer.userId", "=", userId)
+		.where("CalendarEventResultTeam.placement", "=", 1)
+		// a tournament of the site reports its own results, counted above
+		.where("CalendarEvent.tournamentId", "is", null)
+		.where(isEventOfTheSeries)
+		.groupBy("CalendarEvent.id")
+		.execute();
 
 	return R.sortBy(
 		[...tournamentWins, ...reportedWins].map((win) => ({
@@ -782,12 +762,9 @@ export function update({
 
 			for (const s of insertedSeries) {
 				const matchingTiers = finalizedTournaments
-					.filter((t) => {
-						const eventNameLower = t.name.toLowerCase();
-						return s.substringMatches.some((match) =>
-							eventNameLower.includes(match.toLowerCase()),
-						);
-					})
+					.filter((t) =>
+						Series.matchesEventName({ series: s, eventName: t.name }),
+					)
 					.filter((t) => t.tier !== null)
 					.map((t) => t.tier);
 
@@ -942,12 +919,7 @@ export async function updateSeriesTierHistory({
 		.where("organizationId", "=", organizationId)
 		.execute();
 
-	const eventNameLower = eventName.toLowerCase();
-	const matchingSeries = series.find((s) =>
-		s.substringMatches.some((match) =>
-			eventNameLower.includes(match.toLowerCase()),
-		),
-	);
+	const matchingSeries = Series.findByEventName({ series, eventName });
 
 	if (!matchingSeries) return;
 

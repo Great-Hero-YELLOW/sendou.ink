@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVoiceSnapshot } from "~/features/voice/voice-hooks";
 import { useBackgroundResource } from "~/hooks/useBackgroundResource";
 import { useReloadOnNewDeploy } from "~/hooks/useReloadOnNewDeploy";
 import type { RootLoaderData } from "~/root";
@@ -71,8 +72,9 @@ export function LayoutDataProvider({
 	}, [refresh, isLoading]);
 
 	const newest = useNewestOf(data, polledData);
+	const { call } = useVoiceSnapshot();
 
-	useReloadOnNewDeploy(newest.buildCommit ?? "");
+	useReloadOnNewDeploy(newest.buildCommit ?? "", { canReload: !call });
 	useReloadOnStaleAuth({
 		clientUserId: data?.user?.id,
 		serverUserId: newest.loggedInUserId,
@@ -116,19 +118,19 @@ function useNewestOf(
 	rootData: RootLoaderData | undefined,
 	polledData: LayoutData | undefined,
 ): LayoutData {
-	const previous = React.useRef({ rootData, polledData });
-	const newest = React.useRef<"root" | "polled">("root");
+	const [tracked, setTracked] = React.useState<{
+		rootData: RootLoaderData | undefined;
+		polledData: LayoutData | undefined;
+		newest: "root" | "polled";
+	}>({ rootData, polledData, newest: "root" });
 
-	if (rootData !== previous.current.rootData) {
-		previous.current.rootData = rootData;
-		newest.current = "root";
-	}
-	if (polledData !== previous.current.polledData) {
-		previous.current.polledData = polledData;
-		newest.current = "polled";
+	let newest = tracked.newest;
+	if (rootData !== tracked.rootData || polledData !== tracked.polledData) {
+		newest = polledData !== tracked.polledData ? "polled" : "root";
+		setTracked({ rootData, polledData, newest });
 	}
 
-	if (newest.current === "polled" && polledData) return polledData;
+	if (newest === "polled" && polledData) return polledData;
 
 	return rootData ?? {};
 }

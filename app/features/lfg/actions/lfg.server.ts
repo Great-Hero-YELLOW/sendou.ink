@@ -1,33 +1,31 @@
-import type { ActionFunctionArgs } from "react-router";
 import { requireUser } from "~/features/auth/core/user.server";
+import { defineAction } from "~/form/define-action.server";
 import { requirePermission } from "~/modules/permissions/guards.server";
-import { errorToastIfFalsy, parseRequestPayload } from "~/utils/remix.server";
+import { errorToastIfFalsy } from "~/utils/remix.server";
 import * as LFGRepository from "../LFGRepository.server";
 import { lfgActionSchema } from "../lfg-schemas";
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-	const user = requireUser();
-	const data = await parseRequestPayload({
-		request,
-		schema: lfgActionSchema,
-	});
+export const action = defineAction(
+	{ body: lfgActionSchema },
+	async ({ body }) => {
+		requireUser();
 
-	const posts = await LFGRepository.findAllPosts(user);
-	const post = posts.find((candidate) => candidate.id === data.id);
-	errorToastIfFalsy(post, "Post not found");
+		const post = await LFGRepository.findVisibleById(body.id);
+		errorToastIfFalsy(post, "Post not found");
 
-	switch (data._action) {
-		case "DELETE_POST": {
-			requirePermission(post, "DELETE");
-			await LFGRepository.deletePost(data.id);
-			break;
+		switch (body._action) {
+			case "DELETE_POST": {
+				requirePermission(post, "DELETE");
+				await LFGRepository.deletePost(body.id);
+				break;
+			}
+			case "BUMP_POST": {
+				requirePermission(post, "EDIT");
+				await LFGRepository.bumpPost(body.id);
+				break;
+			}
 		}
-		case "BUMP_POST": {
-			requirePermission(post, "EDIT");
-			await LFGRepository.bumpPost(data.id);
-			break;
-		}
-	}
 
-	return null;
-};
+		return null;
+	},
+);

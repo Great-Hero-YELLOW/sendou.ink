@@ -17,23 +17,6 @@
 	position: sticky;
 	top: 0;
 	z-index: 10;
-	/* captured on its own so animating content slides under it instead of over it */
-	view-transition-name: layout-header;
-
-	/* snapshots paint above the top layer, which would lift it over an open modal's backdrop */
-	:root:has(:modal) & {
-		view-transition-name: none;
-	}
-}
-
-::view-transition-group(layout-header) {
-	z-index: 1;
-}
-
-::view-transition-group(layout-header),
-::view-transition-old(layout-header),
-::view-transition-new(layout-header) {
-	animation-duration: 0s;
 }
 
 .siteTitle {
@@ -137,9 +120,6 @@
 	font-size: var(--font-xs);
 	font-weight: var(--weight-semi);
 	color: var(--color-text);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 	min-width: 0;
 	animation: fadeInFull 200ms ease-out 150ms both;
 }
@@ -150,15 +130,6 @@
 		padding-top: calc(var(--s-2) + env(safe-area-inset-top));
 		padding-bottom: var(--s-2);
 		height: calc(var(--layout-nav-height) + env(safe-area-inset-top));
-	}
-
-	.chatSidebarModal {
-		top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
-		height: calc(100% - var(--layout-nav-height) - env(safe-area-inset-top));
-
-		&::backdrop {
-			top: calc(var(--layout-nav-height) + env(safe-area-inset-top));
-		}
 	}
 }
 
@@ -343,30 +314,6 @@ shown, so the popover's user agent styles are reset here.
 	}
 }
 
-.chatSidebarModal {
-	position: fixed;
-	inset: 0;
-	top: var(--layout-nav-height);
-	margin: 0;
-	margin-left: auto;
-	padding: 0;
-	max-width: none;
-	max-height: none;
-	height: calc(100% - var(--layout-nav-height));
-	width: var(--layout-sidenav-width);
-	border: none;
-	border-left: 1.5px solid var(--color-border);
-	background-color: var(--color-bg-nav);
-	color: var(--color-text);
-	outline: none;
-
-	&::backdrop {
-		background-color: rgba(0, 0, 0, 0.4);
-		backdrop-filter: blur(4px);
-		top: var(--layout-nav-height);
-	}
-}
-
 @media screen and (min-width: 1475px) {
 	:global(html[data-fuse="true"]) .chatSidebar {
 		z-index: 20;
@@ -390,12 +337,6 @@ shown, so the popover's user agent styles are reset here.
 	&:hover {
 		background-color: var(--color-bg-high);
 	}
-}
-
-.sideNavFooterUsername {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .sideNavFooterActions {

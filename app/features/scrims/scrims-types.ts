@@ -1,5 +1,4 @@
 import type { CommonUser } from "../../utils/kysely.server";
-import type { AssociationVisibility } from "../associations/associations-types";
 import type { LUTI_DIVS } from "./scrims-constants";
 
 export type LutiDiv = (typeof LUTI_DIVS)[number];
@@ -8,10 +7,10 @@ export type ScrimSide = "ALPHA" | "BRAVO";
 
 export interface ScrimPost {
 	id: number;
+	/** When the scrim starts. For an accepted post this is the booked time, not the window start. */
 	startsAt: number;
 	rangeEndsAt: number | null;
 	createdAt: number;
-	visibility: AssociationVisibility | null;
 	text: string | null;
 	divs: {
 		/** the highest div is "X", the lowest "11" */
@@ -28,8 +27,8 @@ export interface ScrimPost {
 	users: Array<ScrimPostUser>;
 	chatRoomId: number | null;
 	requests: Array<ScrimPostRequest>;
-	/** Is the post visible to the user because of their association membership? */
-	isPrivate?: boolean;
+	/** Is the post visible only to some (association members, friends etc.) right now? */
+	isPrivate: boolean;
 	permissions: {
 		MANAGE_REQUESTS: number[];
 		DELETE_POST: number[];
@@ -70,7 +69,7 @@ interface ScrimPostTeam {
 	avatarUrl: string | null;
 }
 
-export interface TimeRange {
+interface TimeRange {
 	start: string;
 	end: string;
 }

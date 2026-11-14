@@ -9,11 +9,13 @@ import styles from "./TrophyShowcase.module.css";
 
 export function TrophyShowcase({
 	model,
+	code,
 	children,
 	className,
 	detailsClassName,
 }: {
 	model: string;
+	code?: string | null;
 	children: React.ReactNode;
 	className?: string;
 	detailsClassName?: string;
@@ -21,10 +23,8 @@ export function TrophyShowcase({
 	return (
 		<div className={styles.wrapper}>
 			<div className={clsx(styles.content, className)}>
-				<Trophy model={model} />
-				<div className={clsx(styles.details, detailsClassName, "scrollbar")}>
-					{children}
-				</div>
+				<Trophy model={model} code={code} />
+				<div className={clsx(styles.details, detailsClassName)}>{children}</div>
 			</div>
 		</div>
 	);
@@ -35,7 +35,7 @@ export function TrophyShowcaseModal({
 	onClose,
 	children,
 }: {
-	trophy: { id: number; name: string; model: string };
+	trophy: { id: number; name: string; model: string; code?: string | null };
 	onClose: () => void;
 	children?: React.ReactNode;
 }) {
@@ -49,7 +49,7 @@ export function TrophyShowcaseModal({
 			isDismissable
 			className={styles.modal}
 		>
-			<TrophyShowcase model={trophy.model}>
+			<TrophyShowcase model={trophy.model} code={trophy.code}>
 				<div className="stack xxs">
 					<p className={styles.trophyName}>{trophy.name}</p>
 					<Link to={trophyPage(trophy.id)} className={styles.trophyPageLink}>

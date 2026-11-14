@@ -8,6 +8,7 @@ import {
 	jsonArrayFrom,
 } from "~/utils/kysely.server";
 import { seededRandom } from "~/utils/random";
+import { toDBBoolean } from "~/utils/sql";
 import type { ListedArt } from "./art-types";
 
 export function unlinkOwnFromArt(artId: number) {
@@ -72,9 +73,8 @@ export async function findShowcaseArts(): Promise<ListedArt[]> {
 		isShowcase: Boolean(a.isShowcase),
 		author: {
 			commissionsOpen: a.commissionsOpen,
-			discordAvatar: a.discordAvatar,
-			customAvatarUrl: a.customAvatarUrl,
-			discordId: a.discordId,
+			avatar: a.avatar,
+			id: a.userId,
 			username: a.username,
 		},
 		permissions: artPermissions({
@@ -130,9 +130,8 @@ export async function findShowcaseArtsByTag(
 			isShowcase: Boolean(a.isShowcase),
 			author: {
 				commissionsOpen: a.commissionsOpen,
-				discordAvatar: a.discordAvatar,
-				customAvatarUrl: a.customAvatarUrl,
-				discordId: a.discordId,
+				avatar: a.avatar,
+				id: a.userId,
 				username: a.username,
 			},
 			permissions: artPermissions({
@@ -169,9 +168,8 @@ export async function findRecentlyUploadedArts(): Promise<ListedArt[]> {
 		isShowcase: Boolean(a.isShowcase),
 		author: {
 			commissionsOpen: a.commissionsOpen,
-			discordAvatar: a.discordAvatar,
-			customAvatarUrl: a.customAvatarUrl,
-			discordId: a.discordId,
+			avatar: a.avatar,
+			id: a.userId,
 			username: a.username,
 		},
 		permissions: artPermissions({
@@ -311,10 +309,9 @@ export async function findArtsByUserId(
 			tags: row.tags.length > 0 ? row.tags : undefined,
 			linkedUsers: row.linkedUsers.length > 0 ? row.linkedUsers : undefined,
 			author: {
-				discordId: row.discordId,
+				id: row.userId,
 				username: row.username,
-				discordAvatar: row.discordAvatar,
-				customAvatarUrl: row.customAvatarUrl,
+				avatar: row.avatar,
 				commissionsOpen: row.commissionsOpen,
 			},
 			permissions: artPermissions({
@@ -394,7 +391,8 @@ export async function insert(args: InsertArtArgs) {
 	});
 }
 
-type UpdateArtArgs = Pick<Tables["Art"], "description" | "isShowcase"> & {
+type UpdateArtArgs = Pick<Tables["Art"], "description"> & {
+	isShowcase: boolean;
 	linkedUsers: number[];
 	tags: TagsToAdd;
 };
@@ -419,7 +417,7 @@ export async function update(id: number, args: UpdateArtArgs) {
 			.updateTable("Art")
 			.set({
 				description: args.description,
-				isShowcase: args.isShowcase ? 1 : 0,
+				isShowcase: toDBBoolean(args.isShowcase),
 			})
 			.where("id", "=", id)
 			.execute();

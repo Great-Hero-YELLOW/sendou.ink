@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { actAs } from "~/db/seed/core/actAs";
 import * as SQMatchFactory from "~/db/seed/factories/SQMatchFactory";
 import * as SQReportedWeaponFactory from "~/db/seed/factories/SQReportedWeaponFactory";
+import * as TeamSkillFactory from "~/db/seed/factories/TeamSkillFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentReportedWeaponFactory from "~/db/seed/factories/TournamentReportedWeaponFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
@@ -12,13 +13,6 @@ import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import * as LeaderboardRepository from "./LeaderboardRepository.server";
 import { MATCHES_COUNT_NEEDED_FOR_LEADERBOARD } from "./leaderboards-constants";
-
-vi.mock("~/features/chat/ChatSystemMessage.server", () => ({
-	send: vi.fn(),
-	notifyStatusChanged: vi.fn(),
-	notifyNotificationsChanged: vi.fn(),
-	notifyRoomsChangedByRoomIds: vi.fn(),
-}));
 
 const SEASON = Seasons.currentOrPrevious()!.nth;
 const SEASON_RANGE = Seasons.nthToDateRange(SEASON);
@@ -250,6 +244,20 @@ describe("LeaderboardRepository.findTeamLeaderboardBySeason", () => {
 		users.id(7),
 		users.id(8),
 	];
+	/** Three players of the top roster with one who never played SendouQ. */
+	const notEnoughSetsRoster = () => [
+		users.id(1),
+		users.id(2),
+		users.id(3),
+		users.id(10),
+	];
+	/** Shares two players with the roster short on sets, its own two also never having played SendouQ. */
+	const otherNotEnoughSetsRoster = () => [
+		users.id(1),
+		users.id(2),
+		users.id(11),
+		users.id(12),
+	];
 
 	const playSeasonInWith = async (alphaUserIds: number[]) => {
 		for (let i = 0; i < MATCHES_COUNT_NEEDED_FOR_LEADERBOARD; i++) {
@@ -276,6 +284,15 @@ describe("LeaderboardRepository.findTeamLeaderboardBySeason", () => {
 			})
 		).map((entry) => [entry.identifier, entry.placementRank]);
 
+	const playTournamentsWith = (userIds: number[], { mu }: { mu: number }) =>
+		TeamSkillFactory.create({
+			identifier: userIdsToIdentifier(userIds),
+			season: SEASON,
+			mu,
+			sigma: 1,
+			matchesCount: MATCHES_COUNT_NEEDED_FOR_LEADERBOARD,
+		});
+
 	const allRostersPlacements = async () =>
 		(
 			await LeaderboardRepository.findTeamLeaderboardBySeason({
@@ -285,7 +302,7 @@ describe("LeaderboardRepository.findTeamLeaderboardBySeason", () => {
 		).map((entry) => [entry.identifier, entry.placementRank, entry.isSkipped]);
 
 	beforeEach(async () => {
-		await users.create(9);
+		await users.create(12);
 		await playSeasonInWith(topRoster());
 		await playSeasonInWith(sharedPlayersRoster());
 	});
@@ -303,6 +320,46 @@ describe("LeaderboardRepository.findTeamLeaderboardBySeason", () => {
 		expect(await placements()).toEqual([
 			[userIdsToIdentifier(topRoster()), null],
 			[userIdsToIdentifier(sharedPlayersRoster()), 1],
+			[userIdsToIdentifier(beatenRoster()), 2],
+		]);
+	});
+
+	test("keeps a roster with players short on SendouQ sets in its spot without a placement, naming them", async () => {
+		await playTournamentsWith(notEnoughSetsRoster(), { mu: 100 });
+
+		const leaderboard = await LeaderboardRepository.findTeamLeaderboardBySeason(
+			{ season: SEASON, onlyOneEntryPerUser: true },
+		);
+
+		expect(
+			leaderboard.map((entry) => [
+				entry.identifier,
+				entry.placementRank,
+				entry.userIdsWithoutEnoughSets,
+			]),
+		).toEqual([
+			[userIdsToIdentifier(notEnoughSetsRoster()), null, [users.id(10)]],
+			[userIdsToIdentifier(topRoster()), 1, []],
+			[userIdsToIdentifier(beatenRoster()), 2, []],
+		]);
+	});
+
+	test("hides a roster short on SendouQ sets whose players already place higher with another roster", async () => {
+		await playTournamentsWith(notEnoughSetsRoster(), { mu: 0 });
+
+		expect(await placements()).toEqual([
+			[userIdsToIdentifier(topRoster()), 1],
+			[userIdsToIdentifier(beatenRoster()), 2],
+		]);
+	});
+
+	test("hides a roster short on SendouQ sets sharing players with a higher one short on sets", async () => {
+		await playTournamentsWith(notEnoughSetsRoster(), { mu: 100 });
+		await playTournamentsWith(otherNotEnoughSetsRoster(), { mu: 90 });
+
+		expect(await placements()).toEqual([
+			[userIdsToIdentifier(notEnoughSetsRoster()), null],
+			[userIdsToIdentifier(topRoster()), 1],
 			[userIdsToIdentifier(beatenRoster()), 2],
 		]);
 	});

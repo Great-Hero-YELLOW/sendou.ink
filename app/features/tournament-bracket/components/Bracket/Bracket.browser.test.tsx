@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
 import type { Bracket as BracketType } from "../../core/Bracket";
+import * as Tiebreakers from "../../core/Bracket/Tiebreakers";
 import { EliminationBracketSide } from "./Elimination";
 import { Bracket } from "./index";
 import { RoundRobinBracket } from "./RoundRobin";
@@ -94,6 +95,7 @@ const mockTournament = {
 		mockTournament.ctx.teams.find((t) => t.id === id) ?? null,
 	teamMemberOfByUser: () => null,
 	isOrganizer: () => false,
+	isMatchLockedForCast: () => false,
 };
 
 vi.mock("~/features/auth/core/user", () => ({
@@ -366,9 +368,9 @@ function createDoubleEliminationData(): BracketData {
 			{
 				id: 2,
 				groupId: 1,
-				number: 2,
+				number: 1,
 				stageId: 1,
-				section: "winners",
+				section: "finals",
 				maps: { count: 5, type: "BEST_OF", pickBan: null },
 			},
 			{
@@ -830,12 +832,19 @@ function createMockBracket(
 		tournament: mockTournament as any,
 		settings: type === "swiss" ? { roundCount: 3 } : null,
 		sources: undefined,
-		seeding: undefined,
+		previewSeeding: undefined,
 		createdAt: null,
 		requiresCheckIn: false,
 		startTime: null,
 		simulatedMatch: () => undefined,
+		matchExitDestinations: () => new Map(),
 		liveStandings: mockLiveStandings(data),
+		tiebreakers:
+			type === "swiss"
+				? Tiebreakers.SWISS
+				: type === "round_robin"
+					? Tiebreakers.ROUND_ROBIN
+					: [],
 		participantTournamentTeamIds: [1, 2, 3, 4, 5, 6, 7, 8],
 	} as unknown as BracketType;
 }
@@ -1060,7 +1069,6 @@ describe("Double Elimination Bracket", () => {
 			<EliminationBracketSide bracket={bracket} type="winners" isExpanded />,
 		);
 
-		// Small 4-team bracket has Grand Finals and Bracket Reset rounds
 		await expect.element(screen.getByText("Grand Finals")).toBeVisible();
 	});
 
@@ -1084,8 +1092,8 @@ describe("Double Elimination Bracket", () => {
 			<EliminationBracketSide bracket={bracket} type="winners" isExpanded />,
 		);
 
-		await expect.element(screen.getByText("Team Alpha")).toBeVisible();
-		await expect.element(screen.getByText("Team Beta")).toBeVisible();
+		await expect.element(screen.getByText("Team Alpha").first()).toBeVisible();
+		await expect.element(screen.getByText("Team Beta").first()).toBeVisible();
 	});
 
 	test("renders match headers with GF prefix for grand finals", async () => {
@@ -1096,12 +1104,11 @@ describe("Double Elimination Bracket", () => {
 			<EliminationBracketSide bracket={bracket} type="winners" isExpanded />,
 		);
 
-		// Small 4-team bracket only has Grand Finals (GF prefix), not regular WB rounds
-		const headerBox = screen.container.querySelector(
-			'[data-testid="match-header-box"]',
-		);
-		expect(headerBox?.textContent).toContain("GF");
-		expect(headerBox?.textContent).toContain("1.1");
+		const headerBoxTexts = Array.from(
+			screen.container.querySelectorAll('[data-testid="match-header-box"]'),
+		).map((headerBox) => headerBox.textContent);
+		expect(headerBoxTexts.some((text) => text?.includes("GF"))).toBe(true);
+		expect(headerBoxTexts.some((text) => text?.includes("1.1"))).toBe(true);
 	});
 });
 

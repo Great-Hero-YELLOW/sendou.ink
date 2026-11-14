@@ -105,7 +105,7 @@ export default function CalendarPage() {
 			<div
 				key={`${shown[0].year}-${shown[0].month}-${shown[0].day}`}
 				ref={setUpColumnsContainer}
-				className={clsx(styles.columnsContainer, "scrollbar")}
+				className={styles.columnsContainer}
 			>
 				{shown.map((date) => (
 					<DayEventsColumn
@@ -148,6 +148,7 @@ function NavigateButton({
 	return (
 		<Link
 			to={dayHref(lowestDate)}
+			prefetch="intent"
 			className={clsx(styles.navigateButton, styles.navigateArrowButton)}
 			data-testid="calendar-navigate-button"
 		>

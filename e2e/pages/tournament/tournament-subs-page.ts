@@ -28,15 +28,29 @@ export class TournamentSubsPage {
 		await navigate({ page: this.page, url: tournamentSubsPage(tournamentId) });
 	}
 
+	/** Text of a sub post, e.g. its poster's name or message. */
 	subPostText(text: string) {
-		// the poster's name is also in the closed mobile "You" panel
-		return this.page.getByText(text).filter({ visible: true });
+		// the poster's name is also in the side nav (as the logged in user) and
+		// in the closed mobile "You" panel
+		return this.page
+			.getByRole("main")
+			.getByText(text)
+			.filter({ visible: true });
+	}
+
+	/** A weapon of a sub post's player, from their match profile. */
+	weaponImage(weaponName: string) {
+		return this.page
+			.getByRole("main")
+			.getByRole("img", { name: weaponName })
+			.filter({ visible: true });
 	}
 
 	openAddPostDialog() {
 		return this.locators.addPostButton.click();
 	}
 
+	/** Deletes the only sub post offering a delete button, confirming the dialog. */
 	async deleteOwnPost() {
 		await this.page.getByRole("button", { name: "Delete" }).click();
 		await modalClickConfirmButton(this.page);

@@ -17,8 +17,7 @@ import { createScoreboardOwnDetector } from "../core/detectors/scoreboard-own/in
 import type { Detector } from "../core/detectors/types";
 import { hueDistance, hueOf } from "../core/ink-color";
 import {
-	type Fixture,
-	isFieldSkipped,
+	fieldTestOptions,
 	loadFixtures,
 	runDetectorOnFixture,
 } from "../node/fixtures";
@@ -63,9 +62,18 @@ for (const fixture of fixtures) {
 			},
 		);
 
+		if (fixture.expected.options?.unsettled) {
+			await t.test("confidence stays under sufficientConfidence", () => {
+				assert.ok(
+					event.confidence < detector.sufficientConfidence!,
+					`confidence ${event.confidence.toFixed(3)} would end the refinement`,
+				);
+			});
+		}
+
 		await t.test(
 			"stage",
-			{ skip: expected.stage === undefined || skip(fixture, "stage") },
+			fieldTestOptions(fixture, "stage", expected.stage !== undefined),
 			() => {
 				assert.equal(
 					event.data.stage,
@@ -95,7 +103,7 @@ for (const fixture of fixtures) {
 		for (const [i, want] of (expected.teammates ?? []).entries()) {
 			await t.test(
 				`teammate ${i}`,
-				{ skip: skip(fixture, `teammates.${i}`) },
+				fieldTestOptions(fixture, `teammates.${i}`),
 				() => {
 					const got = event.data.teammates[i];
 					assert.ok(
@@ -108,13 +116,13 @@ for (const fixture of fixtures) {
 					if (want.self !== undefined) assert.equal(got.self, want.self);
 					if (
 						want.name !== undefined &&
-						!isFieldSkipped(fixture, `teammates.${i}.name`)
+						!fieldTestOptions(fixture, `teammates.${i}.name`)
 					) {
 						assert.equal(got.name, want.name, `name (debug: ${cardDebug})`);
 					}
 					if (
 						want.weaponId !== undefined &&
-						!isFieldSkipped(fixture, `teammates.${i}.weapon`)
+						!fieldTestOptions(fixture, `teammates.${i}.weapon`)
 					) {
 						assert.equal(
 							got.weaponId,
@@ -124,7 +132,7 @@ for (const fixture of fixtures) {
 					}
 					if (
 						want.abilities !== undefined &&
-						!isFieldSkipped(fixture, `teammates.${i}.abilities`)
+						!fieldTestOptions(fixture, `teammates.${i}.abilities`)
 					) {
 						assert.deepEqual(
 							got.abilities,
@@ -149,7 +157,7 @@ for (const fixture of fixtures) {
 		for (const [i, want] of (expected.enemies ?? []).entries()) {
 			await t.test(
 				`enemy ${i}`,
-				{ skip: skip(fixture, `enemies.${i}`) },
+				fieldTestOptions(fixture, `enemies.${i}`),
 				() => {
 					const got = event.data.enemies[i];
 					assert.ok(
@@ -161,13 +169,13 @@ for (const fixture of fixtures) {
 					);
 					if (
 						want.name !== undefined &&
-						!isFieldSkipped(fixture, `enemies.${i}.name`)
+						!fieldTestOptions(fixture, `enemies.${i}.name`)
 					) {
 						assert.equal(got.name, want.name, `name (debug: ${rowDebug})`);
 					}
 					if (
 						want.weaponId !== undefined &&
-						!isFieldSkipped(fixture, `enemies.${i}.weapon`)
+						!fieldTestOptions(fixture, `enemies.${i}.weapon`)
 					) {
 						assert.equal(
 							got.weaponId,
@@ -177,7 +185,7 @@ for (const fixture of fixtures) {
 					}
 					if (
 						want.abilities !== undefined &&
-						!isFieldSkipped(fixture, `enemies.${i}.abilities`)
+						!fieldTestOptions(fixture, `enemies.${i}.abilities`)
 					) {
 						assert.deepEqual(
 							got.abilities,
@@ -278,8 +286,4 @@ for (const fixture of fixtures.filter((f) => f.expected.event === "Minimap")) {
 			);
 		}
 	});
-}
-
-function skip(fixture: Fixture, field: string): boolean | string {
-	return isFieldSkipped(fixture, field) ? "skipFields" : false;
 }

@@ -12,6 +12,7 @@ import { starterMap } from "~/modules/tournament-map-list-generator/starter-map"
 import type {
 	DBTournamentMaplistSource,
 	TournamentMapListMap,
+	TournamentMaplistInput,
 	TournamentMaplistSource,
 } from "~/modules/tournament-map-list-generator/types";
 import { syncCached } from "~/utils/cache.server";
@@ -36,9 +37,12 @@ interface ResolveCurrentMapListArgs {
 		mode: ModeShort | null;
 		stageId: StageId | null;
 		type: Tables["TournamentMatchPickBanEvent"]["type"];
+		mapListIndex?: number | null;
 	}>;
-	/** Both teams' recently played maps interleaved, most recent first. */
-	recentlyPlayedMaps?: Array<{ mode: ModeShort; stageId: StageId }>;
+	/** Each team's distinct recently played maps, most recent first. */
+	recentlyPlayedMaps?: TournamentMaplistInput["recentlyPlayedMaps"];
+	/** Round robin match whose teams are still to finish the previous round, see `Tournament.matchStatusById`. */
+	isWaitingForPreviousRound: boolean;
 }
 
 export function resolveMapList(
@@ -51,27 +55,34 @@ export function resolveMapList(
 	const baseMaps =
 		args.mapPickingStyle === "TO"
 			? args.maps!.list?.map((m) => ({ ...m, source: "TO" as const }))
-			: // include team ids in the key to handle a case where match was reopened causing one of the teams to change
-				syncCached(
-					`${args.matchId}-${args.teams[0]}-${args.teams[1]}-${args.maps?.count}-${args.maps?.pickBan}`,
-					() =>
-						resolveFreshTeamPickedMapList(
-							args as ResolveCurrentMapListArgs & {
-								mapPickingStyle: Exclude<
-									Tables["Tournament"]["mapPickingStyle"],
-									"TO"
-								>;
-							},
-						),
-				);
+			: // generated from the recently played maps, which the previous round still changes
+				args.isWaitingForPreviousRound
+				? []
+				: // include team ids in the key to handle a case where match was reopened causing one of the teams to change
+					syncCached(
+						`${args.matchId}-${args.teams[0]}-${args.teams[1]}-${args.maps?.count}-${args.maps?.pickBan}`,
+						() =>
+							resolveFreshTeamPickedMapList(
+								args as ResolveCurrentMapListArgs & {
+									mapPickingStyle: Exclude<
+										Tables["Tournament"]["mapPickingStyle"],
+										"TO"
+									>;
+								},
+							),
+					);
 
 	if (!baseMaps) return [];
 
 	return baseMaps
-		.map((map) => {
+		.map((map, mapListIndex) => {
 			return {
 				...map,
-				bannedByTournamentTeamId: resolveBannedByTeamId(args, map),
+				bannedByTournamentTeamId: resolveBannedByTeamId({
+					args,
+					map,
+					mapListIndex,
+				}),
 			};
 		})
 		.concat(
@@ -118,7 +129,7 @@ export async function resolveMatchMapList({
 					excludeMatchId: match.id,
 				}).catch((error) => {
 					logger.error("Failed to fetch recently played maps", error);
-					return [];
+					return undefined;
 				})
 			: undefined;
 
@@ -138,6 +149,8 @@ export async function resolveMatchMapList({
 		modesIncluded: tournament.modesIncluded,
 		pickBanEvents,
 		recentlyPlayedMaps,
+		isWaitingForPreviousRound:
+			tournament.matchStatusById(match.id) === "PENDING",
 	});
 }
 
@@ -176,20 +189,28 @@ export function mapListFromResults(
 	}));
 }
 
-function resolveBannedByTeamId(
-	args: ResolveCurrentMapListArgs,
-	map: { stageId: StageId; mode: ModeShort },
-) {
+function resolveBannedByTeamId({
+	args,
+	map,
+	mapListIndex,
+}: {
+	args: ResolveCurrentMapListArgs;
+	map: { stageId: StageId; mode: ModeShort };
+	mapListIndex: number;
+}) {
 	if (args.maps?.pickBan !== "BAN_2") return;
 
 	const [secondPicker, firstPicker] = args.teams;
 
-	const banIdx = args.pickBanEvents.findIndex(
-		(event) =>
-			event.type === "BAN" &&
-			event.mode === map.mode &&
-			event.stageId === map.stageId,
-	);
+	const banIdx = args.pickBanEvents.findIndex((event) => {
+		if (event.type !== "BAN") return false;
+		// bans made before the index was stored
+		if (typeof event.mapListIndex !== "number") {
+			return event.mode === map.mode && event.stageId === map.stageId;
+		}
+
+		return event.mapListIndex === mapListIndex;
+	});
 
 	if (banIdx === -1) return;
 	if (banIdx === 0) return firstPicker;

@@ -1,12 +1,14 @@
 import clsx from "clsx";
-import { FlaskConical, SlidersHorizontal } from "lucide-react";
+import { ChartSpline, SlidersHorizontal } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { MetaFunction, ShouldRevalidateFunction } from "react-router";
-import { Link } from "react-router";
+import { Link, useLoaderData } from "react-router";
 import * as R from "remeda";
 import { AbilitiesSelector } from "~/components/AbilitiesSelector";
 import { Ability } from "~/components/Ability";
+import { BackLink } from "~/components/BackLink";
+import { CircleBackdrop } from "~/components/CircleBackdrop";
 import { SendouSelect, SendouSelectItem } from "~/components/elements/Select";
 import { SendouSwitch } from "~/components/elements/Switch";
 import {
@@ -15,14 +17,24 @@ import {
 	SendouTabPanel,
 	SendouTabs,
 } from "~/components/elements/Tabs";
-import { Image, SpecialWeaponImage, SubWeaponImage } from "~/components/Image";
+import {
+	Image,
+	SpecialWeaponImage,
+	SubWeaponImage,
+	WeaponImage,
+} from "~/components/Image";
 import { LineChart, type LineChartSeries } from "~/components/LineChart";
 import { weaponToSelectedWeapon } from "~/components/layout/WeaponSearch";
 import { Main } from "~/components/Main";
+import { PageHeader } from "~/components/PageHeader";
 import { Placeholder } from "~/components/Placeholder";
 import { Table } from "~/components/Table";
-import { WeaponSelect } from "~/components/WeaponSelect";
+import {
+	WeaponLanding,
+	type WeaponLandingState,
+} from "~/components/WeaponLanding";
 import { useUser } from "~/features/auth/core/user";
+import { CURRENT_PATCH } from "~/features/builds/builds-constants";
 import { objectDamageCalculatorPage } from "~/features/object-damage-calculator/calculator-urls";
 import { FULL_GROUP_SIZE } from "~/features/sendouq/q-constants";
 import { userNewBuildPage } from "~/features/user-page/user-page-urls";
@@ -44,8 +56,12 @@ import {
 	POINT_SENSOR_ID,
 	TORPEDO_ID,
 	TOXIC_MIST_ID,
+	weaponIdToCategory,
 } from "~/modules/in-game-lists/weapon-ids";
-import { nullFilledArray } from "~/utils/arrays";
+import {
+	useSearchParam,
+	useSearchParamsTyped,
+} from "~/modules/search-params/hooks";
 import { invariant } from "~/utils/invariant";
 import { logger } from "~/utils/logger";
 import type { SendouRouteHandle } from "~/utils/remix.server";
@@ -65,6 +81,7 @@ import {
 	TENACITY_PLAYER_DEFICITS,
 } from "../analyzer-constants";
 import { useAnalyzeBuild } from "../analyzer-hooks";
+import { analyzerSearchParams } from "../analyzer-search-params";
 import type {
 	AbilityPoints,
 	AnalyzedBuild,
@@ -88,9 +105,10 @@ import {
 } from "../core/specialEffects";
 import { buildStats } from "../core/stats";
 import { buildIsEmpty, damageIsSubWeaponDamage } from "../core/utils";
+import { loader } from "../loaders/analyzer.server";
 import styles from "./analyzer.module.css";
 
-export const CURRENT_PATCH = "11.3";
+export { loader };
 
 export const meta: MetaFunction = (args) => {
 	return metaTags({
@@ -117,22 +135,54 @@ export const shouldRevalidate: ShouldRevalidateFunction = () => false;
 
 export default function BuildAnalyzerShell() {
 	const isHydrated = useHydrated();
+	const [weaponId] = useSearchParam(analyzerSearchParams, "weapon");
 
 	if (!isHydrated) {
 		return <Placeholder />;
 	}
 
-	return <BuildAnalyzerPage />;
+	if (weaponId === null) {
+		return <AnalyzerWeaponLanding />;
+	}
+
+	return <BuildAnalyzerPage mainWeaponId={weaponId} />;
 }
 
-function BuildAnalyzerPage() {
+function AnalyzerWeaponLanding() {
+	const data = useLoaderData<typeof loader>();
+	const { t } = useTranslation(["common"]);
+	const [params] = useSearchParamsTyped(analyzerSearchParams);
+
+	return (
+		<Main bigger>
+			<WeaponLanding
+				title={t("common:pages.analyzer")}
+				backTo="/"
+				weapons={data.weapons}
+				weaponPoolIds={data.weaponPoolIds}
+				weaponHref={(weaponId) =>
+					analyzerSearchParams.href(ANALYZER_URL, {
+						...params,
+						weapon: weaponId,
+						category: null,
+					})
+				}
+				categoryHref={(category) =>
+					analyzerSearchParams.href(ANALYZER_URL, { ...params, category })
+				}
+				navItem="analyzer"
+			/>
+		</Main>
+	);
+}
+
+function BuildAnalyzerPage({ mainWeaponId }: { mainWeaponId: MainWeaponId }) {
 	const user = useUser();
 	const { t } = useTranslation(["analyzer", "weapons"]);
 	const {
 		build,
 		build2,
 		focusedBuild,
-		mainWeaponId,
 		handleChange,
 		analyzed,
 		analyzed2,
@@ -141,7 +191,7 @@ function BuildAnalyzerPage() {
 		abilityPoints2,
 		ldeIntensity,
 		allEffects,
-	} = useAnalyzeBuild();
+	} = useAnalyzeBuild(mainWeaponId);
 
 	const statKeyToTuple = (key: keyof AnalyzedBuild["stats"]) => {
 		return [analyzed.stats[key], analyzed2.stats[key], key] as [
@@ -291,37 +341,10 @@ function BuildAnalyzerPage() {
 	);
 
 	return (
-		<Main>
+		<Main bigger className="stack md-plus">
+			<WeaponHeader mainWeaponId={mainWeaponId} />
 			<div className={styles.container}>
 				<div className={styles.leftColumn}>
-					<div className="stack sm items-start w-full">
-						<div className="w-full">
-							<WeaponSelect
-								label={t("analyzer:weaponSelect.label")}
-								value={mainWeaponId}
-								onChange={(val) =>
-									handleChange({
-										newMainWeaponId: val,
-									})
-								}
-							/>
-						</div>
-						<div className="stack horizontal justify-between items-center w-full">
-							<LinkButton
-								to={weaponParamsPage(
-									weaponToSelectedWeapon(mainWeaponId, t).paramsSlug,
-								)}
-								variant="minimal"
-								size="small"
-								icon={<SlidersHorizontal />}
-							>
-								{t("analyzer:rawParameters")}
-							</LinkButton>
-							<div className={styles.patch}>
-								{t("analyzer:patch")} {CURRENT_PATCH}
-							</div>
-						</div>
-					</div>
 					<div className="stack md items-center w-full">
 						<div className="w-full">
 							<SendouTabs
@@ -378,10 +401,12 @@ function BuildAnalyzerPage() {
 														return;
 													}
 
-													handleChange({
-														[focused === 1 || firstBuildIsEmpty
+													const buildKey =
+														focused === 1 || firstBuildIsEmpty
 															? "newBuild"
-															: "newBuild2"]: newBuild,
+															: "newBuild2";
+													handleChange({
+														[buildKey]: newBuild,
 														newFocused: firstBuildIsEmpty ? 1 : undefined,
 													});
 												}}
@@ -858,6 +883,12 @@ function BuildAnalyzerPage() {
 								),
 							})}
 							containerClassName={styles.tableContainer}
+							isHighlighted={
+								analyzed.stats.specialDamageDistance
+									? analyzed.stats.specialDamageDistance.value !==
+										analyzed.stats.specialDamageDistance.baseValue
+									: false
+							}
 						>
 							<DamageTable values={analyzed.stats.specialWeaponDamages} />
 						</StatCategory>
@@ -1054,9 +1085,56 @@ function BuildAnalyzerPage() {
 							{t("analyzer:newBuildPrompt")}
 						</Link>
 					) : null}
+					<div className="stack horizontal justify-between items-center w-full">
+						<LinkButton
+							to={weaponParamsPage(
+								weaponToSelectedWeapon(mainWeaponId, t).paramsSlug,
+							)}
+							variant="minimal"
+							size="small"
+							icon={<SlidersHorizontal />}
+						>
+							{t("analyzer:rawParameters")}
+						</LinkButton>
+						<div className={styles.patch}>
+							{t("analyzer:patch")} {CURRENT_PATCH}
+						</div>
+					</div>
 				</div>
 			</div>
 		</Main>
+	);
+}
+
+function WeaponHeader({ mainWeaponId }: { mainWeaponId: MainWeaponId }) {
+	const { t } = useTranslation(["analyzer", "weapons", "common"]);
+	const [params] = useSearchParamsTyped(analyzerSearchParams);
+
+	return (
+		<PageHeader
+			image={
+				<CircleBackdrop>
+					<WeaponImage weaponSplId={mainWeaponId} variant="build" size={36} />
+				</CircleBackdrop>
+			}
+			title={t(`weapons:MAIN_${mainWeaponId}`)}
+			subtitle={
+				<>
+					<Image path={navIconUrl("analyzer")} size={16} alt="" />
+					{t("common:pages.analyzer")}
+				</>
+			}
+			back={
+				<BackLink
+					to={analyzerSearchParams.href(ANALYZER_URL, {
+						...params,
+						weapon: null,
+						category: weaponIdToCategory(mainWeaponId),
+					})}
+					state={{ focusSearch: true } satisfies WeaponLandingState}
+				/>
+			}
+		/>
 	);
 }
 
@@ -1070,6 +1148,7 @@ interface StatChartProps {
 	simple?: boolean;
 	/** Marks where the current build(s) sit on the curve: `x` ability points, `y` stat value. */
 	highlight?: Array<{ x: number; y: number }>;
+	triggerClassName?: string;
 }
 
 function StatChartPopover(props: StatChartProps) {
@@ -1081,7 +1160,8 @@ function StatChartPopover(props: StatChartProps) {
 					shape="circle"
 					variant="minimal"
 					size={props.simple ? "miniscule" : "small"}
-					icon={<FlaskConical />}
+					icon={<ChartSpline />}
+					className={props.triggerClassName}
 				/>
 			}
 		>
@@ -1148,7 +1228,7 @@ function statKeyGraphSeries({
 	statKey: keyof AnalyzedBuild["stats"];
 	mainWeaponId: MainWeaponId;
 }) {
-	const analyzedBuilds = nullFilledArray(MAX_AP + 1).map((_, i) =>
+	const analyzedBuilds = R.times(MAX_AP + 1, (i) =>
 		buildStats({
 			abilityPoints: new Map([[stackableAbility, i]]),
 			weaponSplId: mainWeaponId,
@@ -1168,14 +1248,13 @@ function statKeyGraphSeries({
 	];
 
 	if (mainOnlyAbility) {
-		const mainOnlyAbilityAnalyzedBuilds = nullFilledArray(MAX_AP + 1).map(
-			(_, i) =>
-				buildStats({
-					abilityPoints: new Map([[stackableAbility, i]]),
-					weaponSplId: mainWeaponId,
-					mainOnlyAbilities: [mainOnlyAbility],
-					hasTacticooler: false,
-				}),
+		const mainOnlyAbilityAnalyzedBuilds = R.times(MAX_AP + 1, (i) =>
+			buildStats({
+				abilityPoints: new Map([[stackableAbility, i]]),
+				weaponSplId: mainWeaponId,
+				mainOnlyAbilities: [mainOnlyAbility],
+				hasTacticooler: false,
+			}),
 		);
 
 		result.push({
@@ -1209,7 +1288,7 @@ function subDefenseGraphSeries({
 	subWeaponId: SubWeaponId;
 	distanceLabel: string;
 }) {
-	const analyzedBuilds = nullFilledArray(MAX_AP + 1).map((_, i) =>
+	const analyzedBuilds = R.times(MAX_AP + 1, (i) =>
 		buildStats({
 			abilityPoints: new Map([["SRU", i]]),
 			weaponSplId: 0,
@@ -1433,7 +1512,7 @@ function LdeIntensitySelect({
 			aria-label="Last-Ditch Effort intensity"
 			className={styles.ldeIntensitySelect}
 		>
-			{nullFilledArray(LDE_CLOCK_INTENSITY + 1).map((_, intensity) => (
+			{R.times(LDE_CLOCK_INTENSITY + 1, (intensity) => (
 				<SendouSelectItem key={intensity} id={intensity}>
 					{intensityLabel(intensity)}
 				</SendouSelectItem>
@@ -1480,6 +1559,7 @@ function StatCategory({
 	textBelow,
 	summaryRightContent,
 	testId,
+	isHighlighted = false,
 }: {
 	title: string;
 	children: React.ReactNode;
@@ -1487,10 +1567,16 @@ function StatCategory({
 	textBelow?: string;
 	summaryRightContent?: React.ReactNode;
 	testId?: string;
+	isHighlighted?: boolean;
 }) {
 	return (
 		<details className={styles.details}>
-			<summary className={styles.summary} data-testid={testId}>
+			<summary
+				className={clsx(styles.summary, {
+					[styles.summaryHighlighted]: isHighlighted,
+				})}
+				data-testid={testId}
+			>
 				{title}
 				{summaryRightContent}
 			</summary>
@@ -1554,10 +1640,7 @@ function StatCard({
 		);
 	};
 
-	const memoKey = isStaticValue ? stat : stat[2];
-	const modifiedBy = React.useMemo(() => {
-		return isStaticValue ? [] : [stat[0].modifiedBy].flat();
-	}, [memoKey]);
+	const modifiedBy = isStaticValue ? [] : [stat[0].modifiedBy].flat();
 
 	const stackableAbility = modifiedBy.find(isStackableAbility);
 	const highlight = (() => {
@@ -1653,6 +1736,8 @@ function StatCard({
 							valueSuffix={suffix}
 							mainWeaponId={mainWeaponId}
 							highlight={highlight}
+							triggerClassName={styles.statCardAction}
+							simple
 						/>
 					</>
 				)}
@@ -1754,7 +1839,7 @@ function DamageTable({
 			</thead>
 			<tbody>
 				{values.map((val, i) => {
-					if (val.type.includes("SECONDARY")) return null;
+					if (val.type.startsWith("DIRECT_SECONDARY")) return null;
 
 					const damage = (
 						damageValue: AnalyzedBuild["stats"]["damages"][number],

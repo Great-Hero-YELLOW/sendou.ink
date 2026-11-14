@@ -1,5 +1,11 @@
 import clsx from "clsx";
-import { Link2 as LinkIcon } from "lucide-react";
+import {
+	Check,
+	Clipboard,
+	Link2 as LinkIcon,
+	SquareArrowOutUpRight,
+} from "lucide-react";
+import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { BuildCard } from "~/components/BuildCard";
@@ -19,24 +25,25 @@ import { DiscordIcon } from "~/components/icons/Discord";
 import { TwitchIcon } from "~/components/icons/Twitch";
 import { YouTubeIcon } from "~/components/icons/YouTube";
 import { LocaleTime } from "~/components/LocaleTime";
-import { Markdown } from "~/components/Markdown";
 import { Pagination } from "~/components/Pagination";
 import { Placement } from "~/components/Placement";
 import { UserLink } from "~/components/UserLink";
 import type { Tables } from "~/db/tables";
 import { userArtPage } from "~/features/art/art-urls";
-import { previewUrl } from "~/features/art/art-utils";
 import { BadgeDisplay } from "~/features/badges/components/BadgeDisplay";
 import { lfgSearchParams } from "~/features/lfg/lfg-search-params";
+import { StreamPlatformIcon } from "~/features/live-streams/components/StreamPlatformIcon";
+import { StreamWatchLinks } from "~/features/live-streams/components/StreamWatchLinks";
+import * as LiveStream from "~/features/live-streams/core/LiveStream";
 import { tierListMakerSearchParams } from "~/features/tier-list-maker/tier-list-maker-search-params";
 import { DivisionImage } from "~/features/top-search/components/DivisionImage";
 import { topSearchPlayerPage } from "~/features/top-search/top-search-urls";
 import { tournamentBracketsPage } from "~/features/tournament-bracket/tournament-bracket-urls";
 import { tournamentOrganizationPage } from "~/features/tournament-organization/tournament-organization-urls";
-import { TrophyDisplay } from "~/features/trophies/components/TrophyDisplay";
 import { VodListing } from "~/features/vods/components/VodListing";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
 import { useAutoRerender } from "~/hooks/useAutoRerender";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useMainContentWidth } from "~/hooks/useMainContentWidth";
 import { usePagination } from "~/hooks/usePagination";
 import type { GameBadgeId } from "~/modules/in-game-lists/game-badge-ids";
@@ -45,7 +52,6 @@ import type {
 	ModeShort,
 	StageId,
 } from "~/modules/in-game-lists/types";
-import { twitchThumbnailUrlToSrc } from "~/modules/twitch/utils";
 import { logger } from "~/utils/logger";
 import type { SerializeFrom } from "~/utils/remix";
 import { rawSensToString } from "~/utils/strings";
@@ -58,8 +64,9 @@ import {
 	LFG_PAGE,
 	modeImageUrl,
 	navIconUrl,
+	smallImageFileName,
+	smallImageUrl,
 	teamPage,
-	twitchUrl,
 	userBuildsPage,
 	userResultsPage,
 	userVodsPage,
@@ -68,12 +75,24 @@ import * as Countdown from "../core/widgets/countdown";
 import type { LoadedWidget } from "../core/widgets/types";
 import styles from "./Widget.module.css";
 
+// lazy so the markdown parser and WebGL trophy renderer only load for the few profiles showing them
+const Markdown = React.lazy(() =>
+	import("~/components/Markdown").then((module) => ({
+		default: module.Markdown,
+	})),
+);
+const TrophyDisplay = React.lazy(() =>
+	import("~/features/trophies/components/TrophyDisplay").then((module) => ({
+		default: module.TrophyDisplay,
+	})),
+);
+
 export function Widget({
 	widget,
 	user,
 }: {
-	widget: SerializeFrom<LoadedWidget>;
-	user: Pick<Tables["User"], "id" | "discordId" | "customUrl">;
+	widget: SerializeFrom<() => LoadedWidget>;
+	user: Pick<Tables["User"], "id" | "customUrl">;
 }) {
 	const { t } = useTranslation(["user", "badges", "team", "org", "lfg"]);
 	const { formatter: patronStartedAtFormatter } = useDateTimeFormat({
@@ -89,12 +108,16 @@ export function Widget({
 			case "bio-md":
 				return widget.data.bio ? (
 					<article className={styles.mdBio}>
-						<Markdown>{widget.data.bio}</Markdown>
+						<React.Suspense fallback={null}>
+							<Markdown>{widget.data.bio}</Markdown>
+						</React.Suspense>
 					</article>
 				) : null;
 			case "trophies-owned":
 				return widget.data.length === 0 ? null : (
-					<TrophyDisplay trophies={widget.data} userId={user.id} />
+					<React.Suspense fallback={null}>
+						<TrophyDisplay trophies={widget.data} userId={user.id} />
+					</React.Suspense>
 				);
 			case "badges-owned":
 				return widget.data.length === 0 ? null : (
@@ -198,7 +221,32 @@ export function Widget({
 				);
 			case "placement-results":
 				if (!widget.data) return null;
-				return <PlacementResults data={widget.data} />;
+				return (
+					<PlacementResults
+						placements={widget.data.placements}
+						footer={
+							typeof widget.data.total === "number"
+								? t("user:widget.placement-results.total", {
+										count: widget.data.total,
+									})
+								: undefined
+						}
+					/>
+				);
+			case "lobby-results":
+				if (!widget.data) return null;
+				return (
+					<PlacementResults
+						placements={widget.data.placements}
+						footer={
+							typeof widget.data.total === "number"
+								? t("user:widget.lobby-results.total", {
+										count: widget.data.total,
+									})
+								: undefined
+						}
+					/>
+				);
 			case "patron-since":
 				if (!widget.data) return null;
 				return (
@@ -314,7 +362,7 @@ export function Widget({
 				);
 			case "live-stream":
 				if (!widget.data) return null;
-				return <LiveStreamWidget stream={widget.data} />;
+				return <LiveStreamWidget streamer={widget.data} />;
 			case "countdown":
 				return (
 					<CountdownWidget title={widget.data.title} date={widget.data.date} />
@@ -322,7 +370,9 @@ export function Widget({
 			case "markdown":
 				return widget.data.content ? (
 					<article>
-						<Markdown>{widget.data.content}</Markdown>
+						<React.Suspense fallback={null}>
+							<Markdown>{widget.data.content}</Markdown>
+						</React.Suspense>
 					</article>
 				) : null;
 			default:
@@ -415,7 +465,7 @@ function Memberships({
 					{membership.logoUrl ? (
 						<img
 							alt=""
-							src={membership.logoUrl}
+							src={smallImageUrl(membership.logoUrl)}
 							width={42}
 							height={42}
 							className="rounded-full"
@@ -461,7 +511,7 @@ function HighlightedResults({
 								<div className={styles.tournamentName}>
 									{result.logoUrl ? (
 										<img
-											src={result.logoUrl}
+											src={smallImageUrl(result.logoUrl)}
 											alt=""
 											width={18}
 											height={18}
@@ -644,20 +694,25 @@ function FavoriteStageWidget({ stageId }: { stageId: StageId }) {
 }
 
 function PlacementResults({
-	data,
+	placements,
+	footer,
 }: {
-	data: NonNullable<Extract<LoadedWidget, { id: "placement-results" }>["data"]>;
+	placements: Array<{ placement: number; count: number }>;
+	footer?: string;
 }) {
 	return (
-		<div className={styles.placementResults}>
-			{data.placements.map(({ placement, count }) => {
-				return (
-					<div key={placement} className={styles.placementResult}>
-						<Placement placement={placement} />
-						<span>×{count}</span>
-					</div>
-				);
-			})}
+		<div className={styles.placementResultsContainer}>
+			<div className={styles.placementResults}>
+				{placements.map(({ placement, count }) => {
+					return (
+						<div key={placement} className={styles.placementResult}>
+							<Placement placement={placement} />
+							<span>×{count}</span>
+						</div>
+					);
+				})}
+			</div>
+			{footer ? <div className={styles.widgetValueFooter}>{footer}</div> : null}
 		</div>
 	);
 }
@@ -668,7 +723,7 @@ function Builds({
 	builds: Extract<LoadedWidget, { id: "builds" }>["data"];
 }) {
 	return (
-		<div className={clsx(styles.builds, "scrollbar")}>
+		<div className={styles.builds}>
 			{builds.map((build) => (
 				<BuildCard key={build.id} build={build} canEdit={false} />
 			))}
@@ -812,7 +867,7 @@ function ArtWidget({
 				<img
 					key={art.id}
 					alt=""
-					src={previewUrl(art.url)}
+					src={smallImageFileName(art.url)}
 					loading="lazy"
 					className={styles.artThumbnail}
 				/>
@@ -922,9 +977,9 @@ function SocialLinksWidget({
 
 				if (link.type === "text") {
 					return (
-						<div key={link.platform} className={styles.linkRow}>
+						<CopySocialLinkButton key={link.platform} value={link.name}>
 							{content}
-						</div>
+						</CopySocialLinkButton>
 					);
 				}
 
@@ -937,10 +992,43 @@ function SocialLinksWidget({
 						className={styles.linkRow}
 					>
 						{content}
+						<SquareArrowOutUpRight className={styles.socialLinkActionIcon} />
 					</a>
 				);
 			})}
 		</div>
+	);
+}
+
+function CopySocialLinkButton({
+	value,
+	children,
+}: {
+	value: string;
+	children: React.ReactNode;
+}) {
+	const { t } = useTranslation(["common"]);
+	const { copyToClipboard, copySuccess } = useCopyToClipboard();
+
+	return (
+		<button
+			type="button"
+			className={styles.linkRow}
+			onClick={() => copyToClipboard(value)}
+			title={t("common:actions.copyToClipboard")}
+		>
+			{children}
+			{copySuccess ? (
+				<Check
+					className={clsx(
+						styles.socialLinkActionIcon,
+						styles.socialLinkActionIconSuccess,
+					)}
+				/>
+			) : (
+				<Clipboard className={styles.socialLinkActionIcon} />
+			)}
+		</button>
 	);
 }
 
@@ -1103,37 +1191,58 @@ function MapModePreferencesWidget({
 }
 
 function LiveStreamWidget({
-	stream,
+	streamer,
 }: {
-	stream: NonNullable<Extract<LoadedWidget, { id: "live-stream" }>["data"]>;
+	streamer: NonNullable<Extract<LoadedWidget, { id: "live-stream" }>["data"]>;
 }) {
 	const { t } = useTranslation(["user"]);
+	const mostViewed = streamer.streams[0];
 
 	return (
-		<a
-			href={twitchUrl(stream.twitch)}
-			target="_blank"
-			rel="noreferrer"
-			className={styles.liveStream}
-		>
-			<img
-				src={twitchThumbnailUrlToSrc(stream.thumbnailUrl)}
-				alt=""
-				className={styles.liveStreamThumbnail}
-				loading="lazy"
-			/>
+		<div className={styles.liveStream}>
+			<a
+				href={LiveStream.url(mostViewed)}
+				target="_blank"
+				rel="noreferrer"
+				className={styles.liveStreamThumbnailLink}
+			>
+				<img
+					src={LiveStream.thumbnailSrc(mostViewed)}
+					alt=""
+					className={styles.liveStreamThumbnail}
+					loading="lazy"
+				/>
+			</a>
 			<div className={styles.liveStreamInfo}>
 				<span className={styles.liveBadge}>
 					{t("user:widget.live-stream.live")}
 				</span>
 				<span>
 					{t("user:widget.live-stream.viewers", {
-						count: stream.viewerCount,
+						count: streamer.viewerCount,
 					})}
 				</span>
-				<span className={styles.liveStreamName}>{stream.twitch}</span>
+				{streamer.streams.length > 1 ? (
+					<StreamWatchLinks
+						streams={streamer.streams}
+						className={styles.liveStreamLinks}
+					/>
+				) : (
+					<a
+						href={LiveStream.url(mostViewed)}
+						target="_blank"
+						rel="noreferrer"
+						className={clsx(styles.liveStreamName, "truncate")}
+					>
+						<StreamPlatformIcon
+							platform={mostViewed.platform}
+							className={styles.liveStreamPlatformIcon}
+						/>
+						{mostViewed.account}
+					</a>
+				)}
 			</div>
-		</a>
+		</div>
 	);
 }
 

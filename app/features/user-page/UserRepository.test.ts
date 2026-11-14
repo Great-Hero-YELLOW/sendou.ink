@@ -1,12 +1,17 @@
+import { addDays, subDays } from "date-fns";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as CalendarEventFactory from "~/db/seed/factories/CalendarEventFactory";
 import * as CalendarEventResultFactory from "~/db/seed/factories/CalendarEventResultFactory";
+import * as ImageFactory from "~/db/seed/factories/ImageFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as TournamentTeamFactory from "~/db/seed/factories/TournamentTeamFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
+import { db } from "~/db/sql";
+import * as ImageRepository from "~/features/img-upload/ImageRepository.server";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { withUserId } from "~/utils/Test";
 import * as UserRepository from "./UserRepository.server";
 
 describe("UserRepository", () => {
@@ -14,7 +19,6 @@ describe("UserRepository", () => {
 		await UserRepository.upsert({
 			discordId: "1",
 			discordName: "TestUser",
-			discordAvatar: null,
 		});
 
 		const user = await UserRepository.findModInfoById(1);
@@ -27,7 +31,6 @@ describe("UserRepository", () => {
 		const { id } = await UserRepository.upsert({
 			discordId: "1",
 			discordName: "TestUser",
-			discordAvatar: null,
 		});
 
 		const user = await UserRepository.findLayoutDataById(id);
@@ -37,7 +40,6 @@ describe("UserRepository", () => {
 		await UserRepository.upsert({
 			discordId: "1",
 			discordName: "UpdatedUser",
-			discordAvatar: null,
 		});
 
 		const updatedUser = await UserRepository.findLayoutDataById(id);
@@ -48,7 +50,6 @@ describe("UserRepository", () => {
 		await UserRepository.upsert({
 			discordId: "1",
 			discordName: "TestUser",
-			discordAvatar: null,
 		});
 
 		const user = await UserRepository.findModInfoById(1);
@@ -57,7 +58,6 @@ describe("UserRepository", () => {
 		await UserRepository.upsert({
 			discordId: "1",
 			discordName: "UpdatedUser",
-			discordAvatar: null,
 		});
 
 		const updatedUser = await UserRepository.findModInfoById(1);
@@ -68,7 +68,6 @@ describe("UserRepository", () => {
 		const { id } = await UserRepository.upsert({
 			discordId: "1",
 			discordName: "TestUser",
-			discordAvatar: null,
 		});
 
 		const result = await UserRepository.findJoinOrderByUserId(id);
@@ -80,13 +79,11 @@ describe("UserRepository", () => {
 		const { id: firstId } = await UserRepository.upsert({
 			discordId: "1",
 			discordName: "FirstUser",
-			discordAvatar: null,
 		});
 
 		const { id: secondId } = await UserRepository.upsert({
 			discordId: "2",
 			discordName: "SecondUser",
-			discordAvatar: null,
 		});
 
 		expect(
@@ -99,7 +96,6 @@ describe("UserRepository", () => {
 		await UserRepository.upsert({
 			discordId: "1",
 			discordName: "UpdatedFirstUser",
-			discordAvatar: null,
 		});
 
 		expect(
@@ -292,6 +288,38 @@ describe("UserRepository", () => {
 			expect(results[0].eventName).toBe("Alpha Invitational");
 		});
 
+		test.each([
+			{ filters: { tournamentName: "кубок" }, why: "tournament name" },
+			{ filters: { teamName: "équipe" }, why: "team name" },
+		])(
+			"filters by $why ignoring case of non-ASCII letters",
+			async ({ filters }) => {
+				const user = await UserFactory.create();
+				const event = await CalendarEventFactory.create({
+					name: "Кубок Open",
+					authorId: user.id,
+					startTimes: [startTimeOf(2024)],
+				});
+				await CalendarEventResultFactory.create({
+					eventId: event.id,
+					participantCount: 8,
+					results: [
+						{
+							teamName: "Équipe Kubok",
+							placement: 1,
+							players: [{ userId: user.id, name: null }],
+						},
+					],
+				});
+
+				const results = await filteredResults(user.id, filters);
+
+				expect(results.map((result) => result.eventName)).toEqual([
+					"Кубок Open",
+				]);
+			},
+		);
+
 		describe("of a tournament with many divisions", () => {
 			const TOP_DIVISION_TIER = 2;
 			const LOW_DIVISION_TIER = 7;
@@ -310,13 +338,13 @@ describe("UserRepository", () => {
 								name: "Top Division",
 								type: "single_elimination",
 								requiresCheckIn: false,
-								settings: { thirdPlaceMatch: false },
+								settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 							},
 							{
 								name: "Low Division",
 								type: "single_elimination",
 								requiresCheckIn: false,
-								settings: { thirdPlaceMatch: false },
+								settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 							},
 						],
 					},
@@ -593,8 +621,304 @@ describe("UserRepository", () => {
 			);
 		});
 	});
+	describe("UserRepository.updateOwnProfile", () => {
+		const OLD_IN_GAME_NAME = "Old#1234";
+		const NEW_IN_GAME_NAME = "New#1234";
+
+		const users = UserFactory.pool();
+		const playerId = () => users.id(1);
+		const teammateId = () => users.id(2);
+		const organizerId = () => users.id(3);
+
+		beforeEach(async () => {
+			await users.create(3, { profile: { inGameName: OLD_IN_GAME_NAME } });
+		});
+
+		const registerTo = async ({
+			startsAt,
+			requireInGameNames = true,
+		}: {
+			startsAt: Date;
+			requireInGameNames?: boolean;
+		}) => {
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+				startTimes: [dateToDatabaseTimestamp(startsAt)],
+				requireInGameNames,
+			});
+			await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [teammateId(), playerId()],
+			});
+
+			return tournament.id;
+		};
+
+		const updateInGameName = (inGameName: string | null) =>
+			withUserId(playerId(), () =>
+				UserRepository.updateOwnProfile({ inGameName }),
+			);
+
+		test("updates the in-game name of tournaments whose registration is still open", async () => {
+			const upcomingTournamentId = await registerTo({
+				startsAt: addDays(new Date(), 1),
+			});
+			const startedTournamentId = await registerTo({
+				startsAt: subDays(new Date(), 1),
+			});
+
+			const { inGameNameUpdatedTournamentIds } =
+				await updateInGameName(NEW_IN_GAME_NAME);
+
+			expect(inGameNameUpdatedTournamentIds).toEqual([upcomingTournamentId]);
+			expect(
+				await memberInGameName({
+					tournamentId: upcomingTournamentId,
+					userId: playerId(),
+				}),
+			).toBe(NEW_IN_GAME_NAME);
+			expect(
+				await memberInGameName({
+					tournamentId: startedTournamentId,
+					userId: playerId(),
+				}),
+			).toBe(OLD_IN_GAME_NAME);
+		});
+
+		test("leaves the teammates' in-game names as they were", async () => {
+			const tournamentId = await registerTo({
+				startsAt: addDays(new Date(), 1),
+			});
+
+			await updateInGameName(NEW_IN_GAME_NAME);
+
+			expect(
+				await memberInGameName({ tournamentId, userId: teammateId() }),
+			).toBe(OLD_IN_GAME_NAME);
+		});
+
+		test("sets no in-game name in a tournament not requiring one", async () => {
+			const tournamentId = await registerTo({
+				startsAt: addDays(new Date(), 1),
+				requireInGameNames: false,
+			});
+
+			await updateInGameName(NEW_IN_GAME_NAME);
+
+			expect(
+				await memberInGameName({ tournamentId, userId: playerId() }),
+			).toBeNull();
+		});
+
+		test("touches no tournament when the in-game name is removed", async () => {
+			const tournamentId = await registerTo({
+				startsAt: addDays(new Date(), 1),
+			});
+
+			const { inGameNameUpdatedTournamentIds } = await updateInGameName(null);
+
+			expect(inGameNameUpdatedTournamentIds).toEqual([]);
+			expect(await memberInGameName({ tournamentId, userId: playerId() })).toBe(
+				OLD_IN_GAME_NAME,
+			);
+		});
+	});
+
+	describe("avatar", () => {
+		const users = UserFactory.pool();
+		const userId = () => users.id(1);
+
+		beforeEach(async () => {
+			await users.create(1, { discordAvatar: "hash" });
+		});
+
+		test("resolves to the synced avatar when the user has no custom one", async () => {
+			const user = await UserRepository.findLeanById(userId());
+
+			expect(user?.avatar).toBe(`avatar-${userId()}-hash.webp`);
+		});
+
+		test("resolves to the custom avatar over the synced one", async () => {
+			const image = await ImageFactory.create(
+				{ submitterUserId: userId(), url: "custom.webp" },
+				{ isValidated: true },
+			);
+			await UserFactory.updateProfile(userId(), {
+				customAvatarImgId: image.id,
+			});
+
+			const user = await UserRepository.findLeanById(userId());
+
+			expect(user?.avatar).toBe("custom.webp");
+		});
+	});
+
+	describe("UserRepository.replaceSyncedAvatar", () => {
+		const users = UserFactory.pool();
+		const userId = () => users.id(1);
+
+		beforeEach(async () => {
+			await users.create(1, { discordAvatar: "old" });
+		});
+
+		test("returns the previous file name and deletes its image row", async () => {
+			const { syncedAvatarImgId: previousImgId } = await db
+				.selectFrom("User")
+				.select("syncedAvatarImgId")
+				.where("id", "=", userId())
+				.executeTakeFirstOrThrow();
+
+			const previousFileName = await UserRepository.replaceSyncedAvatar({
+				userId: userId(),
+				discordAvatar: "new",
+				fileName: `avatar-${userId()}-new.webp`,
+			});
+
+			expect(previousFileName).toBe(`avatar-${userId()}-old.webp`);
+			expect(await ImageRepository.findById(previousImgId!)).toBeUndefined();
+		});
+	});
+
+	describe("UserRepository.updatePatronData", () => {
+		const STARTED_AT = dateToDatabaseTimestamp(
+			new Date("2026-01-01T00:00:00Z"),
+		);
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		test("sets the patron data of the listed users", async () => {
+			const { id } = await UserFactory.create({ discordId: "100" });
+
+			await UserRepository.updatePatronData([
+				{ discordId: "100", patronTier: 2, patronStartedAt: STARTED_AT },
+			]);
+
+			expect(await patronData(id)).toEqual({
+				patronTier: 2,
+				patronStartedAt: STARTED_AT,
+				patronExpiresAt: null,
+			});
+		});
+
+		test("clears the patron data of a patron no longer listed", async () => {
+			const { id: stillPatronId } = await UserFactory.create({
+				discordId: "100",
+			});
+			const { id: formerPatronId } = await UserFactory.create({
+				discordId: "200",
+			});
+
+			await UserRepository.updatePatronData([
+				{ discordId: "100", patronTier: 2, patronStartedAt: STARTED_AT },
+				{ discordId: "200", patronTier: 1, patronStartedAt: STARTED_AT },
+			]);
+			await UserRepository.updatePatronData([
+				{ discordId: "100", patronTier: 3, patronStartedAt: STARTED_AT },
+			]);
+
+			expect((await patronData(stillPatronId)).patronTier).toBe(3);
+			expect(await patronData(formerPatronId)).toEqual({
+				patronTier: null,
+				patronStartedAt: null,
+				patronExpiresAt: null,
+			});
+		});
+
+		test("keeps a granted patronage that has not expired", async () => {
+			const { id } = await UserFactory.create(null, { patronTier: 2 });
+
+			await UserRepository.updatePatronData([]);
+
+			expect((await patronData(id)).patronTier).toBe(2);
+		});
+
+		test("clears a granted patronage that has expired", async () => {
+			const { id } = await UserFactory.create(null, { patronTier: 2 });
+
+			vi.useFakeTimers({ toFake: ["Date"] });
+			vi.setSystemTime(addDays(new Date(), 400));
+
+			await UserRepository.updatePatronData([]);
+
+			expect((await patronData(id)).patronTier).toBeNull();
+		});
+
+		test("replaces a granted patronage of a listed user", async () => {
+			const { id } = await UserFactory.create(
+				{ discordId: "100" },
+				{ patronTier: 2 },
+			);
+
+			await UserRepository.updatePatronData([
+				{ discordId: "100", patronTier: 1, patronStartedAt: STARTED_AT },
+			]);
+
+			expect(await patronData(id)).toEqual({
+				patronTier: 1,
+				patronStartedAt: STARTED_AT,
+				patronExpiresAt: null,
+			});
+		});
+	});
+
+	describe("UserRepository.search", () => {
+		beforeEach(async () => {
+			await UserFactory.create({ discordName: "Братислава" });
+			await UserFactory.create({ discordName: "Ángel_2" });
+		});
+
+		const searchUsernames = async (query: string) =>
+			(await UserRepository.search({ query, limit: 10 })).map(
+				(user) => user.username,
+			);
+
+		test.each([
+			{ query: "братислава", expected: ["Братислава"], why: "indexed" },
+			{ query: "бр", expected: ["Братислава"], why: "short, unindexed" },
+			{ query: "ángel", expected: ["Ángel_2"], why: "accented capital" },
+			{ query: "l_2", expected: ["Ángel_2"], why: "_ literal" },
+			{ query: "l%2", expected: [], why: "% literal" },
+		])(
+			"finds users ignoring case of any letter ($why)",
+			async ({ query, expected }) => {
+				expect(await searchUsernames(query)).toEqual(expected);
+			},
+		);
+	});
 });
+
+function patronData(userId: number) {
+	return db
+		.selectFrom("User")
+		.select(["patronTier", "patronStartedAt", "patronExpiresAt"])
+		.where("id", "=", userId)
+		.executeTakeFirstOrThrow();
+}
 
 function ids(patrons: Array<{ id: number }>) {
 	return patrons.map((patron) => patron.id);
+}
+
+async function memberInGameName({
+	tournamentId,
+	userId,
+}: {
+	tournamentId: number;
+	userId: number;
+}) {
+	const member = await db
+		.selectFrom("TournamentTeamMember")
+		.innerJoin(
+			"TournamentTeam",
+			"TournamentTeam.id",
+			"TournamentTeamMember.tournamentTeamId",
+		)
+		.select("TournamentTeamMember.inGameName")
+		.where("TournamentTeam.tournamentId", "=", tournamentId)
+		.where("TournamentTeamMember.userId", "=", userId)
+		.executeTakeFirstOrThrow();
+
+	return member.inGameName;
 }

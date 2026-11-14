@@ -13,6 +13,7 @@ import { invariant } from "~/utils/invariant";
 import {
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
+	containsIgnoringCase,
 	jsonArrayFrom,
 	matchProfileWeapons,
 	tournamentLogoOrNull,
@@ -62,7 +63,7 @@ export function searchByName({
 					.orderBy("TeamMemberWithSecondary.order", "asc"),
 			).as("members"),
 		])
-		.where("Team.name", "like", `%${query}%`)
+		.where(({ ref }) => containsIgnoringCase(ref("Team.name"), query))
 		.orderBy("Team.name", "asc")
 		.limit(limit)
 		.execute();
@@ -234,6 +235,7 @@ export async function findResultsById(teamId: number) {
 					"TournamentResult.tournamentId",
 					"TournamentResult.placement",
 					"TournamentResult.participantCount",
+					"TournamentResult.div",
 					"TournamentTeam.startingBracketIdx",
 				])
 				.where("teamId", "=", teamId)
@@ -267,6 +269,7 @@ export async function findResultsById(teamId: number) {
 			"results.tournamentId",
 			"results.participantCount",
 			"results.tournamentTeamId",
+			"results.div",
 			"CalendarEvent.name as tournamentName",
 			"CalendarEventDate.startsAt",
 			sql<
@@ -610,7 +613,11 @@ export function insertOwnMembership({
 			.values({ userId, teamId, isMainTeam, order })
 			.onConflict((oc) =>
 				oc.columns(["userId", "teamId"]).doUpdateSet({
+					createdAt: databaseTimestampNow(),
 					leftAt: null,
+					role: null,
+					customRole: null,
+					roleType: null,
 					isMainTeam,
 					order,
 				}),
@@ -631,6 +638,48 @@ export function handleMemberLeaving({
 	return db
 		.transaction()
 		.execute((trx) => memberLeave(trx, { userId, teamId, newOwnerUserId }));
+}
+
+/** Makes `newOwnerUserId` the owner of the team, the old owner stays on as a manager. */
+export function transferOwnership({
+	teamId,
+	oldOwnerUserId,
+	newOwnerUserId,
+}: {
+	teamId: number;
+	oldOwnerUserId: number;
+	newOwnerUserId: number;
+}) {
+	return db.transaction().execute(async (trx) => {
+		const members = await trx
+			.selectFrom("TeamMemberWithSecondary")
+			.select(["userId", "isOwner"])
+			.where("teamId", "=", teamId)
+			.where("userId", "in", [oldOwnerUserId, newOwnerUserId])
+			.execute();
+
+		const oldOwner = members.find((m) => m.userId === oldOwnerUserId);
+		const newOwner = members.find((m) => m.userId === newOwnerUserId);
+		invariant(oldOwner?.isOwner, "Old owner is not the owner of this team");
+		invariant(
+			newOwner && !newOwner.isOwner,
+			"New owner is not a non-owner member of this team",
+		);
+
+		await trx
+			.updateTable("AllTeamMember")
+			.set({ isOwner: 0, isManager: 1 })
+			.where("teamId", "=", teamId)
+			.where("userId", "=", oldOwnerUserId)
+			.execute();
+
+		await trx
+			.updateTable("AllTeamMember")
+			.set({ isOwner: 1, isManager: 0 })
+			.where("teamId", "=", teamId)
+			.where("userId", "=", newOwnerUserId)
+			.execute();
+	});
 }
 
 /** In one transaction: updates kept members' role & editor status and kicks `kickedUserIds`. */
@@ -662,7 +711,7 @@ export function updateRoster({
 					role: member.role,
 					customRole: member.customRole,
 					roleType: member.roleType,
-					isManager: member.isManager ? 1 : 0,
+					isManager: toDBBoolean(member.isManager),
 					order: member.order,
 				})
 				.where("teamId", "=", teamId)

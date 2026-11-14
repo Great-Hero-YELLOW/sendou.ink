@@ -57,6 +57,7 @@ export class SendouQMatchPage {
 			rejoinQueueButton: page.getByRole("button", { name: "Rejoin queue" }),
 			backToQueueButton: page.getByRole("button", { name: "Back to queue" }),
 			declinedText: page.getByText("You are not continuing with this group"),
+			scoreboardDetailsButton: page.getByRole("button", { name: "Details" }),
 			votedYes: page.getByLabel("voted yes"),
 			votedNo: page.getByLabel("voted no"),
 			pendingVotes: page.getByLabel("pending"),
@@ -93,6 +94,13 @@ export class SendouQMatchPage {
 	/** How many maps the one shown mode is played on, shown only when every map shares it. */
 	mapCountText(count: number) {
 		return this.page.getByText(`\u00d7${count}`);
+	}
+
+	/** A player's row in a map's scanned scoreboard, once its details are open. */
+	scoreboardRow(playerName: string) {
+		return this.page.getByRole("row").filter({
+			has: this.page.getByRole("rowheader", { name: playerName, exact: true }),
+		});
 	}
 
 	reportedWeaponImage(name: string) {
@@ -258,6 +266,6 @@ export class SendouQMatchPage {
 
 /** Waits out the gap the loss confirm keeps between arming and accepting the second tap. */
 async function waitOutLossConfirmMinGap(page: Page) {
-	// biome-ignore lint/nursery/noPlaywrightWaitForTimeout: the min gap after arming has no observable end
+	// biome-ignore lint/suspicious/noPlaywrightWaitForTimeout: the min gap after arming has no observable end
 	await page.waitForTimeout(LOSS_CONFIRM_MIN_GAP_MS);
 }

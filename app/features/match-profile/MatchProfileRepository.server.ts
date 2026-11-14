@@ -32,6 +32,17 @@ export function findMapModePreferencesByUserId(userId: number) {
 		.then((row) => row.mapModePreferences);
 }
 
+/** Map/mode preferences of the users, for the users that exist. */
+export async function findAllMapModePreferencesByUserIds(userIds: number[]) {
+	if (userIds.length === 0) return [];
+
+	return db
+		.selectFrom("User")
+		.select(["User.id as userId", "User.mapModePreferences"])
+		.where("User.id", "in", userIds)
+		.execute();
+}
+
 /** Match profile weapon pool of one user, with ten-star status. */
 export function findWeaponPoolByUserId(userId: number) {
 	return db
@@ -40,6 +51,26 @@ export function findWeaponPoolByUserId(userId: number) {
 		.where("User.id", "=", userId)
 		.executeTakeFirstOrThrow()
 		.then((row) => row.weaponPool);
+}
+
+/** Map/mode preferences and weapon pools of the users, for the users that exist. */
+export async function findAllByUserIds(userIds: number[]) {
+	if (userIds.length === 0) return [];
+
+	const rows = await db
+		.selectFrom("User")
+		.select(({ eb }) => [
+			"User.id as userId",
+			"User.mapModePreferences",
+			matchProfileWeapons(eb).as("weaponPool"),
+		])
+		.where("User.id", "in", userIds)
+		.execute();
+
+	return rows.map((row) => ({
+		...row,
+		weaponPool: row.weaponPool.map((weapon) => weapon.weaponSplId),
+	}));
 }
 
 export async function updateOwnMatchProfile({

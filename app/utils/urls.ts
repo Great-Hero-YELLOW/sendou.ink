@@ -20,49 +20,57 @@ import type {
 	SubWeaponId,
 } from "~/modules/in-game-lists/types";
 import type { weaponCategories } from "~/modules/in-game-lists/weapon-ids";
+import { IS_E2E_TEST_RUN } from "./e2e";
 
-export const discordAvatarUrl = ({
-	discordId,
-	discordAvatar,
-	size,
-}: {
-	discordId: string;
-	discordAvatar: string;
-	size: "lg" | "sm";
-}) =>
-	`https://cdn.discordapp.com/avatars/${discordId}/${
-		discordAvatar
-	}.webp${size === "lg" ? "?size=240" : "?size=80"}`;
+/** Root of the S3 bucket holding user submitted images and self-hosted Discord avatars. */
+export const USER_SUBMITTED_IMAGE_ROOT =
+	(process.env.NODE_ENV === "development" && !Config.prodMode) ||
+	IS_E2E_TEST_RUN ||
+	process.env.NODE_ENV === "test"
+		? "http://127.0.0.1:9000/sendou"
+		: "https://sendou.nyc3.cdn.digitaloceanspaces.com";
 
-/** Avatar url preferring the custom avatar over the Discord one; undefined without either. */
-export const resolveAvatarUrl = ({
-	customAvatarUrl,
-	discordId,
-	discordAvatar,
-	size,
-}: {
-	customAvatarUrl?: string | null;
-	discordId: string;
-	discordAvatar?: string | null;
-	size: "lg" | "sm";
-}) => {
-	if (customAvatarUrl) return customAvatarUrl;
-	if (discordAvatar) {
-		return discordAvatarUrl({ discordId, discordAvatar, size });
-	}
+/** Full URL of an image in the user submitted image storage by its file name. */
+const userSubmittedImageUrl = (fileName: string) =>
+	`${USER_SUBMITTED_IMAGE_ROOT}/${fileName}`;
 
-	return undefined;
-};
+/** File name of an image's downscaled copy, stored next to it (art thumbnails, avatars). */
+export function smallImageFileName(fileName: string) {
+	const lastDotIndex = fileName.lastIndexOf(".");
+	if (lastDotIndex === -1) return fileName;
+
+	const withoutExtension = fileName.slice(0, lastDotIndex);
+	const extension = fileName.slice(lastDotIndex + 1);
+
+	return `${withoutExtension}-small.${extension}`;
+}
+
+/**
+ * URL of the downscaled copy of a user submitted logo or avatar, for displays of 44px or smaller.
+ * Any other URL (static assets, already small copies) is returned unchanged.
+ */
+export function smallImageUrl(url: string) {
+	const root = `${USER_SUBMITTED_IMAGE_ROOT}/`;
+	if (!url.startsWith(root)) return url;
+
+	const fileName = url.slice(root.length);
+	if (!fileName.includes(".") || /-small\.\w+$/.test(fileName)) return url;
+
+	return userSubmittedImageUrl(smallImageFileName(fileName));
+}
+
+/** URL of a user's avatar by its file name (`CommonUser["avatar"]`). */
+export const avatarUrl = (avatar: string, size: "lg" | "sm") =>
+	userSubmittedImageUrl(size === "sm" ? smallImageFileName(avatar) : avatar);
 
 export const SENDOU_INK_BASE_URL = "https://sendou.ink";
 
-export const BADGES_DOC_LINK =
-	"https://github.com/sendou-ink/sendou.ink/blob/rewrite/docs/badges.md";
-export const API_DOC_LINK =
-	"https://github.com/sendou-ink/sendou.ink/blob/rewrite/docs/dev/api.md";
+export const DOCS_SITE_URL = "https://docs.sendou.ink";
 
-export const CREATING_TOURNAMENT_DOC_LINK =
-	"https://github.com/sendou-ink/sendou.ink/blob/rewrite/docs/tournament-creation.md";
+export const BADGES_DOC_LINK = `${DOCS_SITE_URL}/guides/badges/`;
+export const API_DOC_LINK = `${DOCS_SITE_URL}/api/`;
+export const CREATING_TOURNAMENT_DOC_LINK = `${DOCS_SITE_URL}/guides/tournament-creation/`;
+export const BANNING_POLICY_DOC_LINK = `${DOCS_SITE_URL}/guides/banning-policy/`;
 
 export const PLUS_SERVER_DISCORD_URL = "https://discord.gg/FW4dKrY";
 export const SENDOU_INK_DISCORD_URL = "https://discord.gg/sendou";
@@ -95,6 +103,7 @@ export const youtubeUrl = (channelId: string) =>
 
 export const LOG_IN_URL = "/auth";
 export const LOG_OUT_URL = "/auth/logout";
+export const DISCORD_REFRESH_URL = "/auth/refresh";
 export const ADMIN_PAGE = "/admin";
 export const API_PAGE = "/api";
 export const ARTICLES_MAIN_PAGE = "/a";
@@ -102,6 +111,7 @@ export const FAQ_PAGE = "/faq";
 export const WELCOME_PAGE = "/welcome";
 export const SUPPORT_PAGE = "/support";
 export const CONTRIBUTIONS_PAGE = "/contributions";
+export const TRANSLATE_PAGE = "/translate";
 export const BADGES_PAGE = "/badges";
 export const TROPHIES_PAGE = "/trophies";
 export const NEW_TROPHY_PAGE = "/trophies/new";
@@ -113,7 +123,6 @@ export const CALENDAR_NEW_PAGE = "/calendar/new";
 export const TOURNAMENT_NEW_PAGE = "/calendar/new?tournament=true";
 export const ORGANIZATION_NEW_PAGE = "/org/new";
 export const STOP_IMPERSONATING_URL = "/auth/impersonate/stop";
-export const SEED_URL = "/seed";
 export const PLANNER_URL = "/plans";
 export const MAPS_URL = "/maps";
 export const TIER_LIST_MAKER_URL = "/tier-list-maker";
@@ -173,6 +182,7 @@ export const OG_IMAGE_PAGES = [
 	"tier-list-maker",
 	"links",
 	"maps",
+	"lobbies",
 ] as const;
 
 export type OgImagePage = (typeof OG_IMAGE_PAGES)[number];
@@ -186,6 +196,7 @@ export const NAV_ICONS = [
 	"associations",
 	"badges",
 	"luti",
+	"scanner",
 ] as const;
 
 export type NavIcon = (typeof NAV_ICONS)[number];
@@ -210,6 +221,8 @@ export const pwaSplashScreenImageUrl = (fileName: string) =>
 
 export const soundPath = (fileName: string) =>
 	`${STATIC_ASSETS_URL}/sounds/${fileName}.wav`;
+export const chatStickerUrl = (stickerId: string) =>
+	`${STATIC_ASSETS_URL}/img/chat-stickers/${stickerId}.gif`;
 
 export const GET_FRIENDS_FOR_ADDING_ROUTE = "/friends-for-adding";
 export const PATRONS_LIST_ROUTE = "/patrons-list";
@@ -228,6 +241,12 @@ export const chatRoomMessagesRoute = (roomId: number) =>
 	`${chatRoomDataRoute(roomId)}/messages`;
 export const chatRoomReadRoute = (roomId: number) =>
 	`${chatRoomDataRoute(roomId)}/read`;
+export const chatRoomMentionsSeenRoute = (roomId: number) =>
+	`${chatRoomDataRoute(roomId)}/mentions/seen`;
+
+export const voiceRoomDataRoute = (roomId: number) =>
+	`/api/voice/rooms/${roomId}`;
+export const VOICE_TELEMETRY_ROUTE = "/api/voice/telemetry";
 
 export const userCardFriendshipPage = (userId: number) =>
 	`/user-card/${userId}/friendship`;
@@ -241,16 +260,31 @@ export const trophyPage = (trophyId: number) => `${TROPHIES_PAGE}/${trophyId}`;
 export const trophyWinsPage = (args: { trophyId: number; userId: number }) =>
 	`${TROPHIES_PAGE}/${args.trophyId}/wins/${args.userId}`;
 
+export const trophyPlacementsPage = (args: {
+	trophyId: number;
+	userId: number;
+}) => `${TROPHIES_PAGE}/${args.trophyId}/placements/${args.userId}`;
+export const trophyModelPage = (trophyId: number) =>
+	`${TROPHIES_PAGE}/${trophyId}/model`;
 export const trophyTournamentsPage = (trophyId: number) =>
 	`${TROPHIES_PAGE}/${trophyId}/tournaments`;
+export const trophyBackfillPage = (args: {
+	trophyId: number;
+	seriesId: number;
+}) => `${TROPHIES_PAGE}/${args.trophyId}/backfill/${args.seriesId}`;
 
 export interface UserLinkArgs {
-	discordId: Tables["User"]["discordId"];
+	id: Tables["User"]["id"];
 	customUrl?: Tables["User"]["customUrl"];
 }
 
+export const translatePage = (language: string) =>
+	`${TRANSLATE_PAGE}/${language}`;
+export const sourceFileUrl = (filePath: string) =>
+	`${SENDOU_INK_GITHUB_URL}/blob/main/${filePath}`;
+
 export const userPage = (user: UserLinkArgs) =>
-	`/u/${user.customUrl ?? user.discordId}`;
+	`/u/${user.customUrl ?? user.id}`;
 export const userEditProfilePage = (user: UserLinkArgs) =>
 	`${userPage(user)}/edit`;
 export const userBuildsPage = (user: UserLinkArgs) =>
@@ -269,12 +303,15 @@ export const manageTeamRosterPage = (customUrl: string) =>
 	`${teamPage(customUrl)}/roster`;
 export const teamSchedulePage = (customUrl: string) =>
 	`${teamPage(customUrl)}/schedule`;
+export const teamResultsPage = (customUrl: string) =>
+	`${teamPage(customUrl)}/results`;
 
 export const authErrorUrl = (errorCode: AuthErrorCode) =>
 	`/?authError=${errorCode}`;
 export const impersonateUrl = (idToLogInAs: number) =>
 	`/auth/impersonate?id=${idToLogInAs}`;
 export const badgePage = (badgeId: number) => `${BADGES_PAGE}/${badgeId}`;
+export const badgeEditPage = (badgeId: number) => `${badgePage(badgeId)}/edit`;
 
 export const weaponBuildPage = (weaponSlug: string) =>
 	`${BUILDS_PAGE}/${weaponSlug}`;
@@ -352,6 +389,18 @@ export const scrimPage = (id: number) => {
 
 export const newScrimPostPage = () => {
 	return "/scrims/new";
+};
+
+export const lobbiesPage = () => {
+	return "/lobbies";
+};
+
+export const lobbyPage = (id: number) => {
+	return `${lobbiesPage()}/${id}`;
+};
+
+export const newLobbyPage = () => {
+	return "/lobbies/new";
 };
 
 export const newAssociationsPage = () => {
@@ -500,8 +549,14 @@ export const isCustomUrl = (value: string) => {
 };
 
 export function vodUrl(vod: {
+	platform: Tables["TournamentMatchVod"]["platform"];
 	platformVideoId: string;
 	timestampSeconds: number;
 }) {
-	return `https://www.twitch.tv/videos/${vod.platformVideoId}?t=${vod.timestampSeconds}s`;
+	switch (vod.platform) {
+		case "TWITCH":
+			return `https://www.twitch.tv/videos/${vod.platformVideoId}?t=${vod.timestampSeconds}s`;
+		case "YOUTUBE":
+			return `https://www.youtube.com/watch?v=${vod.platformVideoId}&t=${vod.timestampSeconds}s`;
+	}
 }

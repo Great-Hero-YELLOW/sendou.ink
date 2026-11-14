@@ -24,7 +24,7 @@ function makeEvent(
 		type: "calendar",
 		normalizedTeamCount: 0,
 		badges: [],
-		trophy: null,
+		trophyId: null,
 		logoUrl: null,
 		name: "",
 		url: "",
@@ -145,6 +145,24 @@ describe("CalendarEvent.applyFilters", () => {
 		};
 		const result = CalendarEvent.applyFilters(events, filters);
 		expect(result[0].events.shown.map((e) => e.id)).toEqual([1, 2]);
+	});
+
+	test("filters by preferredVersus using a tournament's team size when it has no versus tag", () => {
+		const events = [
+			{
+				at: 123,
+				events: [
+					makeEvent({ id: 1, tags: [], minMembersPerTeam: 2 }),
+					makeEvent({ id: 2, tags: [], minMembersPerTeam: 4 }),
+				],
+			},
+		];
+		const filters: CalendarFilters = {
+			...CalendarEvent.defaultFilters(),
+			preferredVersus: ["2v2"],
+		};
+		const result = CalendarEvent.applyFilters(events, filters);
+		expect(result[0].events.shown.map((e) => e.id)).toEqual([1]);
 	});
 
 	test("filters by modes (not exact)", () => {

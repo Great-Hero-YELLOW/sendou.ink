@@ -2,7 +2,7 @@
 
 // screenshots the canvas of the /admin/changelog-image page into a shareable PNG
 // and writes the same update as text, both as Bluesky alt text and as a Discord
-// post, see docs/dev/how-to.md
+// post, see docs/site/src/content/docs/dev/how-to.mdx
 
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
@@ -88,7 +88,10 @@ async function main() {
 		);
 	});
 
-	const screenshot = await canvas.screenshot({ type: "png" });
+	const screenshot = await canvas.screenshot({
+		type: "png",
+		style: "[data-dev-toolbar] { display: none !important; }",
+	});
 
 	await browser.close();
 
@@ -158,7 +161,9 @@ function altText(entries: ChangelogEntry[], date: Date) {
 	const sections = [heading(date)];
 
 	for (const entry of featured) {
-		sections.push([entry.headline, ...bulletLines(entry)].join("\n"));
+		sections.push(
+			[entry.headline, ...bulletLines(entry).map(stripBold)].join("\n"),
+		);
 	}
 
 	for (const entry of oneLiners) {
@@ -222,6 +227,10 @@ function heading(date: Date) {
 
 function bulletLines(entry: ChangelogEntry) {
 	return (entry.bullets ?? []).map((bullet) => `- ${bullet}`);
+}
+
+function stripBold(text: string) {
+	return text.replaceAll("**", "");
 }
 
 function emoji(entry: ChangelogEntry) {

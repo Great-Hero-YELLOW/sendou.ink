@@ -1,4 +1,7 @@
 import { cachified } from "@epic-web/cachified";
+import { hoursToMilliseconds, minutesToMilliseconds } from "date-fns";
+import * as R from "remeda";
+import { userIsBanned } from "~/features/ban/core/banned.server";
 import type {
 	SeasonPopularUsersWeapon,
 	UserSPLeaderboardItem,
@@ -10,7 +13,7 @@ import { userSkills } from "~/features/mmr/tiered.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import { weaponCategories } from "~/modules/in-game-lists/weapon-ids";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
+import { cache, ttl } from "~/utils/cache.server";
 import type { Unwrapped } from "~/utils/types";
 import { DEFAULT_LEADERBOARD_MAX_SIZE } from "../leaderboards-constants";
 import { seasonHasTopTen } from "../leaderboards-utils";
@@ -22,8 +25,8 @@ export async function cachedFullUserLeaderboard(season: number) {
 	return cachified({
 		key: `user-leaderboard-season-${season}`,
 		cache,
-		ttl: ttl(IN_MILLISECONDS.HALF_HOUR),
-		staleWhileRevalidate: ttl(IN_MILLISECONDS.TWO_HOURS),
+		ttl: ttl(minutesToMilliseconds(30)),
+		staleWhileRevalidate: ttl(hoursToMilliseconds(2)),
 		async getFreshValue() {
 			const leaderboard =
 				await LeaderboardRepository.findUserSPLeaderboard(season);
@@ -41,7 +44,9 @@ export async function cachedFullUserLeaderboard(season: number) {
 				: withTiers;
 
 			return addWeapons(
-				withPendingPlusTiers,
+				withPendingPlusTiers.map((entry) =>
+					R.omit(entry, ["plusSkippedForSeasonNth"]),
+				),
 				await LeaderboardRepository.findSeasonPopularUsersWeapon(season),
 			);
 		},
@@ -58,8 +63,8 @@ export async function cachedTeamLeaderboard({
 	return cachified({
 		key: teamLeaderboardCacheKey({ season, onlyOneEntryPerUser }),
 		cache,
-		ttl: ttl(IN_MILLISECONDS.HALF_HOUR),
-		staleWhileRevalidate: ttl(IN_MILLISECONDS.TWO_HOURS),
+		ttl: ttl(minutesToMilliseconds(30)),
+		staleWhileRevalidate: ttl(hoursToMilliseconds(2)),
 		async getFreshValue() {
 			return LeaderboardRepository.findTeamLeaderboardBySeason({
 				season,
@@ -83,11 +88,16 @@ export async function findUserTeamEntry({
 	const hasUser = (entry: { members: Array<{ id: number }> }) =>
 		entry.members.some((member) => member.id === userId);
 
-	const rankedEntry = (
-		await cachedTeamLeaderboard({ season, onlyOneEntryPerUser: true })
-	).find(hasUser);
+	const rankedLeaderboard = await cachedTeamLeaderboard({
+		season,
+		onlyOneEntryPerUser: true,
+	});
+	// a skipped team or one short on SendouQ sets is on the leaderboard without taking a placement
+	const rankedEntry =
+		rankedLeaderboard.find(
+			(entry) => hasUser(entry) && entry.placementRank !== null,
+		) ?? rankedLeaderboard.find(hasUser);
 
-	// a skipped team is on the leaderboard without taking a placement
 	if (rankedEntry)
 		return { entry: rankedEntry, rank: rankedEntry.placementRank ?? undefined };
 
@@ -117,7 +127,7 @@ function teamLeaderboardCacheKey({
 	return `team-leaderboard-season-${season}-${onlyOneEntryPerUser ? "TEAM" : "TEAM-ALL"}`;
 }
 
-async function addTiers<T extends UserSPLeaderboardItem>(
+async function addTiers<T extends { id: number }>(
 	entries: T[],
 	season: number,
 ) {
@@ -172,14 +182,12 @@ export function addPendingPlusTiers<T extends UserSPLeaderboardItem>(
 	for (const entry of entries) {
 		const highestPlusTierWithSpace = resolveHighestPlusTierWithSpace();
 		if (!highestPlusTierWithSpace) break;
+		if (userIsBanned(entry.id)) continue;
 
 		const plusTier = plusTiers.find((t) => t.userId === entry.id)?.plusTier;
 
 		if (plusTier && plusTier <= highestPlusTierWithSpace) continue;
-		if (entry.plusSkippedForSeasonNth === seasonNth) {
-			entry.plusSkippedForSeasonNth = null;
-			continue;
-		}
+		if (entry.plusSkippedForSeasonNth === seasonNth) continue;
 
 		entry.pendingPlusTier = highestPlusTierWithSpace;
 		const key = `+${highestPlusTierWithSpace}` as const;

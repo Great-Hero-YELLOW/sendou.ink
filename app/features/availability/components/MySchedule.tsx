@@ -5,6 +5,7 @@ import type { FetcherWithComponents } from "react-router";
 import * as R from "remeda";
 import { LinkButton, SendouButton } from "~/components/elements/Button";
 import { toastQueue } from "~/components/elements/Toast";
+import { FormWithConfirm } from "~/components/FormWithConfirm";
 import { useUser } from "~/features/auth/core/user";
 import { useUnsavedChangesChecker } from "~/form/UnsavedChangesGuard";
 import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
@@ -32,13 +33,14 @@ export function MySchedule({
 	data: MyScheduleData;
 	teams: Array<ScheduleAudienceTeam>;
 }) {
-	const { t } = useTranslation(["schedule"]);
+	const { t } = useTranslation(["schedule", "common"]);
 	const user = useUser();
 	const [{ week }, setParams] = useSearchParamsTyped(scheduleWeekSearchParams);
 	const [weeks, setWeeks] = React.useState<Array<AvailabilityEditorWeek>>(() =>
 		data.weeks.map((editorWeek) => editorWeek.days),
 	);
 	const [visibilityDialogOpen, setVisibilityDialogOpen] = React.useState(false);
+	const [emptyWeekConfirmOpen, setEmptyWeekConfirmOpen] = React.useState(false);
 	const hiddenFrom = scheduleAudiencesHiddenFrom({
 		visibility: user?.preferences.scheduleVisibility,
 		teams,
@@ -57,20 +59,18 @@ export function MySchedule({
 	// popover holds uncommitted edits. Edits survive same-route navigations (view tabs), so only a
 	// pathname change or a full unload warns
 	const hasPendingDraftRef = React.useRef(false);
-	const hasUnsavedChangesRef = React.useRef<
-		Parameters<typeof useUnsavedChangesChecker>[0]["current"]
-	>(() => false);
-	hasUnsavedChangesRef.current = (navigation) =>
-		fetcher.state === "idle" &&
-		(!navigation ||
-			navigation.currentLocation.pathname !==
-				navigation.nextLocation.pathname) &&
-		(hasPendingDraftRef.current ||
-			!R.isDeepEqual(
-				weeks,
-				data.weeks.map((editorWeek) => editorWeek.days),
-			));
-	useUnsavedChangesChecker(hasUnsavedChangesRef);
+	useUnsavedChangesChecker(
+		(navigation) =>
+			fetcher.state === "idle" &&
+			(!navigation ||
+				navigation.currentLocation.pathname !==
+					navigation.nextLocation.pathname) &&
+			(hasPendingDraftRef.current ||
+				!R.isDeepEqual(
+					weeks,
+					data.weeks.map((editorWeek) => editorWeek.days),
+				)),
+	);
 
 	const weekIndex = week === "next" ? 1 : 0;
 	const shownDays = weeks[weekIndex];
@@ -196,12 +196,23 @@ export function MySchedule({
 				<SendouButton
 					size="small"
 					isDisabled={state !== "idle"}
-					onClick={saveWeek}
+					onClick={() =>
+						shownDays.every((day) => day.ranges.length === 0)
+							? setEmptyWeekConfirmOpen(true)
+							: saveWeek()
+					}
 					testId="save-week-button"
 				>
 					{t("schedule:editor.saveWeek")}
 				</SendouButton>
 			</div>
+			<FormWithConfirm
+				isOpen={emptyWeekConfirmOpen}
+				onOpenChange={setEmptyWeekConfirmOpen}
+				dialogHeading={t("schedule:editor.emptyWeekConfirm")}
+				submitButtonText={t("common:actions.confirm")}
+				onConfirm={saveWeek}
+			/>
 			{visibilityDialogOpen ? (
 				<ScheduleVisibilityDialog
 					teams={teams}
@@ -222,10 +233,13 @@ function useSavedToast(fetcher: FetcherWithComponents<unknown>) {
 			fetcher.state === "idle" &&
 			fetcher.data === null
 		) {
-			toastQueue.add({
-				message: t("schedule:editor.saved"),
-				variant: "success",
-			});
+			toastQueue.add(
+				{
+					message: t("schedule:editor.saved"),
+					variant: "success",
+				},
+				{ timeout: 5000 },
+			);
 		}
 		previousStateRef.current = fetcher.state;
 	}, [fetcher.state, fetcher.data, t]);

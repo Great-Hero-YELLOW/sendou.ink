@@ -1,3 +1,7 @@
+/**
+ * Map-by-map play of a booked scrim: the map pool from both sides' submitted map lists, the next
+ * map generated from it, which report can be undone and the win/loss stats of the reported maps.
+ */
 import type { Tables } from "~/db/tables";
 import * as MapList from "~/features/map-list-generator/core/MapList";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
@@ -80,13 +84,13 @@ export function canUndo(
 	return true;
 }
 
-export type StatsRow = {
+type StatsRow = {
 	key: string;
 	wins: number;
 	losses: number;
 };
 
-export type Stats = {
+type Stats = {
 	byMode: StatsRow[];
 	byStage: StatsRow[];
 	byStageMode: StatsRow[];
@@ -145,9 +149,6 @@ export function stats(
 		);
 	}
 
-	const filterEmpty = (rows: StatsRow[]) =>
-		rows.filter((r) => r.wins + r.losses > 0);
-
 	const orderedByMode: StatsRow[] = [];
 	for (const mode of modesShort) {
 		const row = byMode.get(mode);
@@ -155,8 +156,8 @@ export function stats(
 	}
 
 	return {
-		byMode: filterEmpty(orderedByMode),
-		byStage: filterEmpty([...byStage.values()]),
-		byStageMode: filterEmpty([...byStageMode.values()]),
+		byMode: orderedByMode,
+		byStage: [...byStage.values()],
+		byStageMode: [...byStageMode.values()],
 	};
 }

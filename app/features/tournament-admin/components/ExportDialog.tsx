@@ -10,6 +10,7 @@ import * as CheckIn from "~/features/tournament-bracket/core/CheckIn";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
 import * as CSV from "~/modules/csv";
 import { databaseTimestampToDate } from "~/utils/dates";
+import { downloadBlob, downloadCsv } from "~/utils/download";
 import { teamPage, userPage } from "~/utils/urls";
 import styles from "./ExportDialog.module.css";
 
@@ -83,9 +84,11 @@ const DEFAULT_FIELDS: ExportField[] = [
 export function ExportDialog({
 	close,
 	teams: allTeams,
+	memberDiscordIds,
 }: {
 	close: () => void;
 	teams: TournamentTeamFull[];
+	memberDiscordIds: Record<number, string>;
 }) {
 	const tournament = useTournament();
 
@@ -128,6 +131,7 @@ export function ExportDialog({
 	});
 	const content = buildContent({
 		teams,
+		memberDiscordIds,
 		format,
 		fields,
 		captainsOnly: roster === "captains",
@@ -289,6 +293,7 @@ function hasActiveCheckIn(
 	);
 }
 
+/** @internal */
 export function scopedAndSortedTeams({
 	teams,
 	status,
@@ -362,6 +367,7 @@ function teamFieldValue(
 function memberFieldValue(
 	member: TournamentTeamFull["members"][number],
 	field: (typeof MEMBER_FIELDS)[number],
+	memberDiscordIds: Record<number, string>,
 ) {
 	switch (field) {
 		case "memberUsername":
@@ -369,14 +375,17 @@ function memberFieldValue(
 		case "memberInGameName":
 			return member.inGameName ?? "";
 		case "memberDiscord":
-			return member.discordId ? `<@${member.discordId}>` : "";
+			return memberDiscordIds[member.userId]
+				? `<@${memberDiscordIds[member.userId]}>`
+				: "";
 		case "memberProfileUrl":
-			return `${BASE_URL}${userPage(member)}`;
+			return `${BASE_URL}${userPage({ ...member, id: member.userId })}`;
 	}
 }
 
 function buildContent({
 	teams,
+	memberDiscordIds,
 	format,
 	fields,
 	captainsOnly,
@@ -385,6 +394,7 @@ function buildContent({
 	notCheckedInLabel,
 }: {
 	teams: TournamentTeamFull[];
+	memberDiscordIds: Record<number, string>;
 	format: ExportFormat;
 	fields: Set<ExportField>;
 	captainsOnly: boolean;
@@ -425,7 +435,7 @@ function buildContent({
 			const memberValues = Array.from({ length: maxRoster }).flatMap((_, i) => {
 				const member = teamMembers[i];
 				return memberFields.map((field) =>
-					member ? memberFieldValue(member, field) : "",
+					member ? memberFieldValue(member, field, memberDiscordIds) : "",
 				);
 			});
 			return [...teamValues, ...memberValues];
@@ -447,7 +457,7 @@ function buildContent({
 		if (!hasMemberFields) return teamLine;
 		const memberLines = membersOf(team).map((member) => {
 			const memberLine = memberFields
-				.map((field) => memberFieldValue(member, field))
+				.map((field) => memberFieldValue(member, field, memberDiscordIds))
 				.filter(Boolean)
 				.join(" - ");
 			return groupByTeam ? `  ${memberLine}` : memberLine;
@@ -469,14 +479,12 @@ function handleDownload({
 	filename: string;
 	format: ExportFormat;
 }) {
-	const isCsv = format === "csv";
-	const element = document.createElement("a");
-	const file = new Blob(isCsv ? [CSV.BOM, content] : [content], {
-		type: isCsv ? "text/csv;charset=utf-8" : "text/plain;charset=utf-8",
-	});
-	element.href = URL.createObjectURL(file);
-	element.download = filename;
-	document.body.appendChild(element);
-	element.click();
-	document.body.removeChild(element);
+	if (format === "csv") {
+		downloadCsv(filename, content);
+		return;
+	}
+	downloadBlob(
+		filename,
+		new Blob([content], { type: "text/plain;charset=utf-8" }),
+	);
 }

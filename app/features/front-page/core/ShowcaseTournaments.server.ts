@@ -1,4 +1,5 @@
 import cachified from "@epic-web/cachified";
+import { hoursToMilliseconds } from "date-fns";
 import * as R from "remeda";
 import type { ShowcaseCalendarEvent } from "~/features/calendar/calendar-types";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
@@ -7,8 +8,10 @@ import {
 	tournamentIsRanked,
 } from "~/features/tournament/tournament-utils";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
+import * as SeriesTeamCount from "~/features/tournament-organization/core/SeriesTeamCount.server";
 import { getTentativeTier } from "~/features/tournament-organization/core/tentativeTiers.server";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
+import { truncateWithOverflow } from "~/utils/arrays";
+import { cache, ttl } from "~/utils/cache.server";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
@@ -50,16 +53,33 @@ export async function categorizedTournamentsByUserId(
 			(tournament) =>
 				!tournament.hidden && participation.participants.has(tournament.id),
 		),
-		showcase: resolveShowcaseTournaments(
+		showcase: await resolveShowcaseTournaments(
 			tournaments.upcoming.filter(
 				(tournament) =>
 					!tournament.hidden &&
 					!participation.organizers.has(tournament.id) &&
 					!participation.participants.has(tournament.id),
 			),
+			{
+				from: databaseTimestampSixHoursAgo(),
+				to: databaseTimestampWeekFromNow(),
+			},
 		),
 		results: tournaments.results,
 	};
+}
+
+/** The tournaments starting in the range the front page would showcase, soonest first. */
+export async function showcaseTournamentsBetween(range: {
+	from: number;
+	to: number;
+}): Promise<ShowcaseCalendarEvent[]> {
+	const tournaments = await cachedTournaments();
+
+	return resolveShowcaseTournaments(
+		tournaments.upcoming.filter((tournament) => !tournament.hidden),
+		range,
+	);
 }
 
 let participationInfoMap: Map<CommonUser["id"], ParticipationInfo> | null =
@@ -165,7 +185,7 @@ async function cachedTournaments() {
 	return cachified({
 		key: SHOWCASE_TOURNAMENTS_CACHE_KEY,
 		cache,
-		ttl: ttl(IN_MILLISECONDS.TWO_HOURS),
+		ttl: ttl(hoursToMilliseconds(2)),
 		async getFreshValue() {
 			const tournaments = await TournamentRepository.findAllForShowcase();
 			const mapped = tournaments.map(mapTournamentFromDB);
@@ -211,16 +231,24 @@ function deleteExtraResults(tournaments: ShowcaseCalendarEvent[]) {
 	};
 }
 
-function resolveShowcaseTournaments(
+async function resolveShowcaseTournaments(
 	tournaments: ShowcaseCalendarEvent[],
-): ShowcaseCalendarEvent[] {
-	const happeningDuringNextWeek = tournaments.filter(
-		(tournament) =>
-			tournament.startsAt > databaseTimestampSixHoursAgo() &&
-			tournament.startsAt < databaseTimestampWeekFromNow(),
-	);
-	const sorted = happeningDuringNextWeek.sort(
-		(a, b) => b.teamsCount - a.teamsCount,
+	{ from, to }: { from: number; to: number },
+): Promise<ShowcaseCalendarEvent[]> {
+	const expectedTeamCount = await SeriesTeamCount.lookup();
+	const sorted = R.sortBy(
+		tournaments.filter(
+			(tournament) => tournament.startsAt > from && tournament.startsAt < to,
+		),
+		[
+			(tournament) =>
+				expectedTeamCount({
+					organizationId: tournament.organizationId,
+					name: tournament.name,
+					teamCount: tournament.teamsCount,
+				}),
+			"desc",
+		],
 	);
 
 	const ranked = sorted.filter((tournament) => tournament.isRanked).slice(0, 3);
@@ -316,6 +344,8 @@ function mapTournamentFromDB(
 		minMembersPerTeam: tournament.settings.minMembersPerTeam ?? 4,
 		modes: null,
 		hasVods: (tournament.vodCount ?? 0) > 0,
+		badges: tournament.badges,
+		trophyId: tournament.trophyId,
 		firstPlacers,
 	};
 }
@@ -332,14 +362,24 @@ function resolveFirstPlacers(
 	if (
 		Progression.hasAbDivisionsFinals(tournament.settings.bracketProgression)
 	) {
-		const byDiv = R.groupBy(tournament.firstPlacers, (p) => p.div ?? "");
-		return Object.values(byDiv)
+		return rowsByTeam(tournament.firstPlacers)
 			.map((rows) => buildFirstPlacerEntry(rows, { withMembers: false }))
 			.sort((a, b) => (a.div ?? "").localeCompare(b.div ?? ""));
 	}
 
 	const winnerRows = winnersOfHighestDivision(tournament);
+	const winnerRowsByTeam = rowsByTeam(winnerRows);
+	if (winnerRowsByTeam.length > 1) {
+		return winnerRowsByTeam.map((rows) =>
+			buildFirstPlacerEntry(rows, { withMembers: false }),
+		);
+	}
+
 	return [buildFirstPlacerEntry(winnerRows, { withMembers: true })];
+}
+
+function rowsByTeam(rows: FirstPlacerRow[]) {
+	return Object.values(R.groupBy(rows, (row) => row.tournamentTeamId));
 }
 
 function winnersOfHighestDivision(
@@ -367,27 +407,24 @@ function buildFirstPlacerEntry(
 	{ withMembers }: { withMembers: boolean },
 ): ShowcaseCalendarEvent["firstPlacers"][number] {
 	const first = rows[0];
-	const members = withMembers
-		? rows.slice(0, MEMBERS_TO_SHOW).map((row) => ({
-				customUrl: row.customUrl,
-				customAvatarUrl: row.customAvatarUrl,
-				discordAvatar: row.discordAvatar,
-				discordId: row.discordId,
-				id: row.id,
-				username: row.username,
-				country: row.country,
-			}))
-		: [];
+	const { shown, hiddenCount } = truncateWithOverflow(
+		withMembers ? rows : [],
+		MEMBERS_TO_SHOW,
+	);
+	const members = shown.map((row) => ({
+		customUrl: row.customUrl,
+		avatar: row.avatar,
+		id: row.id,
+		username: row.username,
+		country: row.country,
+	}));
 
 	return {
 		teamName: first.teamName,
 		logoUrl: first.teamLogoUrl ?? first.pickupAvatarUrl,
 		div: first.div,
 		members,
-		notShownMembersCount:
-			withMembers && rows.length > MEMBERS_TO_SHOW
-				? rows.length - MEMBERS_TO_SHOW
-				: 0,
+		notShownMembersCount: hiddenCount,
 	};
 }
 

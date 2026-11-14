@@ -46,6 +46,10 @@ export const SEASON_STATS_TABS = [
 ] as const;
 
 export type SeasonStatsTab = (typeof SEASON_STATS_TABS)[number];
+export const SEASONS_STAFF_DIALOGS = [
+	"canceled-matches",
+	"public-notes",
+] as const;
 export const RESULTS_PER_PAGE = 25;
 export const HIGHLIGHTS_RESULTS_MAX = 500;
 
@@ -75,6 +79,10 @@ export const BUILD_SORT_IDENTIFIERS = [
 ] as const;
 
 export type BuildSort = (typeof BUILD_SORT_IDENTIFIERS)[number];
+
+export const BUILD_VISIBILITIES = ["PUBLIC", "PRIVATE"] as const;
+
+export type BuildVisibility = (typeof BUILD_VISIBILITIES)[number];
 
 export const DEFAULT_BUILD_SORT = ["WEAPON_POOL", "UPDATED_AT"] as const;
 

@@ -1,27 +1,29 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { getUser } from "~/features/auth/core/user.server";
 import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
 import { idObject } from "~/utils/schema";
+import * as XpTrophy from "../core/XpTrophy";
 import * as TrophyRepository from "../TrophyRepository.server";
-import { canAccessTrophies } from "../trophies-utils";
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
-	if (!canAccessTrophies(getUser())) {
-		throw new Response(null, { status: 404 });
-	}
-
 	const { id } = parseParams({
 		params,
 		schema: idObject,
 	});
 
-	const [trophy, tournaments] = await Promise.all([
-		TrophyRepository.findById(id).then(notFoundIfNullish),
-		TrophyRepository.findTournamentsByTrophyId(id),
-	]);
+	const trophy = notFoundIfNullish(await TrophyRepository.findById(id));
+	const tournaments = await TrophyRepository.findTournamentsByTrophyId(id);
+
+	const xpVariant = XpTrophy.parseCode(trophy.code);
 
 	return {
 		trophy,
 		tournaments,
+		xpWeapons: xpVariant
+			? await TrophyRepository.findXpWeaponCountsById({
+					trophyId: id,
+					weaponIds: XpTrophy.categoryWeaponIds(xpVariant.category),
+					milestone: xpVariant.milestone,
+				})
+			: null,
 	};
 };

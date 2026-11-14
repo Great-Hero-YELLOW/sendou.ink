@@ -8,14 +8,31 @@ import { scannerSearchParams } from "./scanner-search-params";
 describe("scannerSearchParams", () => {
 	test("round-trips", () => {
 		assertRoundTrips(scannerSearchParams, {
-			tab: ["live", "screenshot", "vod", "fixtures"],
-			q: ["", "gauge-overlay", "player-status/cast,ready-trough"],
+			view: [
+				"home",
+				"live",
+				"session",
+				"vod",
+				"coach",
+				"clips",
+				"debug",
+				"montage",
+			],
+			id: [1758040920000, 0, null],
+			name: ["sws26-finals.mkv", "a b.mp4", null],
+			t: [754, 0, null],
 			inspect: ["1723456789012-abc123", null],
 			telemetry: [true, false],
+			debug: [true, false],
 		});
 	});
 
 	test("malformed values decode to defaults", () => {
-		assertDecodesToDefault(scannerSearchParams, "tab", [["garbage"], ["LIVE"]]);
+		assertDecodesToDefault(scannerSearchParams, "view", [
+			["garbage"],
+			["LIVE"],
+		]);
+		assertDecodesToDefault(scannerSearchParams, "id", [["-5"], ["1.5"]]);
+		assertDecodesToDefault(scannerSearchParams, "t", [["-5"], ["1.5"]]);
 	});
 });

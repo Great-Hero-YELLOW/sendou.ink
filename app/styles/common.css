@@ -6,40 +6,8 @@
 
 	html {
 		color-scheme: light dark;
-		/* only elements React names take part in view transitions, the rest of the page swaps instantly */
-		view-transition-name: none;
 		accent-color: var(--color-fg-accent);
 		scroll-padding-top: var(--layout-sticky-top);
-	}
-
-	/* the page stays usable while a transition plays */
-	::view-transition {
-		pointer-events: none;
-	}
-
-	/* captured elements are not hit tested while they animate, keep the cursor they had (see useHoverCursorForViewTransitions) */
-	html:active-view-transition {
-		cursor: var(--hover-cursor, auto);
-	}
-
-	/* a card React decided not to animate is left as an old-only snapshot that would still
-	   fade for the full duration, holding the next render for a transition of no change */
-	::view-transition-old(.card-update):only-child {
-		animation-duration: 0s;
-	}
-
-	/* top layer elements (see useTopLayerViewTransitionStyle) show their live state above the rest */
-	::view-transition-group(.top-layer) {
-		z-index: 2;
-		animation: none;
-	}
-
-	::view-transition-old(.top-layer) {
-		display: none;
-	}
-
-	::view-transition-new(.top-layer) {
-		animation: none;
 	}
 
 	body {
@@ -452,13 +420,15 @@
 	}
 
 	/* Safari has no picker indicator reserving room for the icon above,
-	so reserve it with padding instead (-webkit-hyphens = Safari only) */
+	so reserve it with padding instead (-webkit-hyphens = Safari only).
+	iOS ignores box-sizing on native-looking date inputs, so they overflow */
 	@supports (-webkit-hyphens: none) {
 		input[type="date"],
 		input[type="datetime-local"],
 		input[type="month"],
 		input[type="time"],
 		input[type="week"] {
+			appearance: none;
 			padding-right: calc(
 				var(--field-size-icon) +
 				var(--field-padding) +
@@ -702,19 +672,22 @@
 	place-items: center;
 }
 
+/* iOS can't pin the tab bar on top of the virtual keyboard, so it gets out of the way while the keyboard is open */
+html[data-keyboard-open] body {
+	--mobile-nav-height: 0px;
+	--mobile-tab-bar-display: none;
+}
+
 @media screen and (max-width: 599px) {
 	body:not(:has(.planner)) .publift-widget-sticky_footer-container {
-		bottom: calc(
-			var(--layout-nav-height) +
-			env(safe-area-inset-bottom)
-		) !important;
+		bottom: var(--mobile-nav-height) !important;
 	}
 }
 
 /* the consent dialog is drawn outside the top layer, where the tab bar would cover its buttons */
 @media screen and (max-width: 599px) {
 	body:not(:has(.planner)) #qc-cmp2-container .qc-cmp-cleanslate {
-		bottom: calc(var(--layout-nav-height) + env(safe-area-inset-bottom));
+		bottom: var(--mobile-nav-height);
 		height: auto;
 	}
 }

@@ -1,5 +1,10 @@
 import * as v from "valibot";
-import { envBoolean, formatEnvErrors, requiredInProd } from "./config-helpers";
+import {
+	assertE2EFlagSafe,
+	envBoolean,
+	formatEnvErrors,
+	requiredInProd,
+} from "./config-helpers";
 import { IS_E2E_TEST_RUN } from "./utils/e2e";
 import { superRefine, type ValidationCtx } from "./utils/schema";
 
@@ -10,6 +15,12 @@ import { superRefine, type ValidationCtx } from "./utils/schema";
 
 const isProd = process.env.NODE_ENV === "production" && !IS_E2E_TEST_RUN;
 
+assertE2EFlagSafe({
+	nodeEnv: process.env.NODE_ENV,
+	isE2E: IS_E2E_TEST_RUN,
+	siteDomain: process.env.VITE_SITE_DOMAIN,
+});
+
 const schema = v.pipe(
 	v.object({
 		NODE_ENV: v.optional(
@@ -17,8 +28,10 @@ const schema = v.pipe(
 			"development",
 		),
 		DB_PATH: requiredInProd(isProd, "db.sqlite3"),
-		SESSION_SECRET: requiredInProd(isProd, "secret"),
-		LOHI_TOKEN: requiredInProd(isProd, "salmon"),
+		SESSION_SECRET: requiredInProd(isProd, "secret", {
+			rejectDevFallback: true,
+		}),
+		LOHI_TOKEN: requiredInProd(isProd, "salmon", { rejectDevFallback: true }),
 		SQL_LOG: v.optional(v.picklist(["none", "trunc", "full"]), "none"),
 		DISABLE_CACHE: v.optional(envBoolean, "false"),
 
@@ -34,16 +47,23 @@ const schema = v.pipe(
 		TWITCH_CLIENT_ID: v.optional(v.string()),
 		TWITCH_CLIENT_SECRET: v.optional(v.string()),
 
+		YOUTUBE_API_KEY: v.optional(v.string()),
+
 		PATREON_ACCESS_TOKEN: v.optional(v.string()),
 
 		// the client-readable public key (VITE_VAPID_PUBLIC_KEY) lives in `~/config`;
 		// webPush.server.ts checks all three are set together
 		VAPID_PRIVATE_KEY: v.optional(v.string()),
 		VAPID_EMAIL: v.optional(v.string()),
+
+		DAILY_API_KEY: v.optional(v.string()),
+		DAILY_DOMAIN: v.optional(v.string()),
+		DAILY_WEBHOOK_SECRET: v.optional(v.string()),
 	}),
 	superRefine((val, ctx) => {
 		requireTogether(ctx, val, "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET");
 		requireTogether(ctx, val, "VAPID_EMAIL", "VAPID_PRIVATE_KEY");
+		requireTogether(ctx, val, "DAILY_API_KEY", "DAILY_DOMAIN");
 	}),
 );
 
@@ -85,6 +105,11 @@ export const ServerConfig = {
 		clientSecret: values.TWITCH_CLIENT_SECRET,
 	},
 
+	/** Optional, YouTube streams are hidden and YouTube channels can't be resolved when unset. */
+	youtube: {
+		apiKey: values.YOUTUBE_API_KEY,
+	},
+
 	patreon: {
 		accessToken: values.PATREON_ACCESS_TOKEN,
 	},
@@ -93,6 +118,13 @@ export const ServerConfig = {
 	vapid: {
 		privateKey: values.VAPID_PRIVATE_KEY,
 		email: values.VAPID_EMAIL,
+	},
+
+	/** Voice chat. Optional, voice is unavailable when unset. */
+	daily: {
+		apiKey: values.DAILY_API_KEY,
+		domain: values.DAILY_DOMAIN,
+		webhookSecret: values.DAILY_WEBHOOK_SECRET,
 	},
 };
 

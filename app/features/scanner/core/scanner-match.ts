@@ -11,6 +11,16 @@ import type {
 	StageId,
 } from "~/modules/in-game-lists/types";
 import type { ScannerLobby } from "../scanner-types";
+import { rankBy } from "./text";
+
+/**
+ * A kill-feed name pins its kill on the enemy row it reads exactly (after
+ * matchKey), else on the row it resembles clearly more than any other: OCR of
+ * the feed's font garbles symbols the scoreboard reads fine, so a loose best
+ * match stands when the other names are far off.
+ */
+const VICTIM_NAME_MIN_SIMILARITY = 0.4;
+const VICTIM_NAME_MIN_MARGIN = 0.25;
 
 export interface ScannerMatchPlayer {
 	/** in-game name; null when unread (e.g. minimap POV enemy rows show none) */
@@ -40,10 +50,15 @@ export interface ScannerMatchObjectiveSample {
 	time: number | null;
 	/** displayed count per team, in `teams` order; null = unreadable */
 	score: [number | null, number | null];
-	/** penalty pill value per team; null = no pill (or unreadable) */
+	/** penalty pill value per team; null = no pill (or unreadable); always null on TC/RM */
 	penalty: [number | null, number | null];
-	/** which team held the objective at the read */
-	control: [boolean, boolean];
+	/** which team held the objective at the read, in `teams` order; null = neither */
+	control: 0 | 1 | null;
+	/**
+	 * TC/RM only: the tower / Rainmaker along its track, -100..100 — positive
+	 * toward the end `teams[0]` pushes to (its progress); null = icon unread
+	 */
+	position?: number | null;
 }
 
 /**
@@ -53,10 +68,15 @@ export interface ScannerMatchObjectiveSample {
  * observed (capture gap, covered HUD): render it as unknown, don't interpolate.
  */
 export interface ScannerMatchObjective {
-	mode: "SZ";
+	/**
+	 * the counter's mode; null when the match's mode is unknown and the overlay
+	 * doesn't tell (SZ/CB plates, a TC/RM track whose checkpoint markers never read)
+	 */
+	mode: "SZ" | "TC" | "RM" | "CB" | null;
 	samples: ScannerMatchObjectiveSample[];
 }
 
+/** @internal */
 export type ScannerMatchPlayerFlags = [boolean, boolean, boolean, boolean];
 
 export interface ScannerMatchPlayerStatusSample {
@@ -130,4 +150,22 @@ export interface ScannerMatch {
 	winner: 0 | 1 | null;
 	/** the POV player's seat, when a scoreboard identified it */
 	pov: { team: 0 | 1; index: number } | null;
+}
+
+/** The enemy slot a kill-feed name belongs to; null when no row clearly matches. */
+export function victimSlot(
+	name: string | null,
+	enemies: readonly ScannerMatchPlayer[],
+): number | null {
+	if (name === null) return null;
+	const named = enemies.flatMap((player, slot) =>
+		player.name !== null ? [{ slot, name: player.name }] : [],
+	);
+	const [best, runnerUp] = rankBy(name, named, (enemy) => enemy.name);
+	if (!best || best.score < VICTIM_NAME_MIN_SIMILARITY) return null;
+	if (best.score === 1 && runnerUp?.score !== 1) return best.entry.slot;
+	if (runnerUp && best.score - runnerUp.score < VICTIM_NAME_MIN_MARGIN) {
+		return null;
+	}
+	return best.entry.slot;
 }

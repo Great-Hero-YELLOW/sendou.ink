@@ -1,6 +1,5 @@
-import clsx from "clsx";
-import type * as React from "react";
 import { Image } from "~/components/Image";
+import { SiteLogoMark } from "~/components/SiteLogoMark";
 import {
 	GraphicContainer,
 	GraphicDateSubtitle,
@@ -12,6 +11,8 @@ import { type NavIcon, navIconUrl } from "~/utils/urls";
 import styles from "./ChangelogGraphic.module.css";
 
 const GRAPHIC_WIDTH = 560;
+
+const BOLD_PATTERN = /\*\*(.+?)\*\*/;
 
 export interface ChangelogGraphicEntry {
 	/** Nav icons shown next to the entry; omitted = sendou.ink logo */
@@ -89,10 +90,21 @@ function LongFeature({ entry }: { entry: ChangelogGraphicEntry }) {
 			</div>
 			<ul className={styles.bullets}>
 				{entry.bullets?.map((bullet) => (
-					<li key={bullet}>{bullet}</li>
+					<li key={bullet}>
+						<BulletText text={bullet} />
+					</li>
 				))}
 			</ul>
 		</section>
+	);
+}
+
+/** Renders the `**bold**` markdown of a bullet. */
+function BulletText({ text }: { text: string }) {
+	const parts = text.split(BOLD_PATTERN);
+
+	return parts.map((part, i) =>
+		i % 2 === 1 ? <strong key={`${i}-${part}`}>{part}</strong> : part,
 	);
 }
 
@@ -119,21 +131,6 @@ function EntryIcons({
 					loading="eager"
 				/>
 			))}
-		</div>
-	);
-}
-
-function SiteLogoMark({
-	className,
-	style,
-}: {
-	className?: string;
-	style?: React.CSSProperties;
-}) {
-	return (
-		<div className={clsx(styles.logo, className)} style={style}>
-			<span className={styles.logoS}>S</span>
-			<span className={styles.logoInk}>ink</span>
 		</div>
 	);
 }

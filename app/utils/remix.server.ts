@@ -5,33 +5,43 @@ import * as v from "valibot";
 import type { navItems } from "~/components/layout/nav-items";
 import { ServerConfig } from "~/config.server";
 import type { Ok, Result } from "~/utils/result";
-import type { AnySchema, AnySyncSchema } from "~/utils/schema";
-import { logger } from "./logger";
+import type { AnySyncSchema } from "~/utils/schema";
 import { currentRequestPath } from "./request-context.server";
 
+/** Throws a HTTP 404 (Not Found) response, ending execution of the loader/action early */
+export function notFound(): never {
+	throw new Response(null, { status: 404 });
+}
+
+/** Throws a HTTP 400 (Bad Request) response, ending execution of the loader/action early */
+export function badRequest(): never {
+	throw new Response(null, { status: 400 });
+}
+
+/** Throws a HTTP 401 (Unauthorized) response, ending execution of the loader/action early */
+export function unauthorized(): never {
+	throw new Response(null, { status: 401 });
+}
+
+/** Throws a HTTP 403 (Forbidden) response, ending execution of the loader/action early */
+export function forbidden(): never {
+	throw new Response(null, { status: 403 });
+}
+
 export function notFoundIfNullish<T>(value: T | null | undefined): T {
-	if (value === null || value === undefined) {
-		throw new Response(null, { status: 404 });
-	}
+	if (value === null || value === undefined) notFound();
 
 	return value;
 }
 
 export function unauthorizedIfFalsy<T>(value: T | null | undefined): T {
-	if (!value) throw new Response(null, { status: 401 });
+	if (!value) unauthorized();
 
 	return value;
 }
 
-/** Throws a HTTP 403 (Forbidden) response, ending execution of the loader/action early */
-export function forbidden() {
-	throw new Response(null, { status: 403 });
-}
-
 export function badRequestIfFalsy<T>(value: T | null | undefined): T {
-	if (!value) {
-		throw new Response(null, { status: 400 });
-	}
+	if (!value) badRequest();
 
 	return value;
 }
@@ -62,27 +72,6 @@ export function paginate({
 	return { currentPage: page, pagesCount };
 }
 
-/** Parses request payload with the schema, error toast redirect on failure. With SendouForm use `parseFormData` from `~/form/parse.server` instead. */
-export async function parseRequestPayload<T extends AnySchema>({
-	request,
-	schema,
-}: {
-	request: Request;
-	schema: T;
-}): Promise<v.InferOutput<T>> {
-	const formDataObj =
-		request.headers.get("Content-Type") === "application/json"
-			? await request.json()
-			: formDataToObject(await request.formData());
-	try {
-		return await v.parseAsync(schema, formDataObj);
-	} catch (e) {
-		logger.error("Error parsing request payload", e);
-
-		throw errorToastRedirect("Validation failed");
-	}
-}
-
 /** Parse params with the given schema. Throws HTTP 404 response if fails. */
 export function parseParams<T extends AnySyncSchema>({
 	params,
@@ -92,25 +81,7 @@ export function parseParams<T extends AnySyncSchema>({
 	schema: T;
 }): v.InferOutput<T> {
 	const parsed = v.safeParse(schema, params);
-	if (!parsed.success) {
-		throw new Response(null, { status: 404 });
-	}
-
-	return parsed.output;
-}
-
-/** Parse JSON body with the given schema. Throws HTTP 400 response if fails. */
-export async function parseBody<T extends AnySyncSchema>({
-	request,
-	schema,
-}: {
-	request: Request;
-	schema: T;
-}): Promise<v.InferOutput<T>> {
-	const parsed = v.safeParse(schema, await request.json());
-	if (!parsed.success) {
-		throw new Response(null, { status: 400 });
-	}
+	if (!parsed.success) notFound();
 
 	return parsed.output;
 }
@@ -136,7 +107,6 @@ export function formDataToObject(formData: FormData) {
 
 const LOHI_TOKEN_HEADER_NAME = "Lohi-Token";
 
-/** Some endpoints can only be accessed with an auth token. Used by Lohi bot and cron jobs. */
 /** A `returnTo` form value narrowed to a same-site path, so that redirecting to it can not leave the site. */
 export function safeReturnTo(value: FormDataEntryValue | null) {
 	if (typeof value !== "string") return null;
@@ -146,14 +116,9 @@ export function safeReturnTo(value: FormDataEntryValue | null) {
 	return value;
 }
 
+/** Some endpoints can only be accessed with an auth token. Used by Lohi bot and cron jobs. */
 export function canAccessLohiEndpoint(request: Request) {
 	return request.headers.get(LOHI_TOKEN_HEADER_NAME) === ServerConfig.lohiToken;
-}
-
-export function errorToastRedirect(message: string) {
-	return redirect(
-		urlWithToastParam(currentRequestPath() ?? "", "__error", message),
-	);
 }
 
 /** Asserts condition is truthy. Throws a redirect triggering an error toast with given message otherwise.  */
@@ -163,7 +128,7 @@ export function errorToastIfFalsy(
 ): asserts condition {
 	if (condition) return;
 
-	throw errorToastRedirect(message);
+	errorToast(message);
 }
 
 /** Asserts `Result` is `Ok`; on `Err` throws a redirect showing the error as a toast. */
@@ -171,29 +136,48 @@ export function errorToastIfErr<T, E extends string>(
 	value: Result<T, E>,
 ): asserts value is Ok<T> {
 	if (!value.ok) {
-		throw errorToastRedirect(value.error);
+		errorToast(value.error);
 	}
 }
 
-/** Throws a redirect triggering an error toast with given message.  */
-export function errorToast(message: string) {
-	throw errorToastRedirect(message);
+/** Throws a redirect back to the current page triggering an error toast with given message.  */
+export function errorToast(message: string): never {
+	throw redirect(
+		urlWithToastParam(currentRequestPath() ?? "", "__error", message),
+	);
 }
 
-export function successToast(message: string) {
-	return redirect(
+/** Throws a redirect back to the current page triggering a success toast with given message.  */
+export function successToast(message: string): never {
+	throw redirect(
 		urlWithToastParam(currentRequestPath() ?? "", "__success", message),
 	);
 }
 
+/** Throws a redirect to `url` triggering a success toast with given message.  */
 export function successToastWithRedirect({
 	message,
 	url,
+	headers,
 }: {
 	message: string;
 	url: string;
-}) {
-	return redirect(urlWithToastParam(url, "__success", message));
+	headers?: HeadersInit;
+}): never {
+	throw redirect(urlWithToastParam(url, "__success", message), { headers });
+}
+
+/** Throws a redirect to `url` triggering an error toast with given message.  */
+export function errorToastWithRedirect({
+	message,
+	url,
+	headers,
+}: {
+	message: string;
+	url: string;
+	headers?: HeadersInit;
+}): never {
+	throw redirect(urlWithToastParam(url, "__error", message), { headers });
 }
 
 function urlWithToastParam(

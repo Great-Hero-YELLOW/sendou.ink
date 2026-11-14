@@ -14,6 +14,7 @@ import {
 	ADMIN_TEST_AVATAR,
 	NZAP_TEST_AVATAR,
 	NZAP_TEST_DISCORD_ID,
+	NZAP_YOUTUBE_ID,
 	STAFF_TEST_DISCORD_ID,
 } from "../constants";
 import { faker } from "../core/faker";
@@ -73,7 +74,7 @@ export async function seedUsers(): Promise<SeededUsers> {
 			discordUniqueName: "nzap",
 			discordAvatar: NZAP_TEST_AVATAR,
 			twitch: "nzap_stream",
-			youtubeId: "UCWbJLXByvsfQvTcR4HLPs5Q",
+			youtubeId: NZAP_YOUTUBE_ID,
 			youtubeName: "N-ZAP Plays",
 			bsky: "nzap.bsky.social",
 			profile: {
@@ -279,7 +280,8 @@ export function nzapWidgets(): StoredWidget[] {
 	];
 }
 
-function showcaseOptions(): Parameters<typeof UserFactory.create>[1] {
+/** A filled in match profile, card and division, as an active player has them. */
+export function showcaseOptions(): Parameters<typeof UserFactory.create>[1] {
 	return {
 		matchProfile: {
 			mapModePreferences: fakePreferences(),

@@ -6,8 +6,8 @@ import { SendouButton } from "~/components/elements/Button";
 import { SendouSwitch } from "~/components/elements/Switch";
 import { Label } from "~/components/Label";
 import { Main } from "~/components/Main";
-import { MapPoolSelector, MapPoolStages } from "~/components/MapPoolSelector";
-import type { Tables } from "~/db/tables";
+import { MapPoolPicker, useMapPoolQuickFill } from "~/components/MapPoolPicker";
+import { MapPoolStages } from "~/components/MapPoolStages";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { stageIds } from "~/modules/in-game-lists/stage-ids";
 import type { ModeWithStage } from "~/modules/in-game-lists/types";
@@ -48,17 +48,18 @@ export default function MapListPage() {
 	const { t } = useTranslation(["common"]);
 	const { mapPool, handleMapPoolChange, readonly } =
 		useSearchParamPersistedMapPool();
+	const quickFill = useMapPoolQuickFill();
 
 	return (
 		<Main className={`${styles.container} stack lg`}>
 			{readonly ? (
 				<MapPoolStages mapPool={mapPool} />
 			) : (
-				<MapPoolSelector
+				<MapPoolPicker
 					mapPool={mapPool}
-					handleMapPoolChange={handleMapPoolChange}
-					allowBulkEdit
-					className={styles.poolSelector}
+					onChange={handleMapPoolChange}
+					quickFill={quickFill}
+					aria-label={t("common:maps.mapPool")}
 				/>
 			)}
 			<a
@@ -81,12 +82,9 @@ export function useSearchParamPersistedMapPool() {
 
 	const [mapPool, setMapPool] = React.useState(() => new MapPool(params.pool));
 
-	const handleMapPoolChange = (
-		newMapPool: MapPool,
-		event?: Pick<Tables["CalendarEvent"], "id" | "name">,
-	) => {
+	const handleMapPoolChange = (newMapPool: MapPool) => {
 		setMapPool(newMapPool);
-		setParams(event ? { eventId: event.id } : { pool: newMapPool.serialized });
+		setParams({ pool: newMapPool.serialized });
 	};
 
 	return {
@@ -137,7 +135,7 @@ function MapListCreator({ mapPool }: { mapPool: MapPool }) {
 									className={styles.modeAbbr}
 									title={t(`game-misc:MODE_LONG_${mode}`)}
 								>
-									{t(`game-misc:MODE_SHORT_${mode}`)}
+									{t(`common:modes.short.${mode}`)}
 								</abbr>{" "}
 								{t(`game-misc:STAGE_${stageId}`)}
 							</li>
@@ -152,7 +150,7 @@ function MapListCreator({ mapPool }: { mapPool: MapPool }) {
 								mapList
 									.map(
 										({ mode, stageId }, i) =>
-											`${i + 1}) ${t(`game-misc:MODE_SHORT_${mode}`)} ${t(
+											`${i + 1}) ${t(`common:modes.short.${mode}`)} ${t(
 												`game-misc:STAGE_${stageId}`,
 											)}`,
 									)

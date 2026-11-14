@@ -1,6 +1,7 @@
 import { eachDayOfInterval, subDays } from "date-fns";
 import * as AdminRepository from "~/features/admin/AdminRepository.server";
 import * as ExternalStreamRepository from "~/features/admin/ExternalStreamRepository.server";
+import * as ModAuditLogRepository from "~/features/admin/ModAuditLogRepository.server";
 import * as ApiRepository from "~/features/api/ApiRepository.server";
 import * as ArtRepository from "~/features/art/ArtRepository.server";
 import * as AssociationRepository from "~/features/associations/AssociationRepository.server";
@@ -8,14 +9,29 @@ import * as LogInLinkRepository from "~/features/auth/LogInLinkRepository.server
 import * as AvailabilityRepository from "~/features/availability/AvailabilityRepository.server";
 import * as BadgeRepository from "~/features/badges/BadgeRepository.server";
 import * as BuildRepository from "~/features/builds/BuildRepository.server";
+import { RECENT_PATCHES } from "~/features/builds/builds-constants";
 import * as CalendarRepository from "~/features/calendar/CalendarRepository.server";
 import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import * as ChatRoomResolver from "~/features/chat/ChatRoomResolver.server";
+import * as FeedCommentRepository from "~/features/feed/FeedCommentRepository.server";
+import * as FeedEventRepository from "~/features/feed/FeedEventRepository.server";
+import * as FeedReactionRepository from "~/features/feed/FeedReactionRepository.server";
+import * as FeedRepository from "~/features/feed/FeedRepository.server";
+import {
+	FEED_EVENT_MAX_RETENTION_DAYS,
+	FEED_ITEM_TYPES,
+	FEED_MAX_AGE_HALF_LIVES,
+	FEED_ROTATION_LOOKBACK_WEEKS,
+	FEED_SCRIM_HISTORY_DAYS,
+	FEED_SCRIM_LOOKING_NOW_HOURS,
+} from "~/features/feed/feed-constants";
 import * as FriendRepository from "~/features/friends/FriendRepository.server";
 import * as ImageRepository from "~/features/img-upload/ImageRepository.server";
 import * as LeaderboardRepository from "~/features/leaderboards/LeaderboardRepository.server";
 import * as LFGRepository from "~/features/lfg/LFGRepository.server";
 import * as LiveStreamRepository from "~/features/live-streams/LiveStreamRepository.server";
+import * as LobbyMatchRepository from "~/features/lobbies/LobbyMatchRepository.server";
+import * as LobbyRepository from "~/features/lobbies/LobbyRepository.server";
 import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
 import * as Seasons from "~/features/mmr/core/Seasons";
 import * as SkillRepository from "~/features/mmr/SkillRepository.server";
@@ -50,11 +66,40 @@ import * as TrophyRepository from "~/features/trophies/TrophyRepository.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import * as VodRepository from "~/features/vods/VodRepository.server";
+import type { MainWeaponId } from "~/modules/in-game-lists/types";
+import {
+	weaponCategories,
+	weaponIdToCategory,
+} from "~/modules/in-game-lists/weapon-ids";
 import { LUTI_NAME_PREFIX } from "~/routines/computeLutiDivs";
-import { dateToDatabaseTimestamp, dateToYYYYMMDD } from "~/utils/dates";
+import {
+	databaseTimestampToDate,
+	dateToDatabaseTimestamp,
+	dateToYYYYMMDD,
+} from "~/utils/dates";
 import type { Fixtures } from "./fixtures";
 
 const SEARCH_QUERY = { query: "s", limit: 25 };
+const HOUR = 60 * 60;
+const DAY = 24 * HOUR;
+/** Look-back windows of `FeedItems.server.ts` */
+const FEED_RECENT_ACTIVITY_DAYS = 30;
+const FEED_SERIES_STANDINGS_DAYS = 90;
+const FEED_HIGH_XP = 3000;
+const FEED_SITE_TOTALS: FeedRepository.SiteTotal[] = [
+	"USERS",
+	"SQ_SETS",
+	"TOURNAMENTS",
+	"ART",
+];
+const LFG_NO_FILTERS = {
+	type: null,
+	weapons: [],
+	plusTier: null,
+	language: null,
+	timezones: null,
+	postIds: null,
+};
 
 export interface BenchmarkCase {
 	name: string;
@@ -146,6 +191,12 @@ export function buildCases(fx: Fixtures): {
 		"AssociationRepository.findInviteCodeById",
 		fx.heavyAssociation,
 		(association) => AssociationRepository.findInviteCodeById(association.id),
+	);
+	add(
+		"AssociationRepository.countUpcomingContentLimitedTo",
+		fx.heavyAssociation,
+		(association) =>
+			AssociationRepository.countUpcomingContentLimitedTo(association.id),
 	);
 
 	add("LogInLinkRepository.findValidByCode", fx.logInLinkCode, (code) =>
@@ -246,25 +297,142 @@ export function buildCases(fx: Fixtures): {
 	add("BuildRepository.findOwnerIdById", fx.buildId, (buildId) =>
 		BuildRepository.findOwnerIdById(buildId),
 	);
-	addStatic("BuildRepository.findAllAbilityPointAverages.all", () =>
-		BuildRepository.findAllAbilityPointAverages(),
+	addStatic("BuildRepository.findAllAbilityPointSums", () =>
+		BuildRepository.findAllAbilityPointSums(RECENT_PATCHES.at(-1)!.date),
 	);
 	add(
-		"BuildRepository.findAllAbilityPointAverages.byWeapon",
-		fx.heavyWeaponSplId,
-		(weaponSplId) => BuildRepository.findAllAbilityPointAverages(weaponSplId),
-	);
-	add(
-		"BuildRepository.findAllPopularAbilitiesByWeaponId",
+		"BuildRepository.findAbilityPointCountsByWeaponIds",
 		fx.heavyWeaponSplId,
 		(weaponSplId) =>
-			BuildRepository.findAllPopularAbilitiesByWeaponId(weaponSplId),
+			BuildRepository.findAbilityPointCountsByWeaponIds({
+				weaponIds: categoryWeaponIds(weaponSplId),
+				updatedSince: RECENT_PATCHES.at(-1)!.date,
+			}),
 	);
-	add("BuildRepository.findAllByWeaponId", fx.heavyWeaponSplId, (weaponSplId) =>
-		BuildRepository.findAllByWeaponId(weaponSplId, {
-			limit: 60,
+	add(
+		"BuildRepository.findNewestBuildPerOwnerByWeaponId",
+		fx.heavyWeaponSplId,
+		(weaponSplId) =>
+			BuildRepository.findNewestBuildPerOwnerByWeaponId({
+				weaponId: weaponSplId,
+				updatedSince: RECENT_PATCHES.at(-1)!.date,
+			}),
+	);
+	add(
+		"BuildRepository.findPageByWeaponId",
+		fx.heavyWeaponSplId,
+		(weaponSplId) =>
+			BuildRepository.findPageByWeaponId({
+				weaponId: weaponSplId,
+				filters: { abilities: [], mode: null, date: null },
+				page: 1,
+				sortAbilities: true,
+			}),
+	);
+	// pages by author, so the authors before the page are read off the index first
+	add(
+		"BuildRepository.findPageByWeaponId.deepPage",
+		fx.heavyWeaponSplId,
+		(weaponSplId) =>
+			BuildRepository.findPageByWeaponId({
+				weaponId: weaponSplId,
+				filters: { abilities: [], mode: null, date: null },
+				page: 50,
+				sortAbilities: true,
+			}),
+	);
+	// rare abilities match almost nothing, so every build of the weapon is checked
+	add(
+		"BuildRepository.findPageByWeaponId.rareFilters",
+		fx.heavyWeaponSplId,
+		(weaponSplId) =>
+			BuildRepository.findPageByWeaponId({
+				weaponId: weaponSplId,
+				filters: {
+					abilities: [
+						{ type: "HAS", ability: "AD" },
+						{ type: "HAS", ability: "TI" },
+						{ type: "HAS", ability: "RP" },
+					],
+					mode: "TC",
+					date: null,
+				},
+				page: 1,
+				sortAbilities: true,
+			}),
+	);
+	add(
+		"BuildRepository.findPageByWeaponId.apFilters",
+		fx.heavyWeaponSplId,
+		(weaponSplId) =>
+			BuildRepository.findPageByWeaponId({
+				weaponId: weaponSplId,
+				filters: {
+					abilities: [
+						{ type: "AT_LEAST", ability: "ISM", ap: 10 },
+						{ type: "AT_MOST", ability: "SSU", ap: 6 },
+						{ type: "HAS_NOT", ability: "LDE" },
+					],
+					mode: null,
+					date: null,
+				},
+				page: 1,
+				sortAbilities: true,
+			}),
+	);
+	add("BuildRepository.findPageByUserId", fx.heavyBuildUserId, (userId) =>
+		BuildRepository.findPageByUserId({
+			userId,
+			showPrivate: true,
+			filters: {
+				abilities: [],
+				mode: null,
+				date: null,
+				weaponId: null,
+				visibility: null,
+			},
+			sorting: {
+				buildSorting: [
+					"WEAPON_POOL",
+					"MODE",
+					"TOP_500",
+					"WEAPON_IN_GAME_ORDER",
+					"UPDATED_AT",
+				],
+				weaponPool: [40, 1010, 2070, 3010],
+			},
+			page: 1,
 			sortAbilities: true,
 		}),
+	);
+	add(
+		"BuildRepository.findPageByUserId.rareFilters",
+		fx.heavyBuildUserId,
+		(userId) =>
+			BuildRepository.findPageByUserId({
+				userId,
+				showPrivate: true,
+				filters: {
+					abilities: [
+						{ type: "HAS", ability: "AD" },
+						{ type: "HAS", ability: "TI" },
+						{ type: "HAS", ability: "RP" },
+					],
+					mode: "TC",
+					date: null,
+					weaponId: null,
+					visibility: null,
+				},
+				sorting: { buildSorting: null, weaponPool: [40] },
+				page: 1,
+				sortAbilities: true,
+			}),
+	);
+	add("BuildRepository.countsByUserId", fx.heavyBuildUserId, (userId) =>
+		BuildRepository.countsByUserId(userId, { showPrivate: true }),
+	);
+	addStatic("BuildRepository.countAllPublicByWeaponId", () =>
+		BuildRepository.countAllPublicByWeaponId(),
 	);
 
 	add(
@@ -321,6 +489,11 @@ export function buildCases(fx: Fixtures): {
 		ChatRepository.findMessageById(messageId),
 	);
 	add(
+		"ChatRepository.findAllParticipantsByUserIds",
+		fx.manyUserIds,
+		(userIds) => ChatRepository.findAllParticipantsByUserIds(userIds),
+	);
+	add(
 		"ChatRepository.findMessageStatsByRoomIds",
 		fx.heavyChatUsers,
 		(chatUsers) =>
@@ -339,6 +512,512 @@ export function buildCases(fx: Fixtures): {
 	);
 	add("ChatRoomResolver.findAllByUserId", fx.heavyChatUsers, (chatUsers) =>
 		ChatRoomResolver.findAllByUserId(chatUsers.busiest.id),
+	);
+
+	// FeedRepository
+	add("FeedRepository.findUsersByIds", fx.manyUserIds, (userIds) =>
+		FeedRepository.findUsersByIds(userIds),
+	);
+	add("FeedRepository.findTournamentsByIds", fx.recentTournamentIds, (ids) =>
+		FeedRepository.findTournamentsByIds(ids),
+	);
+	add(
+		"FeedRepository.findTournamentTeamsByIds",
+		fx.manyTournamentTeamIds,
+		(ids) => FeedRepository.findTournamentTeamsByIds(ids),
+	);
+	add("FeedRepository.findTeamsByIds", fx.manyTeamIds, (teamIds) =>
+		FeedRepository.findTeamsByIds(teamIds),
+	);
+	add("FeedRepository.findCommentAuthorsByIds", fx.manyUserIds, (userIds) =>
+		FeedRepository.findCommentAuthorsByIds(userIds),
+	);
+	addStatic("FeedRepository.findLatestGroupMatchCreatedAt", () =>
+		FeedRepository.findLatestGroupMatchCreatedAt(),
+	);
+	add("FeedRepository.findLatestSkillCreatedAt", fx.feedSq, (sq) =>
+		FeedRepository.findLatestSkillCreatedAt(sq),
+	);
+	add(
+		"FeedRepository.findMatchTimesByUserId",
+		both(fx.feedSq, fx.feedNow),
+		([sq, now]) =>
+			FeedRepository.findMatchTimesByUserId({
+				userId: sq.userId,
+				after: now - FEED_ROTATION_LOOKBACK_WEEKS * 7 * DAY,
+			}),
+	);
+	add("FeedRepository.findMapResultsByUserId", fx.feedSq, (sq) =>
+		FeedRepository.findMapResultsByUserId(sq),
+	);
+	add("FeedRepository.findTopCloseRivalryOfUsers", fx.feedSq, (sq) =>
+		FeedRepository.findTopCloseRivalryOfUsers({
+			userIds: [sq.userId],
+			season: sq.season,
+		}),
+	);
+	add(
+		"FeedRepository.findTopTeammatesByUserId",
+		fx.topTeammatesUserId,
+		(userId) => FeedRepository.findTopTeammatesByUserId(userId),
+	);
+	add("FeedRepository.findWeaponPicksByUser", fx.feedNow, (now) =>
+		FeedRepository.findWeaponPicksByUser({ from: now - 7 * DAY, to: now }),
+	);
+	add("FeedRepository.findAllLobbiesEndedAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllLobbiesEndedAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add(
+		"FeedRepository.findTournamentMatchesByTeamId",
+		both(fx.heavyTournamentId, fx.heavyTournamentTeamId),
+		([tournamentId, tournamentTeamId]) =>
+			FeedRepository.findTournamentMatchesByTeamId({
+				tournamentId,
+				tournamentTeamId,
+			}),
+	);
+	add(
+		"FeedRepository.findFinishedMatchesByTournamentIds",
+		fx.recentTournamentIds,
+		(ids) => FeedRepository.findFinishedMatchesByTournamentIds(ids),
+	);
+	add(
+		"FeedRepository.findSeedsByTournamentTeamIds",
+		fx.manyTournamentTeamIds,
+		(ids) => FeedRepository.findSeedsByTournamentTeamIds(ids),
+	);
+	add("FeedRepository.findAllUpcomingRegistrations", fx.feedNow, (now) =>
+		FeedRepository.findAllUpcomingRegistrations(now),
+	);
+	add("FeedRepository.findAllLookingTournamentTeams", fx.feedNow, (now) =>
+		FeedRepository.findAllLookingTournamentTeams(now),
+	);
+	add(
+		"FeedRepository.findLatestOrganizationTournamentStartingBetween",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findLatestOrganizationTournamentStartingBetween({
+				from: now + 7 * DAY,
+				to: now + 60 * DAY,
+			}),
+	);
+	add(
+		"FeedRepository.findAllOrganizationTournamentsAddedAfter",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findAllOrganizationTournamentsAddedAfter(
+				now - FEED_EVENT_MAX_RETENTION_DAYS * DAY,
+			),
+	);
+	add(
+		"FeedRepository.findOrganizationIdsPlayedByUserId",
+		both(fx.heavyUser, fx.feedNow),
+		([user, now]) =>
+			FeedRepository.findOrganizationIdsPlayedByUserId({
+				userId: user.id,
+				after: now - 365 * DAY,
+			}),
+	);
+	addStatic("FeedRepository.findSeriesWithLeaderboard", () =>
+		FeedRepository.findSeriesWithLeaderboard(),
+	);
+	add(
+		"FeedRepository.findSeriesEventsWithResults",
+		both(fx.heavySeries, fx.feedNow),
+		([series, now]) =>
+			FeedRepository.findSeriesEventsWithResults({
+				...series,
+				from: now - FEED_SERIES_STANDINGS_DAYS * DAY,
+				to: now,
+			}),
+	);
+	add(
+		"FeedRepository.findResultUserIds",
+		both(fx.recentTournamentIds, fx.resultsEventId),
+		([tournamentIds, eventId]) =>
+			FeedRepository.findResultUserIds({
+				tournamentIds,
+				calendarEventIds: [eventId],
+			}),
+	);
+	add("FeedRepository.findOrganizationById", fx.heavyOrg, (org) =>
+		FeedRepository.findOrganizationById(org.id),
+	);
+	addStatic("FeedRepository.findLatestTournamentMatchVods", () =>
+		FeedRepository.findLatestTournamentMatchVods(),
+	);
+	add(
+		"FeedRepository.findAllTournamentBadgeOwnersStartedAfter",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findAllTournamentBadgeOwnersStartedAfter(
+				now - FEED_EVENT_MAX_RETENTION_DAYS * DAY,
+			),
+	);
+	addStatic("FeedRepository.findLatestTrophyOwners", () =>
+		FeedRepository.findLatestTrophyOwners(),
+	);
+	add("FeedRepository.findAllNewTrophiesAcceptedAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllNewTrophiesAcceptedAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add("FeedRepository.findAllUpcomingTournamentSaves.all", fx.feedNow, (now) =>
+		FeedRepository.findAllUpcomingTournamentSaves({ after: now }),
+	);
+	add(
+		"FeedRepository.findAllUpcomingTournamentSaves.ofUsers",
+		both(fx.manyUserIds, fx.feedNow),
+		([userIds, now]) =>
+			FeedRepository.findAllUpcomingTournamentSaves({ after: now, userIds }),
+	);
+	add("FeedRepository.findAllUpcomingStaff", fx.feedNow, (now) =>
+		FeedRepository.findAllUpcomingStaff(now - 2 * DAY),
+	);
+	add(
+		"FeedRepository.findBiggestFinalizedTournaments.lastWeek",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findBiggestFinalizedTournaments({
+				from: now - 7 * DAY,
+				to: now,
+				limit: 10,
+			}),
+	);
+	add(
+		"FeedRepository.findBiggestFinalizedTournaments.onThisDay",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findBiggestFinalizedTournaments({
+				from: 0,
+				to: now - 300 * DAY,
+				monthDay: databaseTimestampToDate(now).toISOString().slice(5, 10),
+				limit: 1,
+			}),
+	);
+	add(
+		"FeedRepository.findPodiumTeamIdsByTournamentId",
+		fx.heavyResultsTournamentId,
+		(tournamentId) =>
+			FeedRepository.findPodiumTeamIdsByTournamentId(tournamentId),
+	);
+	add(
+		"FeedRepository.findTournamentsWithRegistrationClosedBetween",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findTournamentsWithRegistrationClosedBetween({
+				from: now - 2 * DAY,
+				to: now,
+			}),
+	);
+	add(
+		"FeedRepository.findRegisteredTeamsByTournamentId",
+		fx.heavyTournamentId,
+		(tournamentId) =>
+			FeedRepository.findRegisteredTeamsByTournamentId(tournamentId),
+	);
+	add("FeedRepository.findSeriesByOrganizationId", fx.heavySeries, (series) =>
+		FeedRepository.findSeriesByOrganizationId(series.organizationId),
+	);
+	add(
+		"FeedRepository.countSeriesWinsOfUser",
+		both(fx.heavySeries, both(fx.heavyUser, fx.feedNow)),
+		([series, [user, now]]) =>
+			FeedRepository.countSeriesWinsOfUser({
+				...series,
+				userId: user.id,
+				before: now,
+			}),
+	);
+	add("FeedRepository.findAllTeamJoinsAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllTeamJoinsAfter(now - FEED_RECENT_ACTIVITY_DAYS * DAY),
+	);
+	add("FeedRepository.findAllCreatedTeamsAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllCreatedTeamsAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add(
+		"FeedRepository.findLatestTeamAvailabilityWeek.anyTeam",
+		fx.feedNow,
+		(now) =>
+			FeedRepository.findLatestTeamAvailabilityWeek({
+				before: now,
+				minMembers: 4,
+			}),
+	);
+	add(
+		"FeedRepository.findLatestTeamAvailabilityWeek.ofTeams",
+		both(fx.manyTeamIds, fx.feedNow),
+		([teamIds, now]) =>
+			FeedRepository.findLatestTeamAvailabilityWeek({
+				before: now,
+				minMembers: 4,
+				teamIds,
+			}),
+	);
+	add(
+		"FeedRepository.findLatestAddedUpcomingTeamEvent.anyTeam",
+		both(fx.heavyUser, fx.feedNow),
+		([user, now]) =>
+			FeedRepository.findLatestAddedUpcomingTeamEvent({
+				now,
+				excludeAuthorId: user.id,
+			}),
+	);
+	add(
+		"FeedRepository.findLatestAddedUpcomingTeamEvent.ofTeams",
+		both(fx.heavyUser, both(fx.manyTeamIds, fx.feedNow)),
+		([user, [teamIds, now]]) =>
+			FeedRepository.findLatestAddedUpcomingTeamEvent({
+				now,
+				excludeAuthorId: user.id,
+				teamIds,
+			}),
+	);
+	add(
+		"FeedRepository.findOpenScrimPostsForViewer",
+		both(fx.heavyTeam, fx.feedNow),
+		([team, now]) =>
+			FeedRepository.findOpenScrimPostsForViewer({
+				viewerId: team.memberUserId,
+				excludedTeamIds: [team.id],
+				now,
+				lookingNowFrom: now - FEED_SCRIM_LOOKING_NOW_HOURS * HOUR,
+				createdAfter:
+					now -
+					FEED_MAX_AGE_HALF_LIVES *
+						FEED_ITEM_TYPES.SCRIM_POST.halfLifeHours *
+						HOUR,
+			}),
+	);
+	add("FeedRepository.findLatestUpcomingScrimPost", fx.feedNow, (now) =>
+		FeedRepository.findLatestUpcomingScrimPost({
+			from: now,
+			to: now + 2 * DAY,
+		}),
+	);
+	add(
+		"FeedRepository.findAcceptedScrimsOfTeams",
+		both(fx.manyTeamIds, fx.feedNow),
+		([teamIds, now]) =>
+			FeedRepository.findAcceptedScrimsOfTeams({
+				teamIds,
+				from: now - FEED_SCRIM_HISTORY_DAYS * DAY,
+				to: now,
+			}),
+	);
+	add("FeedRepository.findMemberLutiDivsByTeamIds", fx.manyTeamIds, (teamIds) =>
+		FeedRepository.findMemberLutiDivsByTeamIds(teamIds),
+	);
+	add("FeedRepository.findLatestReportedScrim.anyTeam", fx.feedNow, (now) =>
+		FeedRepository.findLatestReportedScrim({ before: now, minMaps: 5 }),
+	);
+	add(
+		"FeedRepository.findLatestReportedScrim.ofTeams",
+		both(fx.manyTeamIds, fx.feedNow),
+		([teamIds, now]) =>
+			FeedRepository.findLatestReportedScrim({
+				before: now,
+				minMaps: 5,
+				teamIds,
+			}),
+	);
+	add(
+		"FeedRepository.findLFGPostsUpdatedBetween.playerForTeam",
+		both(fx.heavyUser, fx.feedNow),
+		([user, now]) =>
+			FeedRepository.findLFGPostsUpdatedBetween({
+				type: "PLAYER_FOR_TEAM",
+				viewerId: user.id,
+				from:
+					now -
+					FEED_MAX_AGE_HALF_LIVES *
+						FEED_ITEM_TYPES.LFG_PLAYER.halfLifeHours *
+						HOUR,
+				to: now,
+			}),
+	);
+	add(
+		"FeedRepository.findLFGPostsUpdatedBetween.teamForPlayer",
+		both(fx.heavyUser, fx.feedNow),
+		([user, now]) =>
+			FeedRepository.findLFGPostsUpdatedBetween({
+				type: "TEAM_FOR_PLAYER",
+				viewerId: user.id,
+				from:
+					now -
+					FEED_MAX_AGE_HALF_LIVES *
+						FEED_ITEM_TYPES.LFG_TEAM.halfLifeHours *
+						HOUR,
+				to: now,
+			}),
+	);
+	add("FeedRepository.findLFGPostsByAuthorId", fx.lfgAuthorId, (authorId) =>
+		FeedRepository.findLFGPostsByAuthorId({ authorId, after: 0 }),
+	);
+	add("FeedRepository.findWeaponPoolByUserId", fx.heavyUser, (user) =>
+		FeedRepository.findWeaponPoolByUserId(user.id),
+	);
+	addStatic("FeedRepository.findAllTeamMemberships", () =>
+		FeedRepository.findAllTeamMemberships(),
+	);
+	add("FeedRepository.countTournamentsByTeamId", fx.heavyTeam, (team) =>
+		FeedRepository.countTournamentsByTeamId(team.id),
+	);
+	add("FeedRepository.findAllArtistsActiveBetween", fx.feedNow, (now) =>
+		FeedRepository.findAllArtistsActiveBetween({
+			from: now - 7 * DAY,
+			to: now,
+		}),
+	);
+	add(
+		"FeedRepository.findArtPiecesOfAuthorBetween",
+		both(fx.heavyArtUserId, fx.feedNow),
+		([authorId, now]) =>
+			FeedRepository.findArtPiecesOfAuthorBetween({
+				authorId,
+				from: 0,
+				to: now,
+			}),
+	);
+	add("FeedRepository.findAllTaggedArtAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllTaggedArtAfter(now - FEED_RECENT_ACTIVITY_DAYS * DAY),
+	);
+	add("FeedRepository.findAllOpenedCommissionsAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllOpenedCommissionsAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add("FeedRepository.findAllPublicBuildIdsUpdatedAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllPublicBuildIdsUpdatedAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add("FeedRepository.findBuildById", fx.buildId, (buildId) =>
+		FeedRepository.findBuildById(buildId),
+	);
+	addStatic("FeedRepository.findLatestBuildIdsOfHighXpOwners", () =>
+		FeedRepository.findLatestBuildIdsOfHighXpOwners(FEED_HIGH_XP),
+	);
+	add("FeedRepository.findLatestVideo", fx.feedNow, (now) =>
+		FeedRepository.findLatestVideo(now),
+	);
+	addStatic("FeedRepository.findAllUserPlacementsOfLatestMonth", () =>
+		FeedRepository.findAllUserPlacementsOfLatestMonth(),
+	);
+	add(
+		"FeedRepository.findAllScannedMatchIdsWithReplayCode",
+		fx.feedNow,
+		(now) => FeedRepository.findAllScannedMatchIdsWithReplayCode(now),
+	);
+	add("FeedRepository.findScannedMatchById", fx.scannedMatchId, (id) =>
+		FeedRepository.findScannedMatchById(id),
+	);
+	add("FeedRepository.findAllFriendshipsCreatedAfter", fx.feedNow, (now) =>
+		FeedRepository.findAllFriendshipsCreatedAfter(
+			now - FEED_RECENT_ACTIVITY_DAYS * DAY,
+		),
+	);
+	add("FeedRepository.findPlusTierByUserId", fx.plusTierOneUser, (user) =>
+		FeedRepository.findPlusTierByUserId(user.id),
+	);
+	add(
+		"FeedRepository.findAllFirstPlusSuggestionsOfMonth",
+		fx.plusSuggestionMonthYear,
+		(monthYear) => FeedRepository.findAllFirstPlusSuggestionsOfMonth(monthYear),
+	);
+	add(
+		"FeedRepository.findFirstTournamentResultByUserId",
+		fx.heavyUser,
+		(user) => FeedRepository.findFirstTournamentResultByUserId(user.id),
+	);
+	add(
+		"FeedRepository.findLatestAddedUpcomingCalendarEvent",
+		fx.feedNow,
+		(now) => FeedRepository.findLatestAddedUpcomingCalendarEvent(now),
+	);
+	for (const total of FEED_SITE_TOTALS) {
+		add(`FeedRepository.countSiteTotal.${total}`, fx.feedNow, (now) =>
+			FeedRepository.countSiteTotal({ total, before: now }),
+		);
+		add(
+			`FeedRepository.findNthOfSiteTotal.${total}`,
+			fx.siteTotalCounts,
+			(counts) =>
+				FeedRepository.findNthOfSiteTotal({ total, nth: counts[total] }),
+		);
+	}
+
+	// FeedEventRepository
+	add(
+		"FeedEventRepository.findAllByUserIds",
+		both(fx.feedEventUserIds, fx.feedNow),
+		([userIds, now]) =>
+			FeedEventRepository.findAllByUserIds({
+				userIds,
+				from: now - FEED_EVENT_MAX_RETENTION_DAYS * DAY,
+				to: now,
+			}),
+	);
+	addStatic("FeedEventRepository.findCursorBySource.sq", () =>
+		FeedEventRepository.findCursorBySource("SQ"),
+	);
+	addStatic("FeedEventRepository.findCursorBySource.tournament", () =>
+		FeedEventRepository.findCursorBySource("TOURNAMENT"),
+	);
+	add(
+		"FeedEventRepository.findUserIdsOfMatchesConfirmedSince",
+		fx.feedNow,
+		(now) =>
+			FeedEventRepository.findUserIdsOfMatchesConfirmedSince(
+				now - FEED_EVENT_MAX_RETENTION_DAYS * DAY,
+			),
+	);
+	add(
+		"FeedEventRepository.findUserIdsOfTournamentResultsAfterRowId",
+		fx.feedIndexerTournamentResultRowId,
+		(rowId) =>
+			FeedEventRepository.findUserIdsOfTournamentResultsAfterRowId(rowId),
+	);
+	add(
+		"FeedEventRepository.findUserIdsOfTournamentsStartedSince",
+		fx.feedNow,
+		(now) =>
+			FeedEventRepository.findUserIdsOfTournamentsStartedSince(
+				now - FEED_EVENT_MAX_RETENTION_DAYS * DAY,
+			),
+	);
+	addStatic("FeedEventRepository.findLatestTournamentResultRowId", () =>
+		FeedEventRepository.findLatestTournamentResultRowId(),
+	);
+	add("FeedEventRepository.findAllSqPlaysByUserId", fx.sq, (sq) =>
+		FeedEventRepository.findAllSqPlaysByUserId(sq.userId),
+	);
+	add(
+		"FeedEventRepository.findAllTournamentPlaysByUserId",
+		fx.heavyUser,
+		(user) => FeedEventRepository.findAllTournamentPlaysByUserId(user.id),
+	);
+
+	// FeedCommentRepository
+	add("FeedCommentRepository.findByItemId", fx.feedCommentItemIds, (itemIds) =>
+		FeedCommentRepository.findByItemId(itemIds[0]),
+	);
+	add(
+		"FeedCommentRepository.countByItemIds",
+		fx.feedCommentItemIds,
+		(itemIds) => FeedCommentRepository.countByItemIds(itemIds),
+	);
+
+	// FeedReactionRepository
+	add(
+		"FeedReactionRepository.findByItemIds",
+		both(fx.feedReactionItemIds, fx.heavyUser),
+		([itemIds, user]) =>
+			FeedReactionRepository.findByItemIds({ itemIds, userId: user.id }),
 	);
 
 	add("FriendRepository.findByUserIdWithActivity", fx.heavyFriendPair, (pair) =>
@@ -414,9 +1093,6 @@ export function buildCases(fx: Fixtures): {
 			onlyOneEntryPerUser: true,
 		}),
 	);
-	add("LeaderboardRepository.hasEnoughSqMatchesByUserId", fx.sq, (sq) =>
-		LeaderboardRepository.hasEnoughSqMatchesByUserId(sq.userId),
-	);
 	add("LeaderboardRepository.findSeasonsParticipatedInByUserId", fx.sq, (sq) =>
 		LeaderboardRepository.findSeasonsParticipatedInByUserId(sq.userId),
 	);
@@ -438,21 +1114,113 @@ export function buildCases(fx: Fixtures): {
 		LeaderboardRepository.findSeasonPopularUsersWeapon(sq.season),
 	);
 
-	addStatic("LFGRepository.findAllPosts.anon", () =>
-		LFGRepository.findAllPosts(),
+	addStatic("LFGRepository.findBoardPage", () =>
+		LFGRepository.findBoardPage({
+			filters: LFG_NO_FILTERS,
+			page: 1,
+			pageSize: 24,
+			containingPostId: null,
+		}),
 	);
-	add("LFGRepository.findAllPosts.loggedIn", fx.heavyUser, (user) =>
-		LFGRepository.findAllPosts({ id: user.id, plusTier: 1 }),
+	add("LFGRepository.findBoardPage.containing", fx.lfgPostId, (postId) =>
+		LFGRepository.findBoardPage({
+			filters: LFG_NO_FILTERS,
+			page: 1,
+			pageSize: 24,
+			containingPostId: postId,
+		}),
+	);
+	addStatic("LFGRepository.findBoardPage.filtered", () =>
+		LFGRepository.findBoardPage({
+			filters: {
+				...LFG_NO_FILTERS,
+				weapons: [40, 1010],
+				plusTier: 3,
+				language: "en",
+			},
+			page: 1,
+			pageSize: 24,
+			containingPostId: null,
+		}),
+	);
+	add("LFGRepository.findVisibleById", fx.lfgPostId, (postId) =>
+		LFGRepository.findVisibleById(postId),
+	);
+	addStatic("LFGRepository.findAllOwn", () => LFGRepository.findAllOwn());
+	addStatic("LFGRepository.findAllVisibleParticipantIds", () =>
+		LFGRepository.findAllVisibleParticipantIds(),
 	);
 	add("LFGRepository.findByAuthorUserId", fx.lfgAuthorId, (authorId) =>
 		LFGRepository.findByAuthorUserId(authorId),
+	);
+
+	add("LobbyRepository.findById", fx.heavyLobby, (lobby) =>
+		LobbyRepository.findById(lobby.id),
+	);
+	add("LobbyRepository.isLinkOnlyById", fx.heavyLobby, (lobby) =>
+		LobbyRepository.isLinkOnlyById(lobby.id),
+	);
+	add("LobbyRepository.findVisibilityRowsById", fx.heavyLobby, (lobby) =>
+		LobbyRepository.findVisibilityRowsById(lobby.id),
+	);
+	add(
+		"LobbyRepository.findAllVisible",
+		both(fx.heavyUser, fx.heavyLobby),
+		([user, lobby]) =>
+			LobbyRepository.findAllVisible({
+				userId: user.id,
+				lobbyIds: [lobby.id],
+			}),
+	);
+	add("LobbyRepository.findProgressionStateById", fx.heavyLobby, (lobby) =>
+		LobbyRepository.findProgressionStateById(lobby.id),
+	);
+	add(
+		"LobbyRepository.findAllByChatRoomIds",
+		fx.openChatRoomIdsByType?.LOBBY ?? null,
+		(roomIds) => LobbyRepository.findAllByChatRoomIds(roomIds),
+	);
+	addStatic("LobbyRepository.findAllForIndex", () =>
+		LobbyRepository.findAllForIndex(),
+	);
+	add("LobbyRepository.findAllUpcomingByUserId", fx.heavyUser, (user) =>
+		LobbyRepository.findAllUpcomingByUserId({
+			userId: user.id,
+			startsBefore: Number.MAX_SAFE_INTEGER,
+		}),
+	);
+	addStatic("LobbyRepository.findAllActiveParticipants", () =>
+		LobbyRepository.findAllActiveParticipants(),
+	);
+	addStatic("LobbyRepository.findAllUnconfirmedReadyCheckUsers", () =>
+		LobbyRepository.findAllUnconfirmedReadyCheckUsers(),
+	);
+	add(
+		"LobbyRepository.findAllUpcomingOfFriendsByUserId",
+		fx.heavyUser,
+		(user) => LobbyRepository.findAllUpcomingOfFriendsByUserId(user.id),
+	);
+	add("LobbyRepository.findResultPlacementsByUserId", fx.heavyUser, (user) =>
+		LobbyRepository.findResultPlacementsByUserId(user.id),
+	);
+	addStatic("LobbyRepository.findAllUnendedIdsNearStart", () =>
+		LobbyRepository.findAllUnendedIdsNearStart(),
+	);
+
+	add("LobbyMatchRepository.findAllSetsByLobbyId", fx.heavyLobby, (lobby) =>
+		LobbyMatchRepository.findAllSetsByLobbyId(lobby.id),
+	);
+	add(
+		"LobbyMatchRepository.findAllTeamChatsByChatRoomIds",
+		fx.openChatRoomIdsByType?.LOBBY_TEAM ?? null,
+		(roomIds) => LobbyMatchRepository.findAllTeamChatsByChatRoomIds(roomIds),
 	);
 
 	add("LiveStreamRepository.findByUserId", fx.heavyUser, (user) =>
 		LiveStreamRepository.findByUserId(user.id),
 	);
 	addStatic("LiveStreamRepository.findXRankStreams", () =>
-		LiveStreamRepository.findXRankStreams(),
+		LiveStreamRepository.findXRankStreams(Seasons.currentOrPrevious()!.nth),
 	);
 
 	add("MatchProfileRepository.findSettingsByUserId", fx.heavyUser, (user) =>
@@ -465,6 +1233,17 @@ export function buildCases(fx: Fixtures): {
 	);
 	add("MatchProfileRepository.findWeaponPoolByUserId", fx.heavyUser, (user) =>
 		MatchProfileRepository.findWeaponPoolByUserId(user.id),
+	);
+	add("MatchProfileRepository.findAllByUserIds", fx.manyUserIds, (userIds) =>
+		MatchProfileRepository.findAllByUserIds(userIds.slice(0, 10)),
+	);
+	add(
+		"MatchProfileRepository.findAllMapModePreferencesByUserIds",
+		fx.manyUserIds,
+		(userIds) =>
+			MatchProfileRepository.findAllMapModePreferencesByUserIds(
+				userIds.slice(0, 10),
+			),
 	);
 
 	add("SkillRepository.findCurrentUserSkills", fx.skillBatch, (skillBatch) =>
@@ -514,6 +1293,16 @@ export function buildCases(fx: Fixtures): {
 		"NotificationRepository.findAllSubscriptionsByUserIds",
 		fx.manyUserIds,
 		(userIds) => NotificationRepository.findAllSubscriptionsByUserIds(userIds),
+	);
+	add(
+		"NotificationRepository.findUserIdsWithUnseenByType",
+		both(fx.manyUserIds, fx.heavyChatRoomId),
+		([userIds, roomId]) =>
+			NotificationRepository.findUserIdsWithUnseenByType({
+				userIds,
+				type: "CHAT_MENTION",
+				meta: { roomId },
+			}),
 	);
 
 	add(
@@ -628,16 +1417,48 @@ export function buildCases(fx: Fixtures): {
 			),
 	);
 	add(
+		"ScannerIngestRepository.findScoreboardsByTournamentMatchIds",
+		fx.heavyTournamentTeamMatchIds,
+		(tournamentMatchIds) =>
+			ScannerIngestRepository.findScoreboardsByTournamentMatchIds(
+				tournamentMatchIds,
+			),
+	);
+	add(
 		"ScannerIngestRepository.findScoreboardsByGroupMatchId",
 		fx.heavyGroupMatchId,
 		(groupMatchId) =>
 			ScannerIngestRepository.findScoreboardsByGroupMatchId(groupMatchId),
 	);
 	add(
-		"ScannerIngestRepository.gamesInTournamentMatch",
+		"ScannerIngestRepository.gamesInTournamentMatches",
 		fx.heavyTournamentMatchId,
 		(tournamentMatchId) =>
-			ScannerIngestRepository.gamesInTournamentMatch(tournamentMatchId),
+			ScannerIngestRepository.gamesInTournamentMatches([tournamentMatchId]),
+	);
+
+	add("ScannerIngestRepository.gamesInLobbySet", fx.heavyLobby, (lobby) =>
+		ScannerIngestRepository.gamesInLobbySet(lobby.setId),
+	);
+	add(
+		"ScannerIngestRepository.lobbyGamesPlayedByUserSince",
+		fx.heavyLobby,
+		(lobby) =>
+			ScannerIngestRepository.lobbyGamesPlayedByUserSince({
+				userId: lobby.userId,
+				since: lobby.sinceTimestamp,
+			}),
+	);
+	add("ScannerIngestRepository.lobbySetIdAt", fx.heavyLobby, (lobby) =>
+		ScannerIngestRepository.lobbySetIdAt({
+			userId: lobby.userId,
+			at: lobby.atMs,
+		}),
+	);
+	add(
+		"ScannerIngestRepository.findScoreboardsByLobbyId",
+		fx.heavyLobby,
+		(lobby) => ScannerIngestRepository.findScoreboardsByLobbyId(lobby.id),
 	);
 
 	add(
@@ -663,6 +1484,11 @@ export function buildCases(fx: Fixtures): {
 	);
 	addStatic("ScrimPostRepository.findAllRelevant", () =>
 		ScrimPostRepository.findAllRelevant(),
+	);
+	add(
+		"ScrimPostRepository.findAllRelevant.byAssociation",
+		fx.heavyAssociation,
+		(association) => ScrimPostRepository.findAllRelevant(association.id),
 	);
 	add(
 		"ScrimPostRepository.findAcceptedScrimsBetweenTwoTimestamps",
@@ -714,6 +1540,12 @@ export function buildCases(fx: Fixtures): {
 	add("PlayerStatRepository.findSeasonStagesByUserId", fx.sq, (sq) =>
 		PlayerStatRepository.findSeasonStagesByUserId(sq),
 	);
+	add("PlayerStatRepository.findMapResultsByUserIdAndSeasons", fx.sq, (sq) =>
+		PlayerStatRepository.findMapResultsByUserIdAndSeasons({
+			userId: sq.userId,
+			seasons: [sq.season, sq.season - 1, sq.season - 2, sq.season - 3],
+		}),
+	);
 	add("PlayerStatRepository.findSeasonMatesEnemiesByUserId", fx.sq, (sq) =>
 		PlayerStatRepository.findSeasonMatesEnemiesByUserId({
 			...sq,
@@ -730,6 +1562,9 @@ export function buildCases(fx: Fixtures): {
 		PlayerStatRepository.findSeasonTournamentRunsByUserId(sq),
 	);
 
+	add("ReportedWeaponRepository.findAllByLobbyId", fx.heavyLobby, (lobby) =>
+		ReportedWeaponRepository.findAllByLobbyId(lobby.id),
+	);
 	add(
 		"ReportedWeaponRepository.findByMatchId",
 		fx.heavyGroupMatchId,
@@ -739,6 +1574,11 @@ export function buildCases(fx: Fixtures): {
 		"ReportedWeaponRepository.findByTournamentMatchId",
 		fx.heavyTournamentMatchId,
 		(matchId) => ReportedWeaponRepository.findByTournamentMatchId(matchId),
+	);
+	add(
+		"ReportedWeaponRepository.findByTournamentMatchIds",
+		fx.heavyTournamentTeamMatchIds,
+		(matchIds) => ReportedWeaponRepository.findByTournamentMatchIds(matchIds),
 	);
 	add(
 		"ReportedWeaponRepository.findSeasonReportedWeaponsByUserId",
@@ -786,6 +1626,12 @@ export function buildCases(fx: Fixtures): {
 	);
 	add("SQMatchRepository.findSeasonCanceledMatchesByUserId", fx.sq, (sq) =>
 		SQMatchRepository.findSeasonCanceledMatchesByUserId(sq),
+	);
+	add("ModAuditLogRepository.findSeasonByUserId", fx.sq, (sq) =>
+		ModAuditLogRepository.findSeasonByUserId({
+			...sq,
+			type: "SENDOUQ_PUBLIC_NOTE",
+		}),
 	);
 	add(
 		"SQMatchRepository.findCancelReportsByGroupMatchId",
@@ -864,8 +1710,8 @@ export function buildCases(fx: Fixtures): {
 	addStatic("SQGroupRepository.findRecentlyFinishedMatches", () =>
 		SQGroupRepository.findRecentlyFinishedMatches(),
 	);
-	addStatic("SQGroupRepository.findCurrentReceivedLikeCounts", () =>
-		SQGroupRepository.findCurrentReceivedLikeCounts(),
+	addStatic("SQGroupRepository.findCurrentReceivedLikerGroupIds", () =>
+		SQGroupRepository.findCurrentReceivedLikerGroupIds(),
 	);
 
 	addStatic("SplatoonRotationRepository.findAll", () =>
@@ -1173,8 +2019,10 @@ export function buildCases(fx: Fixtures): {
 				tournamentId,
 			}),
 	);
-	add("SavedCalendarEventRepository.countByUserId", fx.heavyUser, (user) =>
-		SavedCalendarEventRepository.countByUserId(user.id),
+	add(
+		"SavedCalendarEventRepository.countUpcomingByUserId",
+		fx.heavyUser,
+		(user) => SavedCalendarEventRepository.countUpcomingByUserId(user.id),
 	);
 	add(
 		"SavedCalendarEventRepository.findAllUpcomingByUserId",
@@ -1279,10 +2127,10 @@ export function buildCases(fx: Fixtures): {
 			TournamentRepository.findRelatedUsersByTournamentIds(tournamentIds),
 	);
 	add(
-		"TournamentRepository.findParticipantTwitchAccounts",
+		"TournamentRepository.findParticipantStreamAccounts",
 		fx.recentTournamentIds,
 		(tournamentIds) =>
-			TournamentRepository.findParticipantTwitchAccounts(tournamentIds),
+			TournamentRepository.findParticipantStreamAccounts(tournamentIds),
 	);
 	addStatic("TournamentRepository.findAllForShowcase", () =>
 		TournamentRepository.findAllForShowcase(),
@@ -1356,6 +2204,12 @@ export function buildCases(fx: Fixtures): {
 		fx.heavyTournamentTeamId,
 		(tournamentTeamId) =>
 			TournamentTeamRepository.findInviteCodeById(tournamentTeamId),
+	);
+	add(
+		"TournamentTeamRepository.findAllChatRoomIdsByIds",
+		fx.heavyTournamentTeamId,
+		(tournamentTeamId) =>
+			TournamentTeamRepository.findAllChatRoomIdsByIds([tournamentTeamId]),
 	);
 	add("TournamentTeamRepository.isPickupAvatarImgId", fx.imageId, (imageId) =>
 		TournamentTeamRepository.isPickupAvatarImgId(imageId),
@@ -1523,10 +2377,9 @@ export function buildCases(fx: Fixtures): {
 		UserRepository.findSocialLinksByUserId(user.id),
 	);
 	add(
-		"UserRepository.findIdsByTwitchUsernames",
-		fx.twitchUsernames,
-		(twitchUsernames) =>
-			UserRepository.findIdsByTwitchUsernames(twitchUsernames),
+		"UserRepository.findIdsByStreamAccounts",
+		fx.streamAccounts,
+		(streamAccounts) => UserRepository.findIdsByStreamAccounts(streamAccounts),
 	);
 
 	add("VodRepository.findByUserId", fx.vod, (vod) =>
@@ -1548,4 +2401,10 @@ function both<A, B>(a: A | null, b: B | null): [A, B] | null {
 	if (a === null || b === null) return null;
 
 	return [a, b];
+}
+
+function categoryWeaponIds(weaponSplId: MainWeaponId) {
+	const category = weaponIdToCategory(weaponSplId);
+
+	return [...weaponCategories.find(({ name }) => name === category)!.weaponIds];
 }

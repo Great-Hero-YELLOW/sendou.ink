@@ -1,5 +1,6 @@
 /** Tier from the top teams' average SeedingSkill ordinal. Lower tier number = better (like placements). */
 
+/** @internal */
 export const TIER_THRESHOLDS = {
 	X: 32,
 	"S+": 29,
@@ -21,6 +22,7 @@ const SIZE_BONUS = {
 	MAX_BONUS_PER_10_TEAMS: 1.5,
 } as const;
 
+/** @internal */
 export const TIER_TO_NUMBER = {
 	X: 1,
 	"S+": 2,
@@ -54,6 +56,7 @@ export const TIER_NUMBERS = Object.values(TIER_TO_NUMBER);
 export const BEST_TIER_NUMBER = TIER_TO_NUMBER.X;
 export const WORST_TIER_NUMBER = TIER_TO_NUMBER.C;
 
+/** @internal */
 export function calculateAdjustedScore(
 	rawScore: number,
 	teamCount: number,
@@ -70,6 +73,7 @@ export function calculateAdjustedScore(
 	return rawScore + bonus;
 }
 
+/** @internal */
 export function calculateTierNumber(
 	score: number | null,
 ): TournamentTierNumber | null {

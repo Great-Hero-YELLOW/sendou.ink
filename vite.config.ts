@@ -1,7 +1,12 @@
+import fs from "node:fs";
+import path from "node:path";
 import { reactRouter } from "@react-router/dev/vite";
-import MagicString from "magic-string";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import babel from "vite-plugin-babel";
+import {
+	cssModulesLayer,
+	hoverOnlyOnHoverDevices,
+} from "./vite-css-plugins.ts";
 
 export default defineConfig((config) => {
 	const env = loadEnv(config.mode, process.cwd(), "");
@@ -13,6 +18,8 @@ export default defineConfig((config) => {
 				clientFiles: ["./app/entry.client.tsx", "./app/root.tsx"],
 				ssrFiles: ["./app/entry.server.tsx"],
 			},
+			// the docs site has a dev server of its own, its builds and caches would reload the app
+			watch: { ignored: ["**/docs/**"] },
 		},
 		plugins: [
 			{
@@ -33,29 +40,9 @@ export default defineConfig((config) => {
 					});
 				},
 			},
-			{
-				// Wraps CSS modules in a @layer so utilities always win and the higher of two modules
-				// styling the same element wins regardless of chunk order: `elements` < `components`
-				// < `features`. The layer order is prepended to each module because in Vite dev module
-				// <style> tags are injected before global stylesheets.
-				name: "css-modules-layer",
-				enforce: "pre",
-				transform(code, id) {
-					if (!id.endsWith(".module.css")) return;
-					const layerOrder =
-						"@layer reset, base, elements, components, features, utilities;";
-					const layer = cssModuleLayer(id);
-					const magicCode = new MagicString(code);
-					magicCode.prepend(`${layerOrder}\n@layer ${layer} {\n`);
-					magicCode.append("\n}");
-
-					return {
-						code: magicCode.toString(),
-						map: magicCode.generateMap({ source: id, hires: true }),
-					};
-				},
-			},
+			cssModulesLayer(),
 			reactRouter(),
+			eagerlyCompileSharedChunks(),
 			// React Compiler is skipped in dev, its transform cost outweighs its value there
 			...(isBuild
 				? [
@@ -70,10 +57,16 @@ export default defineConfig((config) => {
 				: []),
 		],
 
+		css: {
+			postcss: {
+				plugins: [hoverOnlyOnHoverDevices()],
+			},
+		},
 		test: {
 			globalSetup: ["./scripts/ensure-test-db.ts"],
 			projects: [
 				"./vitest.unit.config.ts",
+				"./vitest.unit-isolated.config.ts",
 				"./vitest.browser.config.ts",
 				"./vitest.scanner.config.ts",
 			],
@@ -90,6 +83,17 @@ export default defineConfig((config) => {
 		},
 		resolve: {
 			tsconfigPaths: true,
+			// keeps every dev tools module out of production builds, the stub's hooks are `null`
+			alias: isBuild
+				? [
+						{
+							find: /^~\/features\/dev-tools\/dev-tools-server-hooks\.server$/,
+							replacement: path.resolve(
+								"app/features/dev-tools/dev-tools-server-hooks.stub.ts",
+							),
+						},
+					]
+				: [],
 		},
 		optimizeDeps: {
 			// route-specific deps pre-bundled at startup to avoid mid-session re-optimization and full page reloads
@@ -106,7 +110,6 @@ export default defineConfig((config) => {
 				"@react-router/node",
 				"@tldraw/tldraw",
 				"@zumer/snapdom",
-				"chart.js",
 				"compressorjs",
 				"date-fns/locale/da",
 				"date-fns/locale/de",
@@ -126,8 +129,6 @@ export default defineConfig((config) => {
 				"edmonds-blossom-fixed",
 				"fflate",
 				"gray-matter",
-				"i18next-browser-languagedetector",
-				"i18next-http-backend",
 				"kysely",
 				"markdown-to-jsx",
 				"mediabunny",
@@ -136,11 +137,9 @@ export default defineConfig((config) => {
 				"p-limit",
 				"picocad2-web",
 				"qrcode.react",
-				"react-chartjs-2",
 				"remeda",
 				"remix-auth",
 				"remix-auth-oauth2",
-				"remix-i18next",
 				"sql-formatter",
 				"swr/immutable",
 				"valibot",
@@ -151,9 +150,51 @@ export default defineConfig((config) => {
 	};
 });
 
-function cssModuleLayer(id: string) {
-	if (id.includes("/app/components/elements/")) return "elements";
-	if (/\/app\/components\/[^/]+\.module\.css$/.test(id)) return "components";
+const COMPILE_HINT = "//# allFunctionsCalledOnLoad\n";
 
-	return "features";
+/**
+ * Marks the chunks every page loads (the static import graph of the client entry and the root
+ * route) with V8's explicit compile hint, so Chromium compiles them on a background thread while
+ * streaming instead of lazily on the main thread during hydration. Route chunks are left out: only
+ * a fraction of their functions run on load and eager compiling costs memory.
+ * See https://v8.dev/blog/explicit-compile-hints
+ */
+function eagerlyCompileSharedChunks(): Plugin {
+	return {
+		name: "eagerly-compile-shared-chunks",
+		apply: "build",
+		// on the written files: Vite prepends its preload helper to chunks after `generateBundle`
+		// and the hint only counts on the first line
+		writeBundle(options, bundle) {
+			const chunks = Object.values(bundle).filter(
+				(output) => output.type === "chunk",
+			);
+			const chunksByFileName = new Map(
+				chunks.map((chunk) => [chunk.fileName, chunk]),
+			);
+			const chunkOf = (modulePath: string) =>
+				chunks.find((chunk) =>
+					chunk.facadeModuleId?.split("?")[0].endsWith(modulePath),
+				);
+			const entryChunk = chunkOf("/app/entry.client.tsx");
+			const rootChunk = chunkOf("/app/root.tsx");
+			// the server build has no client entry
+			if (!entryChunk || !rootChunk) return;
+
+			const visited = new Set<string>();
+			const stack = [entryChunk.fileName, rootChunk.fileName];
+			for (let fileName = stack.pop(); fileName; fileName = stack.pop()) {
+				const chunk = chunksByFileName.get(fileName);
+				if (!chunk || visited.has(fileName)) continue;
+
+				visited.add(fileName);
+				const filePath = path.join(options.dir ?? "", fileName);
+				fs.writeFileSync(
+					filePath,
+					COMPILE_HINT + fs.readFileSync(filePath, "utf8"),
+				);
+				stack.push(...chunk.imports);
+			}
+		},
+	};
 }

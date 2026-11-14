@@ -26,6 +26,7 @@ import type {
 	TournamentSearchFieldOptions,
 	UserSearchFieldOptions,
 } from "~/form/types";
+import { useIsomorphicLayoutEffect } from "~/hooks/useIsomorphicLayoutEffect";
 import { tournamentAdminPage } from "~/utils/urls";
 import type { TournamentAdminRegistrationLoaderData } from "../loaders/to.$id.admin.registration.$tid.server";
 import {
@@ -381,21 +382,16 @@ function ImportTeamSection({
 					heading={t("forms:regImportTeam")}
 					onClose={() => setIsOpen(false)}
 				>
-					{/* The modal is portaled out of the registration <form> in the DOM,
-					    but its submit event still bubbles through the React tree to the
-					    outer form. Stop it here so importing doesn't submit registration. */}
-					<div onSubmit={(e) => e.stopPropagation()}>
-						<SendouForm
-							schema={importTeamFormSchema}
-							onApply={handleApply}
-							submitButtonText={t("forms:regImportTeam")}
-						>
-							<ImportTeamFields
-								currentTournamentId={currentTournamentId}
-								teamsRef={teamsRef}
-							/>
-						</SendouForm>
-					</div>
+					<SendouForm
+						schema={importTeamFormSchema}
+						onApply={handleApply}
+						submitButtonText={t("forms:regImportTeam")}
+					>
+						<ImportTeamFields
+							currentTournamentId={currentTournamentId}
+							teamsRef={teamsRef}
+						/>
+					</SendouForm>
 				</SendouDialog>
 			) : null}
 		</div>
@@ -413,7 +409,9 @@ function ImportTeamFields({
 	const fetcher = useFetcher<ImportTeamsLoaderData>();
 
 	const teams = fetcher.data?.teams ?? [];
-	teamsRef.current = teams;
+	useIsomorphicLayoutEffect(() => {
+		teamsRef.current = teams;
+	});
 
 	// the non-clearable native select shows the first option, so keep the form value in sync:
 	// default to the first team, reset when the loaded teams change

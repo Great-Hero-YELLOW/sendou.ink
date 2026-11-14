@@ -1,0 +1,2644 @@
+import type { Page } from "@playwright/test";
+import {
+	addDays,
+	addMinutes,
+	addSeconds,
+	subHours,
+	subMinutes,
+} from "date-fns";
+import { ADMIN_ID } from "~/features/admin/admin-constants";
+import {
+	CHECK_IN_LEAD_MINUTES,
+	type LobbyRoomSize,
+	type LobbyWeaponRandomizer,
+} from "~/features/lobbies/lobbies-constants";
+import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import { modesShort } from "~/modules/in-game-lists/modes";
+import { stageIds } from "~/modules/in-game-lists/stage-ids";
+import type { ModeWithStage } from "~/modules/in-game-lists/types";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { lobbiesPage, tournamentRulesPage } from "~/utils/urls";
+import { chatHistoryStatus, openSecondUser } from "./helpers/chat";
+import type { Factories } from "./helpers/factories";
+import {
+	expect,
+	impersonate,
+	isNotVisible,
+	loaderDataJson,
+	navigate,
+	runRoutine,
+	test,
+} from "./helpers/playwright";
+import { voiceRoomUserIds } from "./helpers/voice";
+import { ChatSidebar } from "./pages/layout/chat-sidebar";
+import { ErrorPage } from "./pages/layout/error-page";
+import { NotificationPopover } from "./pages/layout/notification-popover";
+import { VoicePanel } from "./pages/layout/voice-panel";
+import { LobbiesPage } from "./pages/lobbies/lobbies-page";
+import { LobbyPage } from "./pages/lobbies/lobby-page";
+import { NewLobbyPage } from "./pages/lobbies/new-lobby-page";
+
+const LOBBY_NAME = "Test 8s";
+const TEAM_VOICE_TITLE = /Team (Alpha|Bravo)/;
+const PLAYER_NAME_PREFIX = "LobbyPlayer";
+const ROOM_SIZE = 8;
+const BEST_OF = 3;
+const MAPS_TO_WIN = 2;
+const ASSOCIATION_NAME = "Inkling Alliance";
+const WEAPON_NAME = "Splattershot";
+const LOBBY_DESCRIPTION = "Bring your main, no Tacticooler";
+const MAPS_TOURNAMENT_NAME = "Lobby Warmup Cup";
+const LOBBY_MAP_POOL = new MapPool([
+	{ mode: "SZ", stageId: 1 },
+	{ mode: "SZ", stageId: 2 },
+	{ mode: "SZ", stageId: 3 },
+]);
+
+test.describe("Lobbies", () => {
+	/**
+	 * Only a supporter can make a lobby, others sign up for it. Signing up reserves a spot,
+	 * check-in opening once 8 have signed up and the start is at most 10 minutes away, with a
+	 * notification to the signed up and the check-in button appearing on an open page as it
+	 * does. A lobby made to start now opens check-in as the 8th signs up, who is checked in
+	 * right away like everyone signing up after them. Checking in shows the room's pool and
+	 * pass. Past the room size sign-ups go to the waitlist, the first on it taking a spot
+	 * someone frees and being notified of it. When the lobby starts the waitlisted stay on the
+	 * waitlist, unless someone with a spot didn't check in: then a waitlisted player checking
+	 * in plays in their place.
+	 */
+	test.describe("Signing up", () => {
+		test("a lobby made to start now waits for 8 sign-ups before check-in", async ({
+			page,
+			factories,
+		}) => {
+			const visitor = await factories.UserFactory.create();
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+
+			await impersonate(page, ADMIN_ID);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+			await newLobby.form.fill("name", LOBBY_NAME);
+			await newLobby.form.fill("description", LOBBY_DESCRIPTION);
+			await newLobby.save();
+
+			const lobby = new LobbyPage(page);
+			await expect(lobby.heading(LOBBY_NAME)).toBeVisible();
+			await expect(lobby.locators.description).toHaveText(LOBBY_DESCRIPTION);
+			await expect(lobby.locators.participants).toHaveCount(1);
+			const lobbyId = Number(page.url().split("/").at(-1));
+
+			await impersonate(page, visitor.id);
+			await lobby.goto(lobbyId);
+			await lobby.signUp();
+
+			await expect(lobby.locators.participants).toHaveCount(2);
+			await expect(lobby.locators.viewerStatus).toContainText(
+				"notified when check-in opens",
+			);
+			await expect(lobby.locators.startBanner).toContainText("2/8 signed up");
+			await isNotVisible(lobby.locators.checkInButton);
+		});
+
+		test("the 8th to sign up to a started lobby opens check-in for everyone", async ({
+			page,
+			factories,
+		}) => {
+			const [host, ...others] = await factories.UserFactory.createMany(
+				ROOM_SIZE - 1,
+			);
+			const eighth = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create(
+				{
+					hostUserId: host.id,
+					name: LOBBY_NAME,
+					roomSize: ROOM_SIZE,
+					startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+				},
+				{ signedUpUserIds: idsOf(others) },
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The 8th signing up is checked in right away", async () => {
+				await impersonate(page, eighth.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.signUp();
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"checked in",
+				);
+				await expect(lobbyPage.locators.startBanner).toContainText(
+					"1/8 checked in",
+				);
+			});
+
+			await test.step("The others are notified and can check in", async () => {
+				await impersonate(page, host.id);
+				const notifications = await openNotifications(page);
+				await expect(
+					notifications.notification(`Check in to ${LOBBY_NAME}`),
+				).toBeVisible();
+
+				await lobbyPage.goto(lobby.id);
+				await expect(lobbyPage.locators.checkInButton).toBeVisible();
+			});
+		});
+
+		test("signing up for a later lobby reserves a spot without check-in yet", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const visitor = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+			});
+
+			await impersonate(page, visitor.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.signUp();
+
+			await expect(lobbyPage.locators.viewerStatus).toContainText(
+				"notified when check-in opens",
+			);
+			await expect(lobbyPage.locators.startBanner).toContainText(
+				"2/8 signed up",
+			);
+			await isNotVisible(lobbyPage.locators.checkInButton);
+		});
+
+		test("the signed up are notified when check-in opens", async ({
+			page,
+			factories,
+		}) => {
+			const { signedUp } = await fullLobby(factories, {
+				startsAt: dateToDatabaseTimestamp(addMinutes(new Date(), 5)),
+			});
+
+			await impersonate(page, signedUp.id);
+			await runRoutine(page, "Lobbies");
+
+			const notifications = await openNotifications(page);
+			await expect(
+				notifications.notification(`Check in to ${LOBBY_NAME}`),
+			).toBeVisible();
+		});
+
+		test("a signed-up player checks in once check-in opens", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, signedUp } = await fullLobby(factories, {
+				startsAt: dateToDatabaseTimestamp(addMinutes(new Date(), 5)),
+			});
+
+			await impersonate(page, signedUp.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.checkIn();
+
+			await expect(lobbyPage.locators.viewerStatus).toContainText(
+				"You're checked in, the lobby starts soon",
+			);
+			await expect(lobbyPage.locators.startBanner).toContainText(
+				"1/8 checked in",
+			);
+		});
+
+		test("check-in opening shows the check-in button on an open page, checking in the room's pool and pass", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, signedUp } = await fullLobby(factories, {
+				startsAt: dateToDatabaseTimestamp(
+					addSeconds(addMinutes(new Date(), CHECK_IN_LEAD_MINUTES), 10),
+				),
+			});
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("Before check-in opens there is no check-in button", async () => {
+				await impersonate(page, signedUp.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"notified when check-in opens",
+				);
+				await expect(lobbyPage.locators.startBanner).toContainText(
+					"Check-in opens at",
+				);
+				await isNotVisible(lobbyPage.locators.checkInButton);
+			});
+
+			await test.step("The check-in button appears as check-in opens", async () => {
+				await expect(lobbyPage.locators.checkInButton).toBeVisible({
+					timeout: 20_000,
+				});
+			});
+
+			await test.step("Checking in shows the room's pool and pass", async () => {
+				await lobbyPage.checkIn();
+
+				await expect(lobbyPage.locators.roomPool).toBeVisible();
+				await expect(lobbyPage.locators.roomPass).toBeVisible();
+			});
+		});
+
+		test("past the room size sign-ups go to the waitlist", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby } = await fullLobby(factories);
+			const visitor = await factories.UserFactory.create();
+
+			await impersonate(page, visitor.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.signUp();
+
+			await expect(lobbyPage.locators.viewerStatus).toContainText(
+				"You're #1 on the waitlist",
+			);
+		});
+
+		test("a spot freed before the start goes to the first on the waitlist", async ({
+			page,
+			factories,
+		}) => {
+			const waitlisted = await factories.UserFactory.create();
+			const { lobby, signedUp } = await fullLobby(factories, {
+				waitlistedUserIds: [waitlisted.id],
+			});
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("A signed-up player leaves", async () => {
+				await impersonate(page, signedUp.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.leave();
+
+				await expect(lobbyPage.locators.signUpButton).toBeVisible();
+			});
+
+			await test.step("The waitlisted player is notified and has their spot", async () => {
+				await impersonate(page, waitlisted.id);
+				const notifications = await openNotifications(page);
+				await expect(
+					notifications.notification(`You got a spot in ${LOBBY_NAME}`),
+				).toBeVisible();
+
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're signed up",
+				);
+			});
+		});
+
+		test("the waitlisted stay on the waitlist when everyone with a spot checks in", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, lastToCheckIn, waitlisted } =
+				await startingLobby(factories);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The last player with a spot checks in, starting the lobby", async () => {
+				await impersonate(page, lastToCheckIn.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.checkIn();
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+
+			await test.step("The waitlisted player is first on the waitlist", async () => {
+				await impersonate(page, waitlisted.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're #1 on the waitlist",
+				);
+			});
+		});
+
+		test("a waitlisted player plays in place of one who didn't check in", async ({
+			page,
+			factories,
+		}) => {
+			const {
+				lobby,
+				lastToCheckIn: didNotCheckIn,
+				waitlisted,
+			} = await startingLobby(factories);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The waitlisted player checks in after the start", async () => {
+				await impersonate(page, waitlisted.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.checkIn();
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+
+			await test.step("The one who didn't check in is no longer in the lobby", async () => {
+				await impersonate(page, didNotCheckIn.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.signUpButton).toBeVisible();
+			});
+		});
+	});
+
+	/**
+	 * Signing up and making a lobby take a friend code, making one is for now only for an
+	 * admin, and a user in SendouQ or present in another lobby can't check in to a lobby
+	 * until they leave it.
+	 */
+	test.describe("Who can join", () => {
+		test("without a friend code a user can't sign up or make a lobby", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const withoutFriendCode = await factories.UserFactory.create({
+				friendCode: null,
+			});
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+			});
+
+			await impersonate(page, withoutFriendCode.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+
+			await expect(lobbyPage.locators.friendCodeNeededText).toBeVisible();
+			await isNotVisible(lobbyPage.locators.signUpButton);
+
+			await impersonate(page, ADMIN_ID);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+
+			await expect(newLobby.locators.friendCodeNeededText).toBeVisible();
+		});
+
+		test("only a supporter can make a lobby", async ({ page, factories }) => {
+			const user = await factories.UserFactory.create();
+
+			await impersonate(page, user.id);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+
+			await expect(newLobby.locators.noPermissionsText).toBeVisible();
+		});
+
+		test("a user in SendouQ can't check in", async ({ page, factories }) => {
+			const host = await factories.UserFactory.create();
+			const inSendouQ = await factories.UserFactory.create();
+			await factories.SQGroupFactory.create({ memberUserIds: [inSendouQ.id] });
+			const lobby = await factories.LobbyFactory.create(
+				{
+					hostUserId: host.id,
+					startsAt: dateToDatabaseTimestamp(addMinutes(new Date(), 5)),
+					checkInOpenedAt: dateToDatabaseTimestamp(new Date()),
+				},
+				{ signedUpUserIds: [inSendouQ.id] },
+			);
+
+			await impersonate(page, inSendouQ.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.checkIn();
+
+			// toasts render hidden in e2e runs
+			await expect(
+				page.getByText("Leave SendouQ before checking in to a lobby"),
+			).toBeAttached();
+			await expect(lobbyPage.locators.checkInButton).toBeVisible();
+		});
+
+		test("a player checked in to another lobby can't check in", async ({
+			page,
+			factories,
+		}) => {
+			const [host, otherHost, player] =
+				await factories.UserFactory.createMany(3);
+			const startsSoon = dateToDatabaseTimestamp(addMinutes(new Date(), 5));
+			await factories.LobbyFactory.create(
+				{ hostUserId: otherHost.id, startsAt: startsSoon },
+				{ signedUpUserIds: [player.id], checkedInUserIds: [player.id] },
+			);
+			const lobby = await factories.LobbyFactory.create(
+				{
+					hostUserId: host.id,
+					startsAt: startsSoon,
+					checkInOpenedAt: dateToDatabaseTimestamp(new Date()),
+				},
+				{ signedUpUserIds: [player.id] },
+			);
+
+			await impersonate(page, player.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.checkIn();
+
+			// toasts render hidden in e2e runs
+			await expect(
+				page.getByText("Leave the other lobby before checking in to this one"),
+			).toBeAttached();
+			await expect(lobbyPage.locators.checkInButton).toBeVisible();
+		});
+
+		test("a player in another lobby's room can't join a started lobby", async ({
+			page,
+			factories,
+		}) => {
+			const { alphaPlayer } = await startedLobby(page, factories);
+			const otherHost = await factories.UserFactory.create();
+			const otherLobby = await factories.LobbyFactory.create(
+				{
+					hostUserId: otherHost.id,
+					startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+				},
+				{ checkedInUserIds: [otherHost.id] },
+			);
+
+			await impersonate(page, alphaPlayer.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(otherLobby.id);
+			await lobbyPage.signUp();
+
+			await expect(
+				page.getByText("Leave the other lobby before checking in to this one"),
+			).toBeAttached();
+			await expect(lobbyPage.locators.participants).toHaveCount(1);
+		});
+	});
+
+	/**
+	 * A lobby limited to an association is listed only to its members, its card marked as
+	 * such, and its page is not found for others. Its host can still invite anyone with the
+	 * lobby's invite link, which only they get, and change who sees it later on. A link-only
+	 * lobby is listed to no one but its participants: others find it only through the link
+	 * its host shares, and once signed up they find it without the link too. Everyone who can
+	 * open it gets the link to share, and their address bar always shows it. Without the link
+	 * others are told the lobby is invite only.
+	 */
+	test.describe("Visibility", () => {
+		test("a lobby limited to an association is hidden from outsiders", async ({
+			page,
+			factories,
+		}) => {
+			const [host, member, outsider] =
+				await factories.UserFactory.createMany(3);
+			const association = await factories.AssociationFactory.create(
+				{ userId: host.id, name: ASSOCIATION_NAME },
+				{ memberUserIds: [member.id] },
+			);
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+				name: LOBBY_NAME,
+				visibility: { forAssociation: association.id },
+			});
+			const lobbies = new LobbiesPage(page);
+
+			await test.step("A member of the association sees it marked as limited", async () => {
+				await impersonate(page, member.id);
+				await lobbies.goto();
+				await lobbies.openTab("upcoming");
+
+				await expect(lobbies.limitedVisibilityIcon(LOBBY_NAME)).toBeVisible();
+			});
+
+			await test.step("An outsider neither sees it listed nor finds its page", async () => {
+				await impersonate(page, outsider.id);
+				await lobbies.goto();
+				await lobbies.openTab("upcoming");
+
+				await expect(lobbies.card(LOBBY_NAME)).toHaveCount(0);
+
+				const errorPage = new ErrorPage(page);
+				await new LobbyPage(page).goto(lobby.id);
+				await expect(errorPage.locators.notFoundHeading).toBeVisible();
+			});
+		});
+
+		test("the host invites an outsider to a lobby limited to an association and opens it to everyone", async ({
+			page,
+			factories,
+		}) => {
+			const [host, member, invitee, outsider] =
+				await factories.UserFactory.createMany(4);
+			const association = await factories.AssociationFactory.create(
+				{ userId: host.id, name: ASSOCIATION_NAME },
+				{ memberUserIds: [member.id] },
+			);
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+				name: LOBBY_NAME,
+				visibility: { forAssociation: association.id },
+			});
+			const lobbyPage = new LobbyPage(page);
+			const lobbies = new LobbiesPage(page);
+
+			await impersonate(page, host.id);
+			await lobbyPage.goto(lobby.id);
+			const oldShareLink = await lobbyPage.copyShareLinkAsHost();
+			await lobbyPage.resetShareLink();
+			// toasts render hidden in e2e runs
+			await expect(lobbyPage.locators.shareLinkResetToast).toBeAttached();
+			const shareLink = await lobbyPage.copyShareLinkAsHost();
+			expect(shareLink).not.toBe(oldShareLink);
+
+			await test.step("A member sees the lobby but gets no link to share", async () => {
+				await impersonate(page, member.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.heading(LOBBY_NAME)).toBeVisible();
+				await isNotVisible(lobbyPage.locators.copyShareLinkButton);
+			});
+
+			await test.step("Through the link an outsider opens it, the reset one doesn't work", async () => {
+				await impersonate(page, invitee.id);
+				await lobbyPage.gotoViaShareLink(shareLink);
+				await expect(lobbyPage.heading(LOBBY_NAME)).toBeVisible();
+
+				const errorPage = new ErrorPage(page);
+				await lobbyPage.gotoViaShareLink(oldShareLink);
+				await expect(errorPage.locators.notFoundHeading).toBeVisible();
+			});
+
+			await test.step("Opened to everyone, an outsider sees it listed", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.changeVisibility("Public");
+
+				await impersonate(page, outsider.id);
+				await lobbies.goto();
+				await lobbies.openTab("upcoming");
+
+				await expect(lobbies.card(LOBBY_NAME)).toBeVisible();
+				await isNotVisible(lobbies.limitedVisibilityIcon(LOBBY_NAME));
+			});
+		});
+
+		test("a link-only lobby is found only through its shared link", async ({
+			page,
+			factories,
+		}) => {
+			const [visitor, outsider] = await factories.UserFactory.createMany(2);
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+			const lobbyPage = new LobbyPage(page);
+			const lobbies = new LobbiesPage(page);
+
+			await impersonate(page, ADMIN_ID);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+			await newLobby.form.fill("name", LOBBY_NAME);
+			await newLobby.selectVisibility("Only with the link");
+			await newLobby.save();
+
+			await expect(lobbyPage.heading(LOBBY_NAME)).toBeVisible();
+			const lobbyId = Number(new URL(page.url()).pathname.split("/").at(-1));
+			const shareLink = await lobbyPage.copyShareLinkAsHost();
+
+			await test.step("The host's address bar shows the link", async () => {
+				expect(new URL(page.url()).search).toBe(new URL(shareLink).search);
+
+				await lobbyPage.goto(lobbyId);
+				await expect(lobbyPage.heading(LOBBY_NAME)).toBeVisible();
+				expect(new URL(page.url()).search).toBe(new URL(shareLink).search);
+			});
+
+			await test.step("Without the link an outsider neither sees it listed nor its page", async () => {
+				await impersonate(page, outsider.id);
+				await lobbies.goto();
+				await lobbies.openTab("running");
+
+				await expect(lobbies.card(LOBBY_NAME)).toHaveCount(0);
+
+				await lobbyPage.goto(lobbyId);
+				await expect(lobbyPage.locators.inviteOnlyHeading).toBeVisible();
+				await isNotVisible(lobbyPage.heading(LOBBY_NAME));
+			});
+
+			await test.step("Through the link a visitor opens it and signs up", async () => {
+				await impersonate(page, visitor.id);
+				await lobbyPage.gotoViaShareLink(shareLink);
+				await lobbyPage.signUp();
+
+				await expect(lobbyPage.locators.participants).toHaveCount(2);
+			});
+
+			await test.step("Signed up, the visitor finds it without the link", async () => {
+				await lobbies.goto();
+				await lobbies.openTab("running");
+
+				await expect(lobbies.card(LOBBY_NAME)).toBeVisible();
+
+				await lobbyPage.goto(lobbyId);
+				await expect(lobbyPage.heading(LOBBY_NAME)).toBeVisible();
+				expect(new URL(page.url()).search).toBe(new URL(shareLink).search);
+			});
+
+			await test.step("Not being the host, the visitor can share the link too", async () => {
+				expect(await lobbyPage.copyShareLink()).toBe(shareLink);
+			});
+		});
+	});
+
+	/**
+	 * The lobby list splits lobbies into running and upcoming ones, opening on the tab of a
+	 * lobby the viewer is in. A lobby can be joined and, before the viewer is in its room,
+	 * left from its card.
+	 */
+	test.describe("Lobby list", () => {
+		test("running and upcoming lobbies are on their own tabs, opening on the viewer's", async ({
+			page,
+			factories,
+		}) => {
+			const [runningHost, upcomingHost, viewer] =
+				await factories.UserFactory.createMany(3);
+			await factories.LobbyFactory.create({
+				hostUserId: runningHost.id,
+				name: "Running 8s",
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 30)),
+			});
+			await factories.LobbyFactory.create(
+				{ hostUserId: upcomingHost.id, name: "Upcoming 8s" },
+				{ signedUpUserIds: [viewer.id] },
+			);
+
+			await impersonate(page, viewer.id);
+			const lobbies = new LobbiesPage(page);
+			await lobbies.goto();
+
+			await expect(lobbies.locators.selectedTab).toContainText("Upcoming");
+			await expect(lobbies.card("Upcoming 8s")).toBeVisible();
+			await expect(lobbies.card("Running 8s")).toHaveCount(0);
+
+			await lobbies.openTab("running");
+
+			await expect(lobbies.card("Running 8s")).toBeVisible();
+		});
+
+		test("joins a lobby from its card", async ({ page, factories }) => {
+			const host = await factories.UserFactory.create();
+			const visitor = await factories.UserFactory.create();
+			await factories.LobbyFactory.create({
+				hostUserId: host.id,
+				name: LOBBY_NAME,
+			});
+
+			await impersonate(page, visitor.id);
+			const lobbies = new LobbiesPage(page);
+			await lobbies.goto();
+			await lobbies.join(LOBBY_NAME);
+
+			await expect(lobbies.card(LOBBY_NAME)).toContainText("Signed up");
+		});
+
+		test("leaves a lobby from its card", async ({ page, factories }) => {
+			const host = await factories.UserFactory.create();
+			const signedUp = await factories.UserFactory.create();
+			await factories.LobbyFactory.create(
+				{ hostUserId: host.id, name: LOBBY_NAME },
+				{ signedUpUserIds: [signedUp.id] },
+			);
+
+			await impersonate(page, signedUp.id);
+			const lobbies = new LobbiesPage(page);
+			await lobbies.goto();
+			await lobbies.leave(LOBBY_NAME);
+
+			await expect(lobbies.card(LOBBY_NAME)).not.toContainText("Signed up");
+			await expect(
+				lobbies.card(LOBBY_NAME).getByTestId("lobby-join-button"),
+			).toBeVisible();
+		});
+	});
+
+	/**
+	 * The lobby starts once 8 have checked in after its start time, splitting the room into
+	 * two teams for a set and notifying its players. The banner shows who voted for the map
+	 * being played with their match profile map pool. One side reports the maps, can undo a
+	 * report while the set is being played, and the other confirms the result, after which
+	 * the set shows on the Result tab and counts on the Rankings tab together with the
+	 * weapons reported, the Rankings then also offering a head-to-head view of the players
+	 * who have played. The confirming side can instead dispute the result, the reporting
+	 * side then undoing their report or the host settling it by confirming the result or
+	 * undoing the report, whichever side they're on.
+	 */
+	test.describe("Playing sets", () => {
+		test("starting the lobby notifies its players", async ({
+			page,
+			factories,
+		}) => {
+			const { host } = await startedLobby(page, factories);
+
+			await impersonate(page, host.id);
+			const notifications = await openNotifications(page);
+			await expect(
+				notifications.notification(
+					`${LOBBY_NAME} started and you're in a room`,
+				),
+			).toBeVisible();
+		});
+
+		test("the banner shows who voted for the map being played", async ({
+			page,
+			factories,
+		}) => {
+			await startedLobby(page, factories, { isPoolingEveryMap: true });
+			const lobbyPage = new LobbyPage(page);
+
+			await expect(lobbyPage.locators.mapVotersBadge).toHaveText(
+				String(ROOM_SIZE),
+			);
+			await lobbyPage.locators.mapVotersBadge.click();
+			await expect(lobbyPage.locators.mapVotersHeader).toBeVisible();
+		});
+
+		test("a set reported by one side and confirmed by the other counts", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The Rankings have no head-to-head view before a set is played", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await expect(lobbyPage.locators.leaderboardRows).toHaveCount(ROOM_SIZE);
+				await expect(lobbyPage.locators.headToHeadViewChip).toHaveCount(0);
+			});
+
+			await test.step("An Alpha player reports a sweep", async () => {
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("A Bravo player confirms it", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.confirmSet();
+			});
+
+			await test.step("The set shows on the Rankings and Result tabs", async () => {
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await expect(lobbyPage.locators.leaderboardRows).toHaveCount(ROOM_SIZE);
+
+				await lobbyPage.locators.headToHeadViewChip.click();
+				await expect(lobbyPage.locators.headToHeadRows).toHaveCount(ROOM_SIZE);
+
+				await lobbyPage.openTab("result");
+				await expect(lobbyPage.locators.tabPanel).toContainText("2-0");
+			});
+		});
+
+		test("a map report is undone while the set is being played", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer } = await startedLobby(page, factories);
+
+			await impersonate(page, alphaPlayer.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id, "action");
+			await lobbyPage.reportOwnTeamWin();
+
+			await expect(lobbyPage.tab("result")).toBeVisible();
+
+			await lobbyPage.undoReport();
+
+			await expect(lobbyPage.tab("result")).toHaveCount(0);
+		});
+
+		test("a reported weapon shows on the Result and Rankings tabs", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("An Alpha player reports their weapon and a sweep", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportWeapon(WEAPON_NAME);
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("A Bravo player confirms the set", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.confirmSet();
+			});
+
+			await test.step("The weapon shows on the Result and Rankings tabs", async () => {
+				await lobbyPage.openTab("result");
+				await expect(lobbyPage.weaponImage(WEAPON_NAME)).toBeVisible();
+
+				await lobbyPage.openTab("leaderboard");
+				await expect(
+					lobbyPage
+						.rankingsRow(alphaPlayer.name)
+						.getByRole("img", { name: WEAPON_NAME }),
+				).toBeVisible();
+			});
+		});
+
+		test("a disputed result goes back to reporting when the reporting side undoes it", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("An Alpha player reports a sweep", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("A Bravo player disputes it", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.disputeResult();
+
+				await expect(lobbyPage.locators.disputedText).toBeVisible();
+			});
+
+			await test.step("The Alpha player undoes the deciding report", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.undoReport();
+
+				await expect(lobbyPage.locators.reportScoreButton).toBeVisible();
+			});
+		});
+
+		test("the host undoes a disputed result the other team reported", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			const isHostAlpha = alphaPlayers.some((player) => player.id === host.id);
+			const opponent = (isHostAlpha ? bravoPlayers : alphaPlayers)[0];
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The other team reports a sweep", async () => {
+				await impersonate(page, opponent.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("The host disputes it and undoes the deciding report", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.disputeResult();
+				await lobbyPage.undoReport();
+
+				await expect(lobbyPage.locators.reportScoreButton).toBeVisible();
+			});
+		});
+
+		test("the host settles a disputed result by confirming it", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			const isHostAlpha = alphaPlayers.some((player) => player.id === host.id);
+			const opponent = (isHostAlpha ? bravoPlayers : alphaPlayers)[0];
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The host reports a sweep for their team", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("The other team disputes it", async () => {
+				await impersonate(page, opponent.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.disputeResult();
+			});
+
+			await test.step("The host confirms the result, the set counting", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.confirmSetAsHost();
+				await lobbyPage.openTab("action");
+
+				await expect(lobbyPage.locators.reportScoreButton).toBeVisible();
+				await lobbyPage.openTab("result");
+				await expect(lobbyPage.locators.tabPanel).toContainText("2-0");
+			});
+		});
+	});
+
+	/**
+	 * After a confirmed set the next one starts right away with the teams reshuffled, nobody
+	 * keeping all of their teammates. In a room bigger than 8 the extra players sit a set
+	 * out, rotating in for the next one. When the room is short of 8 the waitlist is asked,
+	 * with a notification, who is ready to take the open spot, and confirming fills it. The
+	 * first on the waitlist has priority on the spot for 3 minutes, others confirming before
+	 * them waiting, without the room's pool and pass. Once the priority runs out the spot goes
+	 * to whoever confirms first. Signing up while a spot is open counts as confirming.
+	 */
+	test.describe("Between sets", () => {
+		test("the next set opens on the Rosters tab with the teams reshuffled", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, players, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await playSet(page, {
+				lobbyId: lobby.id,
+				alphaPlayer: alphaPlayers[0],
+				bravoPlayer: bravoPlayers[0],
+			});
+
+			await expect(lobbyPage.tab("rosters")).toHaveAttribute(
+				"aria-selected",
+				"true",
+			);
+			const nextAlphaIds = await rosterIds(lobbyPage, "Alpha", players);
+
+			expect(nextAlphaIds).not.toEqual(idsOf(alphaPlayers));
+			expect(nextAlphaIds).not.toEqual(idsOf(bravoPlayers));
+		});
+
+		test("in a room of 9 one sits a set out and plays the next", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer, bravoPlayer, sittingOut } =
+				await startedLobby(page, factories, { roomSize: 9 });
+			const spectator = sittingOut[0];
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The ninth player spectates the first set", async () => {
+				await impersonate(page, spectator.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're spectating, you'll rotate in",
+				);
+			});
+
+			await playSet(page, { lobbyId: lobby.id, alphaPlayer, bravoPlayer });
+
+			await test.step("They play the next set", async () => {
+				await impersonate(page, spectator.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+		});
+
+		test("the waitlist is asked to fill a spot that opens up", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer } = await startedLobby(page, factories);
+			const lateSignUp = await factories.UserFactory.create();
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("A player signing up to the full room is waitlisted", async () => {
+				await impersonate(page, lateSignUp.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.signUp();
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're #1 on the waitlist",
+				);
+			});
+
+			await test.step("An Alpha player leaves, opening a spot", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.leaveMidSet();
+			});
+
+			await test.step("The waitlisted player is notified and confirms they're ready", async () => {
+				await impersonate(page, lateSignUp.id);
+				const notifications = await openNotifications(page);
+				await expect(
+					notifications.notification(`A spot is open in ${LOBBY_NAME}`),
+				).toBeVisible();
+
+				await lobbyPage.goto(lobby.id);
+				await expect(lobbyPage.locators.readyCheck).toBeVisible();
+				await lobbyPage.confirmReady();
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+		});
+
+		test("the first on the waitlist takes the spot over a faster confirmer", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, waitlist } = await lobbyWithOpenSpot(page, factories);
+			const [first, , third] = waitlist;
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The third on the waitlist confirms first and waits", async () => {
+				await impersonate(page, third.id);
+				await lobbyPage.goto(lobby.id);
+				await expect(lobbyPage.locators.waitingBanner).toContainText(
+					"The waitlist has been asked to fill the open spots",
+				);
+				await lobbyPage.confirmReady();
+
+				await expect(lobbyPage.locators.readyCheck).toContainText(
+					"Confirmed, waiting for the others",
+				);
+				await isNotVisible(lobbyPage.tab("action"));
+			});
+
+			await test.step("The first on the waitlist confirms and gets the spot", async () => {
+				await impersonate(page, first.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.confirmReady();
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+
+			await test.step("The third stays out of the room", async () => {
+				await impersonate(page, third.id);
+				await lobbyPage.goto(lobby.id);
+
+				await isNotVisible(lobbyPage.tab("action"));
+			});
+		});
+
+		test("a player checked in but left waiting for a spot doesn't see the room's pool and pass", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, waitlist } = await lobbyWithOpenSpot(page, factories);
+			const third = waitlist[2];
+			const lobbyPage = new LobbyPage(page);
+
+			await impersonate(page, third.id);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.confirmReady();
+
+			await expect(lobbyPage.locators.readyCheck).toContainText(
+				"Confirmed, waiting for the others",
+			);
+			await isNotVisible(lobbyPage.locators.roomPool);
+			await isNotVisible(lobbyPage.locators.roomPass);
+		});
+
+		test("signing up while the waitlist has priority counts as ready", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby } = await lobbyWithOpenSpot(page, factories);
+			const lateSignUp = await factories.UserFactory.create();
+			const lobbyPage = new LobbyPage(page);
+
+			await impersonate(page, lateSignUp.id);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.signUp();
+
+			await expect(lobbyPage.locators.readyCheck).toContainText(
+				"Confirmed, waiting for the others",
+			);
+			await isNotVisible(lobbyPage.locators.confirmReadyButton);
+		});
+
+		test("signing up once the priority has run out takes the spot right away", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby } = await lobbyWithOpenSpot(page, factories);
+			await factories.LobbyFactory.expireReadyChecks(lobby.id);
+			const lateSignUp = await factories.UserFactory.create();
+			const lobbyPage = new LobbyPage(page);
+
+			await impersonate(page, lateSignUp.id);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.signUp();
+
+			await expect(lobbyPage.tab("action")).toBeVisible();
+		});
+
+		test("once the first's priority runs out the spot goes to whoever confirms first", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, waitlist } = await lobbyWithOpenSpot(page, factories);
+			const [, second, third] = waitlist;
+			await factories.LobbyFactory.expireReadyChecks(lobby.id);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The third on the waitlist confirms first and gets the spot", async () => {
+				await impersonate(page, third.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.confirmReady();
+
+				await expect(lobbyPage.tab("action")).toBeVisible();
+			});
+
+			await test.step("The second is too late, the spot taken", async () => {
+				await impersonate(page, second.id);
+				await lobbyPage.goto(lobby.id);
+
+				await isNotVisible(lobbyPage.locators.readyCheck);
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're #2 on the waitlist",
+				);
+			});
+		});
+	});
+
+	/**
+	 * Leaving mid-set forfeits it for the leaver's team once a map has been reported, whatever
+	 * the score: the set shows as won by forfeit and counts as a set win and loss on the
+	 * Rankings, the room left short of players. Leaving before any map is reported calls the
+	 * set off, nobody losing it. A player can instead ask to leave once the set is confirmed, leaving the lobby
+	 * then. Asking to is told in the lobby's chat and marked on the Rosters tab, the mark
+	 * explaining itself when clicked. Changing their mind is told in the chat too, after which they
+	 * can't ask to leave again for a while.
+	 */
+	test.describe("Leaving", () => {
+		test("leaving mid-set forfeits it and the room waits for players", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayers, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			// not the host, who ends the lobby in the end
+			const alphaPlayer = alphaPlayers.find((player) => player.id !== host.id)!;
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("Alpha wins the first map, then an Alpha player leaves", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamWin();
+				await lobbyPage.leaveMidSet();
+			});
+
+			await test.step("The others wait for an eighth player, no one on the waitlist to ask", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.waitingBanner).toContainText(
+					"Waiting for players (7/8)",
+				);
+				await expect(lobbyPage.locators.waitingBanner).not.toContainText(
+					"The waitlist has been asked to fill the open spots",
+				);
+				// no set being played, so no rosters to show
+				await isNotVisible(lobbyPage.tab("rosters"));
+			});
+
+			await test.step("Bravo is awarded the set on the Result and Rankings tabs", async () => {
+				await lobbyPage.openTab("result");
+				await expect(lobbyPage.locators.forfeitNote).toHaveText(
+					"Bravo won by forfeit",
+				);
+
+				await lobbyPage.openTab("leaderboard");
+				await expect(
+					lobbyPage
+						.rankingsRow(bravoPlayer.name)
+						.getByRole("cell", { name: "1-0", exact: true }),
+				).toBeVisible();
+				await expect(
+					lobbyPage
+						.rankingsRow(alphaPlayer.name)
+						.getByRole("cell", { name: "0-1", exact: true }),
+				).toBeVisible();
+			});
+
+			await test.step("The Rankings tell who has left the lobby", async () => {
+				await expect(lobbyPage.locators.leftLobbyMarkers).toHaveCount(1);
+				await lobbyPage.leftLobbyMarker(alphaPlayer.name).click();
+				await expect(lobbyPage.locators.leftLobbyPopover).toHaveText(
+					"Left the lobby",
+				);
+			});
+
+			await test.step("Once the lobby has ended no one is marked as left", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.endLobby();
+				await expect(lobbyPage.locators.endedStatus).toBeVisible();
+
+				await lobbyPage.openTab("leaderboard");
+				await expect(lobbyPage.rankingsRow(alphaPlayer.name)).toBeVisible();
+				await expect(lobbyPage.locators.leftLobbyMarkers).toHaveCount(0);
+			});
+		});
+
+		test("a player asks to leave once the set is confirmed", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("An Alpha player asks to leave after the set and plays it out", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.dropAfterSet();
+
+				await expect(lobbyPage.locators.dropAfterSetButton).toHaveText(
+					"Stay after this set",
+				);
+
+				await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+			});
+
+			await test.step("A Bravo player sees they are leaving and confirms the set", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id, "action");
+
+				await lobbyPage.openTab("rosters");
+				await expect(lobbyPage.locators.leavingAfterSetMarkers).toHaveCount(1);
+				await lobbyPage.leavingAfterSetMarker(alphaPlayer.name).click();
+				await expect(lobbyPage.locators.leavingAfterSetPopover).toContainText(
+					`${alphaPlayer.name} leaves the lobby once this set is confirmed`,
+				);
+				await lobbyPage.openTab("action");
+
+				await chat.selectRoomTab("Lobby");
+				await expect(
+					chat.chat().message(`${alphaPlayer.name} will leave after this set`),
+				).toBeVisible();
+
+				await lobbyPage.confirmSet();
+
+				await expect(lobbyPage.locators.waitingBanner).toContainText(
+					"Waiting for players (7/8)",
+				);
+			});
+
+			await test.step("The Alpha player is out of the lobby", async () => {
+				await impersonate(page, alphaPlayer.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.signUpButton).toBeVisible();
+			});
+		});
+
+		test("a player changing their mind about leaving tells the chat and can't ask again right away", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer } = await startedLobby(page, factories);
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await impersonate(page, alphaPlayer.id);
+			await lobbyPage.goto(lobby.id, "action");
+			await lobbyPage.dropAfterSet();
+			await expect(lobbyPage.locators.dropAfterSetButton).toHaveText(
+				"Stay after this set",
+			);
+			await lobbyPage.dropAfterSet();
+
+			await expect(lobbyPage.locators.dropAfterSetButton).toBeDisabled();
+			await expect(lobbyPage.locators.dropAfterSetButton).toContainText(
+				/Leave after this set \(\d+s\)/,
+			);
+
+			await chat.selectRoomTab("Lobby");
+			await expect(
+				chat
+					.chat()
+					.message(
+						`${alphaPlayer.name} changed their mind and will stay after this set`,
+					),
+			).toBeVisible();
+		});
+	});
+
+	/**
+	 * The host kicks participants, who are told so and can't sign up for the lobby again, a
+	 * player kicked mid-set forfeiting it for their team. The host also sits players of the
+	 * room out of the sets until resumed, changes the best of from the next set on and ends
+	 * the lobby. The host can hand hosting over to another participant, which
+	 * the lobby's chat tells everyone. When the host leaves, the participant who signed up the
+	 * earliest becomes the host and is notified of it.
+	 */
+	test.describe("Hosting", () => {
+		test("a kicked player is told so and can't sign up again", async ({
+			page,
+			browser,
+			workerBaseURL,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const kicked = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create(
+				{ hostUserId: host.id },
+				{ signedUpUserIds: [kicked.id] },
+			);
+
+			await impersonate(page, kicked.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+
+			await test.step("The host kicks them", async () => {
+				const hostSession = await openSecondUser(
+					browser,
+					workerBaseURL,
+					host.id,
+				);
+				try {
+					const hostLobbyPage = new LobbyPage(hostSession.page);
+					await hostLobbyPage.goto(lobby.id);
+					await hostLobbyPage.kick(kicked.id);
+
+					await expect(hostLobbyPage.locators.participants).toHaveCount(1);
+				} finally {
+					await hostSession.close();
+				}
+			});
+
+			await test.step("Their open page tells them they were kicked", async () => {
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"The host kicked you from the lobby",
+				);
+				await isNotVisible(lobbyPage.locators.signUpButton);
+			});
+
+			await test.step("Coming back they still can't sign up", async () => {
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"The host kicked you from the lobby",
+				);
+				await isNotVisible(lobbyPage.locators.signUpButton);
+			});
+		});
+
+		test("kicking a player mid-set forfeits it for their team", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			const isHostAlpha = alphaPlayers.some((player) => player.id === host.id);
+			const opponent = (isHostAlpha ? bravoPlayers : alphaPlayers)[0];
+
+			await impersonate(page, host.id);
+			const lobbyPage = new LobbyPage(page);
+			// before a map is reported the set would be called off instead
+			await lobbyPage.goto(lobby.id, "action");
+			await lobbyPage.reportOwnTeamWin();
+			// the room's players are on the Rankings tab, with the host's player menu
+			await lobbyPage.openTab("leaderboard");
+			await lobbyPage.kick(opponent.id);
+
+			await lobbyPage.openTab("result");
+			await expect(lobbyPage.locators.forfeitNote).toHaveText(
+				`${isHostAlpha ? "Alpha" : "Bravo"} won by forfeit`,
+			);
+		});
+
+		test("a player sat out by the host sits out the sets until resumed", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayer, bravoPlayer, alphaPlayers } =
+				await startedLobby(page, factories, { roomSize: 9 });
+			const satOut = alphaPlayers.find(
+				(player) => player.id !== host.id && player.id !== alphaPlayer.id,
+			)!;
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The host sits a playing player out", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await lobbyPage.sitOut(satOut.id);
+			});
+
+			await playSet(page, { lobbyId: lobby.id, alphaPlayer, bravoPlayer });
+
+			await test.step("They sit the next set out", async () => {
+				await impersonate(page, satOut.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"The host has you sitting out until they resume you",
+				);
+			});
+
+			await test.step("The host resumes them", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await lobbyPage.resume(satOut.id);
+
+				await impersonate(page, satOut.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're spectating, you'll rotate in",
+				);
+			});
+		});
+
+		test("a changed best of applies from the next set", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayer, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The host changes the best of mid-set", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.changeBestOf(5);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.bestOf(BEST_OF)).toBeVisible();
+			});
+
+			await playSet(page, { lobbyId: lobby.id, alphaPlayer, bravoPlayer });
+
+			await test.step("The next set is a best of 5", async () => {
+				await expect(lobbyPage.bestOf(5)).toBeVisible();
+			});
+		});
+
+		test("the host makes another participant the host", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, players } = await startedLobby(page, factories);
+			// not the earliest to sign up, who'd be the host anyway were the host to leave
+			const newHost = players.at(-1)!;
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("The host hands hosting over, the lobby's chat telling of it", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await lobbyPage.makeHost(newHost.id);
+
+				await isNotVisible(lobbyPage.locators.endLobbyButton);
+				await chat.selectRoomTab("Lobby");
+				await expect(
+					chat.chat().message(`${newHost.name} is now the host`),
+				).toBeVisible();
+			});
+
+			await test.step("The new host is marked on the Rankings tab and can manage the lobby", async () => {
+				await impersonate(page, newHost.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+
+				await expect(lobbyPage.hostMarker(newHost.name)).toBeVisible();
+				await isNotVisible(lobbyPage.hostMarker(host.name));
+				await expect(lobbyPage.locators.endLobbyButton).toBeVisible();
+			});
+		});
+
+		test("the earliest to sign up becomes the host when the host leaves", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const [earliest, latest] = await factories.UserFactory.createMany(2);
+			const lobby = await factories.LobbyFactory.create(
+				{ hostUserId: host.id, name: LOBBY_NAME },
+				{ signedUpUserIds: [earliest.id, latest.id] },
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The host leaves", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.leave();
+			});
+
+			await test.step("The earliest to sign up is notified and can manage the lobby", async () => {
+				await impersonate(page, earliest.id);
+				const notifications = await openNotifications(page);
+				await expect(
+					notifications.notification(`You are now the host of ${LOBBY_NAME}`),
+				).toBeVisible();
+
+				await lobbyPage.goto(lobby.id);
+
+				await expect(lobbyPage.locators.endLobbyButton).toBeVisible();
+			});
+		});
+
+		test("the host ends the lobby", async ({ page, factories }) => {
+			const host = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+			});
+
+			await impersonate(page, host.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.endLobby();
+
+			await expect(lobbyPage.locators.endedStatus).toBeVisible();
+		});
+	});
+
+	/**
+	 * A host can make a lobby require applying to join it, when making it or later. Signing up then sends the host
+	 * an application instead, the applicant taking no spot until the host accepts it, which signs them up like
+	 * signing up would and notifies them. An applicant can withdraw their application, one the host declines can't
+	 * apply again. Turning the option off accepts everyone still waiting.
+	 */
+	test.describe("Applying", () => {
+		test("an applicant gets in once the host accepts them", async ({
+			page,
+			factories,
+		}) => {
+			const applicant = await factories.UserFactory.create();
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+			const lobbyPage = new LobbyPage(page);
+			let lobbyId = 0;
+
+			await test.step("The host makes a lobby requiring applying", async () => {
+				await impersonate(page, ADMIN_ID);
+				const newLobby = new NewLobbyPage(page);
+				await newLobby.goto();
+				await newLobby.form.fill("name", LOBBY_NAME);
+				await newLobby.form.check("isApplicationRequired");
+				await newLobby.save();
+
+				await expect(lobbyPage.locators.applicationRequired).toBeVisible();
+				lobbyId = Number(page.url().split("/").at(-1));
+			});
+
+			await test.step("Signing up applies, taking no spot", async () => {
+				await impersonate(page, applicant.id);
+				await lobbyPage.goto(lobbyId);
+				await lobbyPage.apply();
+
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You applied",
+				);
+				await expect(lobbyPage.locators.participants).toHaveCount(1);
+			});
+
+			await test.step("The host accepts the application", async () => {
+				await impersonate(page, ADMIN_ID);
+				await lobbyPage.goto(lobbyId);
+				await expect(lobbyPage.locators.applications).toHaveCount(1);
+				await lobbyPage.acceptApplication(applicant.id);
+
+				await expect(lobbyPage.locators.applications).toHaveCount(0);
+				await expect(lobbyPage.locators.participants).toHaveCount(2);
+			});
+
+			await test.step("The applicant is notified and signed up", async () => {
+				await impersonate(page, applicant.id);
+				const notifications = await openNotifications(page);
+				await expect(
+					notifications.notification(`You're in ${LOBBY_NAME}`),
+				).toBeVisible();
+
+				await lobbyPage.goto(lobbyId);
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"You're signed up",
+				);
+			});
+		});
+
+		test("a declined applicant can't apply again", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const applicant = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create(
+				{ hostUserId: host.id, isApplicationRequired: true },
+				{ appliedUserIds: [applicant.id] },
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await impersonate(page, host.id);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.declineApplication(applicant.id);
+			await expect(lobbyPage.locators.applications).toHaveCount(0);
+
+			await impersonate(page, applicant.id);
+			await lobbyPage.goto(lobby.id);
+			await expect(lobbyPage.locators.viewerStatus).toContainText(
+				"The host declined your application",
+			);
+			await isNotVisible(lobbyPage.locators.applyButton);
+		});
+
+		test("an applicant withdraws their application", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const applicant = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create(
+				{ hostUserId: host.id, isApplicationRequired: true },
+				{ appliedUserIds: [applicant.id] },
+			);
+			const lobbyPage = new LobbyPage(page);
+
+			await impersonate(page, applicant.id);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.withdrawApplication();
+
+			await expect(lobbyPage.locators.applyButton).toBeVisible();
+		});
+	});
+
+	/**
+	 * A lobby has a chat for everyone in it and one per team, a team's chat reaching only its
+	 * players. Every set starts with fresh team chats while the lobby's chat carries on. The
+	 * lobby page opens a player's two chats side by side.
+	 */
+	/**
+	 * The host picks a weapon randomizer when making the lobby or between sets. When a set starts it rolls 4 weapons
+	 * for each team, its players deciding who plays which: chaotic any weapons, balanced ones that even out the teams.
+	 */
+	test.describe("Weapon randomizer", () => {
+		test("the randomizer picked when making the lobby shows on its card and page", async ({
+			page,
+			factories,
+		}) => {
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+
+			await impersonate(page, ADMIN_ID);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+			await newLobby.form.fill("name", LOBBY_NAME);
+			await newLobby.selectWeaponRandomizer("Balanced");
+			await newLobby.save();
+
+			const lobbyPage = new LobbyPage(page);
+			await expect(lobbyPage.locators.weaponRandomizer).toHaveText(
+				"Balanced random",
+			);
+
+			const lobbies = new LobbiesPage(page);
+			await lobbies.goto();
+			await expect(lobbies.weaponRandomizer(LOBBY_NAME)).toHaveText(
+				"Balanced random",
+			);
+		});
+
+		test("the host renames the lobby on its edit page, its other settings kept", async ({
+			page,
+			factories,
+		}) => {
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+
+			await impersonate(page, ADMIN_ID);
+			const newLobby = new NewLobbyPage(page);
+			await newLobby.goto();
+			await newLobby.form.fill("name", LOBBY_NAME);
+			await newLobby.selectWeaponRandomizer("Balanced");
+			await newLobby.save();
+
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.rename("Renamed 8s");
+
+			await expect(lobbyPage.heading("Renamed 8s")).toBeVisible();
+			await expect(lobbyPage.locators.weaponRandomizer).toHaveText(
+				"Balanced random",
+			);
+		});
+
+		test("each team of a set gets 4 weapons on the Rosters tab", async ({
+			page,
+			factories,
+		}) => {
+			await startedLobby(page, factories, { weaponRandomizer: "CHAOTIC" });
+			const lobbyPage = new LobbyPage(page);
+
+			await expect(lobbyPage.locators.weaponRandomizer).toHaveText(
+				"Chaotic random",
+			);
+			await expect(lobbyPage.locators.rosterRolledWeapons).toHaveCount(8);
+		});
+	});
+
+	/**
+	 * The sets' maps are picked from the players' preferences in the modes the host picks, unless the host picks a map pool
+	 * instead, when making the lobby or between sets: a tournament's or a custom one. Its sets are then played on its maps in
+	 * plain rotation, so nobody is shown as having voted for them.
+	 */
+	test.describe("Map pool", () => {
+		test("a tournament's map pool picked when making the lobby, then a custom one and back to ranked modes by the host", async ({
+			page,
+			factories,
+		}) => {
+			await factories.UserFactory.setFriendCode(ADMIN_ID);
+			const tournament = await factories.TournamentFactory.create({
+				authorId: ADMIN_ID,
+				name: MAPS_TOURNAMENT_NAME,
+				startTimes: [dateToDatabaseTimestamp(addDays(new Date(), 1))],
+				mapPoolMaps: LOBBY_MAP_POOL.stageModePairs,
+			});
+			await impersonate(page, ADMIN_ID);
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The tournament's pool links to its rules from the page and shows on the card", async () => {
+				const newLobby = new NewLobbyPage(page);
+				await newLobby.goto();
+				await newLobby.form.fill("name", LOBBY_NAME);
+				await newLobby.selectTournamentMaps(MAPS_TOURNAMENT_NAME);
+				await newLobby.save();
+
+				await expect(lobbyPage.locators.mapPoolLink).toHaveText(
+					MAPS_TOURNAMENT_NAME,
+				);
+				await expect(lobbyPage.locators.mapPoolLink).toHaveAttribute(
+					"href",
+					tournamentRulesPage(tournament.id),
+				);
+				const lobbyId = Number(page.url().split("/").at(-1));
+
+				const lobbies = new LobbiesPage(page);
+				await lobbies.goto();
+				await expect(lobbies.card(LOBBY_NAME)).toContainText(
+					MAPS_TOURNAMENT_NAME,
+				);
+
+				await lobbyPage.goto(lobbyId);
+			});
+
+			await test.step("The host switches to a custom pool", async () => {
+				await lobbyPage.changeMapPool(LOBBY_MAP_POOL);
+
+				await expect(lobbyPage.locators.mapPoolLink).toHaveText("3 maps");
+			});
+
+			await test.step("The host goes back to the players' preferences in ranked modes", async () => {
+				await lobbyPage.useRankedModes();
+
+				await isNotVisible(lobbyPage.locators.mapPoolLink);
+			});
+		});
+
+		test("sets are played on the map pool's maps, nobody voting for them", async ({
+			page,
+			factories,
+		}) => {
+			await startedLobby(page, factories, {
+				isPoolingEveryMap: true,
+				mapPool: LOBBY_MAP_POOL.stageModePairs,
+			});
+			const lobbyPage = new LobbyPage(page);
+
+			await expect(lobbyPage.locators.currentMap).toHaveAttribute(
+				"data-testid",
+				/^banner-map-SZ-[123]$/,
+			);
+			await isNotVisible(lobbyPage.locators.mapVotersBadge);
+		});
+	});
+
+	/**
+	 * The lobby's chat is shared by everyone in it and stays with players who leave after playing a set, only a
+	 * kick takes it away. While a set is played its two teams also get a chat of their own, fresh for every set.
+	 */
+	test.describe("Chat", () => {
+		test("leaving before playing is noted in the chat and takes it away", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const leaver = await factories.UserFactory.create({
+				discordName: "EarlyLeaver",
+			});
+			const lobby = await factories.LobbyFactory.create(
+				{ hostUserId: host.id },
+				{ signedUpUserIds: [leaver.id] },
+			);
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("A participant leaves before playing and has no chat anymore", async () => {
+				await impersonate(page, leaver.id);
+				await lobbyPage.goto(lobby.id);
+				await expect(chat.locators.openChats).toHaveCount(1);
+
+				await lobbyPage.leave();
+				await expect(lobbyPage.locators.signUpButton).toBeVisible();
+				await isNotVisible(chat.locators.openChats);
+			});
+
+			await test.step("The host sees them leave in the chat only", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+
+				await expect(
+					chat.chat().message("EarlyLeaver left the lobby"),
+				).toBeVisible();
+				await isNotVisible(lobbyPage.locators.leftUsers);
+			});
+		});
+
+		test("leaving after playing keeps the lobby's chat, being kicked takes it away", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, host, alphaPlayers } = await startedLobby(page, factories);
+			const leaver = alphaPlayers.find((player) => player.id !== host.id)!;
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("A player leaves mid-set and still writes to the lobby", async () => {
+				await impersonate(page, leaver.id);
+				await lobbyPage.goto(lobby.id, "action");
+				await lobbyPage.reportOwnTeamWin();
+				await lobbyPage.leaveMidSet();
+				await expect(lobbyPage.locators.signUpButton).toBeVisible();
+
+				await chat.chat().send("left but still here");
+				await expect(chat.chat().message("left but still here")).toBeVisible();
+				await expect(chat.chat().locators.pendingMessages).toHaveCount(0);
+			});
+
+			await test.step("Coming back the chat opens with the lobby", async () => {
+				await lobbyPage.goto(lobby.id);
+
+				await expect(chat.chat().message("left but still here")).toBeVisible();
+			});
+
+			const { lobbyRoomId } = await lobbyChatRoomIds(page);
+
+			await test.step("The host kicks the one who left", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id, "leaderboard");
+				await expect(chat.chat().message("left but still here")).toBeVisible();
+				await expect(lobbyPage.locators.leftUsers).toHaveCount(1);
+
+				await lobbyPage.kickLeftUser(leaver.id);
+				await expect(lobbyPage.locators.leftUsers).toHaveCount(0);
+			});
+
+			await test.step("The kicked one has no chat anymore", async () => {
+				await impersonate(page, leaver.id);
+				await lobbyPage.goto(lobby.id);
+				await expect(lobbyPage.locators.viewerStatus).toContainText(
+					"The host kicked you from the lobby",
+				);
+
+				await isNotVisible(chat.locators.openChats);
+				expect(await chatHistoryStatus(page, lobbyRoomId)).toBe(403);
+			});
+		});
+
+		test("a team's chat reaches only its players", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayers, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const [sender, teammate] = alphaPlayers;
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("An Alpha player writes to their team and to the lobby", async () => {
+				await impersonate(page, sender.id);
+				await lobbyPage.goto(lobby.id);
+
+				// as tabs while the view is too short to stack them
+				await expect(chat.locators.splitPanels).toHaveCount(2);
+				await expect(chat.locators.roomTabs).toHaveText(["Lobby", "Team"]);
+
+				await chat.selectRoomTab("Team");
+				await chat.chat().send("alpha only");
+				await expect(chat.chat().message("alpha only")).toBeVisible();
+
+				await chat.selectRoomTab("Lobby");
+				await chat.chat().send("hello lobby");
+				await expect(chat.chat().message("hello lobby")).toBeVisible();
+				await expect(chat.chat().message("alpha only")).toHaveCount(0);
+			});
+
+			await test.step("Their teammate reads the team message", async () => {
+				await impersonate(page, teammate.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await expect(chat.chat().message("alpha only")).toBeVisible();
+			});
+
+			await test.step("A Bravo player reads only the lobby message", async () => {
+				await impersonate(page, bravoPlayer.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await expect(chat.chat().message("alpha only")).toHaveCount(0);
+
+				await chat.selectRoomTab("Lobby");
+				await expect(chat.chat().message("hello lobby")).toBeVisible();
+			});
+
+			await test.step("The two chats are one row of the room list", async () => {
+				await chat.backToRoomList();
+
+				await expect(chat.locators.roomRows).toHaveCount(1);
+				await expect(chat.locators.roomRows).toContainText("Lobby · Team");
+			});
+		});
+
+		test("every set starts with fresh team chats", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, players, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			const sender = alphaPlayers[0];
+			const lobbyPage = new LobbyPage(page);
+			const chat = new ChatSidebar(page);
+
+			await test.step("An Alpha player writes to their team and to the lobby in the first set", async () => {
+				await impersonate(page, sender.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await chat.chat().send("first set plan");
+				await expect(chat.chat().message("first set plan")).toBeVisible();
+
+				await chat.selectRoomTab("Lobby");
+				await chat.chat().send("hello lobby");
+				await expect(chat.chat().message("hello lobby")).toBeVisible();
+			});
+
+			await playSet(page, {
+				lobbyId: lobby.id,
+				alphaPlayer: sender,
+				bravoPlayer: bravoPlayers[0],
+			});
+
+			await expect(lobbyPage.tab("rosters")).toHaveAttribute(
+				"aria-selected",
+				"true",
+			);
+			const nextAlphaIds = await rosterIds(lobbyPage, "Alpha", players);
+			const senderTeamIds = nextAlphaIds.includes(sender.id)
+				? nextAlphaIds
+				: idsOf(players).filter((id) => !nextAlphaIds.includes(id));
+			const newTeammate = players.find(
+				(player) =>
+					player.id !== sender.id && senderTeamIds.includes(player.id),
+			)!;
+			// the teams were reshuffled, so someone of the first set's team now plays against the sender
+			const formerTeammate = alphaPlayers.find(
+				(player) => !senderTeamIds.includes(player.id),
+			)!;
+
+			await test.step("The sender's team chat of the next set starts empty", async () => {
+				await impersonate(page, sender.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await chat.chat().send("second set plan");
+				await expect(chat.chat().message("second set plan")).toBeVisible();
+				await expect(chat.chat().message("first set plan")).toHaveCount(0);
+
+				await chat.selectRoomTab("Lobby");
+				await expect(chat.chat().message("hello lobby")).toBeVisible();
+			});
+
+			await test.step("Their new teammate reads only the next set's message", async () => {
+				await impersonate(page, newTeammate.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await expect(chat.chat().message("second set plan")).toBeVisible();
+				await expect(chat.chat().message("first set plan")).toHaveCount(0);
+			});
+
+			await test.step("A former teammate now on the other team reads neither", async () => {
+				await impersonate(page, formerTeammate.id);
+				await lobbyPage.goto(lobby.id);
+
+				await chat.selectRoomTab("Team");
+				await chat.chat().send("other team plan");
+				await expect(chat.chat().message("other team plan")).toBeVisible();
+				await expect(chat.chat().message("second set plan")).toHaveCount(0);
+				await expect(chat.chat().message("first set plan")).toHaveCount(0);
+			});
+		});
+	});
+
+	/**
+	 * A player of a set has the lobby's chat and their team's, each with a voice call. When a
+	 * set starts a call in the team's chat follows the player to their team of the new set,
+	 * one in the lobby's chat stays put, and a player sitting the set out is dropped from their
+	 * team's call. Leaving the lobby ends the player's call.
+	 */
+	test.describe("Voice", () => {
+		test("a call in the lobby's chat stays there when the set starts", async ({
+			page,
+			factories,
+			browser,
+			workerBaseURL,
+		}) => {
+			const { lobby, players } = await lobbyAwaitingLastCheckIn(factories);
+			const caller = players[0];
+			const callerSession = await openSecondUser(
+				browser,
+				workerBaseURL,
+				caller.id,
+			);
+			try {
+				const callerChat = new ChatSidebar(callerSession.page);
+				const callerVoice = new VoicePanel(callerSession.page);
+				let lobbyRoomId = 0;
+
+				await test.step("A player joins the lobby chat's call before the start", async () => {
+					await new LobbyPage(callerSession.page).goto(lobby.id);
+					({ lobbyRoomId } = await lobbyChatRoomIds(callerSession.page));
+
+					await callerVoice.joinVoice(LOBBY_NAME);
+					await expect
+						.poll(() => voiceRoomUserIds(callerSession.page, lobbyRoomId))
+						.toEqual([caller.id]);
+				});
+
+				await startLobby(page, { lobby, players });
+
+				await test.step("Once the set starts they are still in the lobby chat's call", async () => {
+					await expect(callerChat.locators.roomTabs).toHaveText([
+						"Lobby",
+						"Team",
+					]);
+
+					await callerVoice.open();
+					await expect(callerVoice.locators.callSection).toContainText(
+						LOBBY_NAME,
+					);
+					await expect(
+						callerVoice.joinableRoom(TEAM_VOICE_TITLE),
+					).toBeVisible();
+					await expect
+						.poll(() => voiceRoomUserIds(callerSession.page, lobbyRoomId))
+						.toEqual([caller.id]);
+				});
+			} finally {
+				await callerSession.close();
+			}
+		});
+
+		test("a call in the team's chat moves to the player's team of the next set", async ({
+			page,
+			factories,
+			browser,
+			workerBaseURL,
+		}) => {
+			const { lobby, alphaPlayers, bravoPlayers } = await startedLobby(
+				page,
+				factories,
+			);
+			// playSet plays as alphaPlayers[0] on the other page
+			const caller = alphaPlayers[1];
+			const callerSession = await openSecondUser(
+				browser,
+				workerBaseURL,
+				caller.id,
+			);
+			try {
+				const callerVoice = new VoicePanel(callerSession.page);
+				let firstTeamRoomId = 0;
+
+				await test.step("A player joins their team chat's call", async () => {
+					await new LobbyPage(callerSession.page).goto(lobby.id);
+					firstTeamRoomId = await teamChatRoomId(callerSession.page);
+
+					await callerVoice.joinVoice(TEAM_VOICE_TITLE);
+					await expect
+						.poll(() => voiceRoomUserIds(callerSession.page, firstTeamRoomId))
+						.toEqual([caller.id]);
+				});
+
+				await playSet(page, {
+					lobbyId: lobby.id,
+					alphaPlayer: alphaPlayers[0],
+					bravoPlayer: bravoPlayers[0],
+				});
+
+				await test.step("In the next set they are in the call of their new team's chat", async () => {
+					// the next set's chats are made after the first's
+					await expect
+						.poll(
+							async () =>
+								(await lobbyChatRoomIds(callerSession.page)).teamRoomId,
+						)
+						.toBeGreaterThan(firstTeamRoomId);
+					const nextTeamRoomId = await teamChatRoomId(callerSession.page);
+
+					await expect
+						.poll(() => voiceRoomUserIds(callerSession.page, nextTeamRoomId))
+						.toEqual([caller.id]);
+					await expect
+						.poll(() => voiceRoomUserIds(callerSession.page, firstTeamRoomId))
+						.toEqual([]);
+
+					await callerVoice.open();
+					await expect(callerVoice.locators.callSection).toContainText(
+						TEAM_VOICE_TITLE,
+					);
+				});
+			} finally {
+				await callerSession.close();
+			}
+		});
+
+		test("leaving the lobby ends the player's call", async ({
+			page,
+			factories,
+			browser,
+			workerBaseURL,
+		}) => {
+			const { lobby, host, alphaPlayers, bravoPlayer } = await startedLobby(
+				page,
+				factories,
+			);
+			const leaver = alphaPlayers.find((player) => player.id !== host.id)!;
+			const lobbyPage = new LobbyPage(page);
+			const voice = new VoicePanel(page);
+			const stayerSession = await openSecondUser(
+				browser,
+				workerBaseURL,
+				bravoPlayer.id,
+			);
+			try {
+				const stayerVoice = new VoicePanel(stayerSession.page);
+				let lobbyRoomId = 0;
+
+				await test.step("Two players join the lobby chat's call", async () => {
+					await impersonate(page, leaver.id);
+					await lobbyPage.goto(lobby.id);
+					await voice.joinVoice(LOBBY_NAME);
+
+					await new LobbyPage(stayerSession.page).goto(lobby.id);
+					({ lobbyRoomId } = await lobbyChatRoomIds(stayerSession.page));
+					await stayerVoice.joinVoice(LOBBY_NAME);
+
+					await expect
+						.poll(() => voiceRoomUserIds(stayerSession.page, lobbyRoomId))
+						.toEqual(idsOf([leaver, bravoPlayer]));
+				});
+
+				await test.step("One leaves the lobby and is out of the call", async () => {
+					await lobbyPage.leaveMidSet();
+
+					await expect
+						.poll(() => voiceRoomUserIds(stayerSession.page, lobbyRoomId))
+						.toEqual([bravoPlayer.id]);
+					await isNotVisible(voice.locators.leaveVoiceButton);
+				});
+			} finally {
+				await stayerSession.close();
+			}
+		});
+
+		test("a call in the team's chat ends for a player sitting out the next set", async ({
+			page,
+			factories,
+			browser,
+			workerBaseURL,
+		}) => {
+			const { lobby, host, alphaPlayer, bravoPlayer, alphaPlayers } =
+				await startedLobby(page, factories, { roomSize: 9 });
+			const satOut = alphaPlayers.find(
+				(player) => player.id !== host.id && player.id !== alphaPlayer.id,
+			)!;
+			const satOutSession = await openSecondUser(
+				browser,
+				workerBaseURL,
+				satOut.id,
+			);
+			try {
+				const satOutVoice = new VoicePanel(satOutSession.page);
+				let teamRoomId = 0;
+
+				await test.step("A player joins their team chat's call", async () => {
+					await new LobbyPage(satOutSession.page).goto(lobby.id);
+					teamRoomId = await teamChatRoomId(satOutSession.page);
+
+					await satOutVoice.joinVoice(TEAM_VOICE_TITLE);
+					await expect
+						.poll(() => voiceRoomUserIds(satOutSession.page, teamRoomId))
+						.toEqual([satOut.id]);
+				});
+
+				await test.step("The host sits them out", async () => {
+					const lobbyPage = new LobbyPage(page);
+					await impersonate(page, host.id);
+					await lobbyPage.goto(lobby.id, "leaderboard");
+					await lobbyPage.sitOut(satOut.id);
+				});
+
+				await playSet(page, { lobbyId: lobby.id, alphaPlayer, bravoPlayer });
+
+				await test.step("Their call ends as the next set starts without them", async () => {
+					await expect
+						.poll(() => voiceRoomUserIds(satOutSession.page, teamRoomId))
+						.toEqual([]);
+					await isNotVisible(satOutVoice.locators.leaveVoiceButton);
+				});
+			} finally {
+				await satOutSession.close();
+			}
+		});
+	});
+
+	/**
+	 * A started lobby closes on its own after 2 hours waiting for players or 2 hours without
+	 * a map reported, moving to the Ended tab of its players' lobby list. It also ends when
+	 * everyone has left after the start.
+	 */
+	test.describe("Closing", () => {
+		test("a lobby waiting for players for 2 hours closes", async ({
+			page,
+			factories,
+		}) => {
+			const [host, ...others] = await factories.UserFactory.createMany(
+				ROOM_SIZE - 1,
+			);
+			await factories.LobbyFactory.create(
+				{
+					hostUserId: host.id,
+					name: LOBBY_NAME,
+					startsAt: dateToDatabaseTimestamp(subHours(new Date(), 3)),
+					pendingSince: dateToDatabaseTimestamp(
+						subMinutes(new Date(), 2 * 60 + 1),
+					),
+				},
+				{
+					signedUpUserIds: others.map((user) => user.id),
+					checkedInUserIds: [host, ...others].map((user) => user.id),
+				},
+			);
+
+			await impersonate(page, host.id);
+			await runRoutine(page, "Lobbies");
+
+			const lobbies = new LobbiesPage(page);
+			await lobbies.goto();
+			await lobbies.openTab("ended");
+
+			await expect(lobbies.card(LOBBY_NAME)).toBeVisible();
+		});
+
+		test("a set without a map reported for 2 hours closes the lobby", async ({
+			page,
+			factories,
+		}) => {
+			const { lobby, alphaPlayer } = await startedLobby(page, factories);
+			await factories.LobbyFactory.backdateSets(
+				lobby.id,
+				subMinutes(new Date(), 2 * 60 + 1),
+			);
+
+			await impersonate(page, alphaPlayer.id);
+			await runRoutine(page, "Lobbies");
+
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+
+			await expect(lobbyPage.locators.endedStatus).toBeVisible();
+		});
+
+		test("a lobby everyone left before its start is deleted", async ({
+			page,
+			factories,
+		}) => {
+			const host = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create({
+				hostUserId: host.id,
+			});
+			const lobbyPage = new LobbyPage(page);
+
+			await test.step("The host, the only one in it, leaves and lands on the lobby list", async () => {
+				await impersonate(page, host.id);
+				await lobbyPage.goto(lobby.id);
+				await lobbyPage.leave();
+
+				await expect(page).toHaveURL(lobbiesPage());
+			});
+
+			await test.step("The lobby is gone", async () => {
+				await lobbyPage.goto(lobby.id);
+
+				await expect(
+					new ErrorPage(page).locators.notFoundHeading,
+				).toBeVisible();
+			});
+		});
+
+		test("a started lobby everyone left ends", async ({ page, factories }) => {
+			const host = await factories.UserFactory.create();
+			const lobby = await factories.LobbyFactory.create(
+				{
+					hostUserId: host.id,
+					startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+				},
+				{ checkedInUserIds: [host.id] },
+			);
+
+			await impersonate(page, host.id);
+			const lobbyPage = new LobbyPage(page);
+			await lobbyPage.goto(lobby.id);
+			await lobbyPage.leave();
+
+			await expect(lobbyPage.locators.endedStatus).toBeVisible();
+		});
+	});
+});
+
+type Player = { id: number; name: string };
+
+/** A lobby starting in an hour (or at `startsAt`) with every spot of the room taken, then the waitlisted signed up. Returns one of the players with a spot. */
+async function fullLobby(
+	factories: Factories,
+	{
+		waitlistedUserIds = [],
+		startsAt,
+	}: { waitlistedUserIds?: number[]; startsAt?: number } = {},
+) {
+	const [host, signedUp, ...others] =
+		await factories.UserFactory.createMany(ROOM_SIZE);
+	const lobby = await factories.LobbyFactory.create(
+		{
+			hostUserId: host.id,
+			name: LOBBY_NAME,
+			roomSize: ROOM_SIZE,
+			...(startsAt ? { startsAt } : {}),
+		},
+		{
+			signedUpUserIds: [
+				signedUp.id,
+				...others.map((user) => user.id),
+				...waitlistedUserIds,
+			],
+		},
+	);
+
+	return { lobby, signedUp };
+}
+
+/**
+ * A lobby that started a minute ago with every spot taken and one more on the waitlist,
+ * everyone with a spot but the last to sign up checked in.
+ */
+async function startingLobby(factories: Factories) {
+	const [host, ...others] = await factories.UserFactory.createMany(ROOM_SIZE);
+	const waitlisted = await factories.UserFactory.create();
+	const lastToCheckIn = others.at(-1)!;
+	const lobby = await factories.LobbyFactory.create(
+		{
+			hostUserId: host.id,
+			roomSize: ROOM_SIZE,
+			startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+		},
+		{
+			signedUpUserIds: [...others, waitlisted].map((user) => user.id),
+			checkedInUserIds: [host, ...others.slice(0, -1)].map((user) => user.id),
+		},
+	);
+
+	return { lobby, lastToCheckIn, waitlisted };
+}
+
+/**
+ * A started lobby playing its first set: a full room checked in but the last one, who checks
+ * in through the UI and so starts the lobby. Returns its players by side, the first player
+ * being the host.
+ */
+async function startedLobby(
+	page: Page,
+	factories: Factories,
+	options: {
+		roomSize?: LobbyRoomSize;
+		weaponRandomizer?: LobbyWeaponRandomizer;
+		isPoolingEveryMap?: boolean;
+		mapPool?: ModeWithStage[];
+	} = {},
+) {
+	return startLobby(page, await lobbyAwaitingLastCheckIn(factories, options));
+}
+
+/**
+ * A lobby that started a minute ago, its full room checked in but the last player. The first player is the host.
+ * With `isPoolingEveryMap` every player has every map in their match profile pool. `mapPool` is the host's map pool.
+ */
+async function lobbyAwaitingLastCheckIn(
+	factories: Factories,
+	{
+		roomSize = ROOM_SIZE,
+		weaponRandomizer = "OFF",
+		isPoolingEveryMap = false,
+		mapPool,
+	}: {
+		roomSize?: LobbyRoomSize;
+		weaponRandomizer?: LobbyWeaponRandomizer;
+		isPoolingEveryMap?: boolean;
+		mapPool?: ModeWithStage[];
+	} = {},
+) {
+	const users = await factories.UserFactory.createMany(
+		roomSize,
+		(i) => ({ discordName: `${PLAYER_NAME_PREFIX}${i}` }),
+		isPoolingEveryMap
+			? {
+					matchProfile: {
+						mapModePreferences: {
+							modes: [],
+							pool: modesShort.map((mode) => ({ mode, stages: [...stageIds] })),
+						},
+					},
+				}
+			: undefined,
+	);
+	const players = users.map((user, i) => ({
+		id: user.id,
+		name: `${PLAYER_NAME_PREFIX}${i}`,
+	}));
+	const lobby = await factories.LobbyFactory.create(
+		{
+			hostUserId: players[0].id,
+			name: LOBBY_NAME,
+			roomSize,
+			startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+			bestOf: BEST_OF,
+			weaponRandomizer,
+			mapPool: mapPool ?? null,
+		},
+		{
+			signedUpUserIds: idsOf(players.slice(1)),
+			checkedInUserIds: idsOf(players.slice(0, -1)),
+		},
+	);
+
+	return { lobby, players };
+}
+
+/** The last player checks in through the UI, which starts the lobby. Returns its players by side. */
+async function startLobby(
+	page: Page,
+	{ lobby, players }: { lobby: { id: number }; players: Player[] },
+) {
+	await impersonate(page, players.at(-1)!.id);
+	const lobbyPage = new LobbyPage(page);
+	await lobbyPage.goto(lobby.id);
+	await lobbyPage.checkIn();
+
+	const alphaIds = await rosterIds(lobbyPage, "Alpha", players);
+	const bravoIds = await rosterIds(lobbyPage, "Bravo", players);
+	const alphaPlayers = players.filter((player) => alphaIds.includes(player.id));
+	const bravoPlayers = players.filter((player) => bravoIds.includes(player.id));
+
+	return {
+		lobby,
+		players,
+		host: players[0],
+		alphaPlayers,
+		bravoPlayers,
+		alphaPlayer: alphaPlayers[0],
+		bravoPlayer: bravoPlayers[0],
+		sittingOut: players.filter(
+			(player) =>
+				!alphaIds.includes(player.id) && !bravoIds.includes(player.id),
+		),
+	};
+}
+
+/**
+ * A started lobby with three players signed up to its full room, in order, and a spot then
+ * opened by an Alpha player leaving, which asks the waitlist who is ready to take it.
+ */
+async function lobbyWithOpenSpot(page: Page, factories: Factories) {
+	const { lobby, alphaPlayer } = await startedLobby(page, factories);
+	const waitlist = await factories.UserFactory.createMany(3);
+	const lobbyPage = new LobbyPage(page);
+
+	for (const user of waitlist) {
+		await impersonate(page, user.id);
+		await lobbyPage.goto(lobby.id);
+		await lobbyPage.signUp();
+	}
+
+	await impersonate(page, alphaPlayer.id);
+	await lobbyPage.goto(lobby.id);
+	await lobbyPage.leaveMidSet();
+
+	return { lobby, waitlist };
+}
+
+/** An Alpha player reports a sweep and a Bravo player confirms it, the Bravo player's page left open. */
+async function playSet(
+	page: Page,
+	{
+		lobbyId,
+		alphaPlayer,
+		bravoPlayer,
+	}: { lobbyId: number; alphaPlayer: Player; bravoPlayer: Player },
+) {
+	const lobbyPage = new LobbyPage(page);
+
+	await test.step("Alpha sweeps the set and Bravo confirms it", async () => {
+		await impersonate(page, alphaPlayer.id);
+		await lobbyPage.goto(lobbyId, "action");
+		await lobbyPage.reportOwnTeamSweep(MAPS_TO_WIN);
+
+		await impersonate(page, bravoPlayer.id);
+		await lobbyPage.goto(lobbyId, "action");
+		await lobbyPage.confirmSet();
+	});
+}
+
+/** Ids of the players on the side's roster of the current set, sorted. */
+async function rosterIds(
+	lobbyPage: LobbyPage,
+	side: "Alpha" | "Bravo",
+	players: Player[],
+) {
+	const names = await lobbyPage.rosterUsernames(side);
+
+	return idsOf(
+		players.filter((player) =>
+			names.some((name) => name.includes(player.name)),
+		),
+	);
+}
+
+/** The lobby page's chat rooms: the lobby's own and, while the viewer plays a set, their team's. */
+async function lobbyChatRoomIds(page: Page) {
+	const loaderData = Object.values(
+		JSON.parse(await loaderDataJson(page)) as Record<string, unknown>,
+	);
+	const lobbyData = loaderData.find(
+		(
+			data,
+		): data is {
+			lobby: { chatRoomId: number };
+			teamChatRoomId: number | null;
+		} => typeof data === "object" && data !== null && "teamChatRoomId" in data,
+	);
+	if (!lobbyData) throw new Error("Not on a lobby page");
+
+	return {
+		lobbyRoomId: lobbyData.lobby.chatRoomId,
+		teamRoomId: lobbyData.teamChatRoomId,
+	};
+}
+
+async function teamChatRoomId(page: Page) {
+	const { teamRoomId } = await lobbyChatRoomIds(page);
+	if (teamRoomId === null) throw new Error("Not playing a set");
+
+	return teamRoomId;
+}
+
+function idsOf(players: Array<{ id: number }>) {
+	return players.map((player) => player.id).sort((a, b) => a - b);
+}
+
+/** Opens the viewer's notifications away from the lobby page, which would mark its own as read. */
+async function openNotifications(page: Page) {
+	await navigate({ page, url: "/" });
+	const notifications = new NotificationPopover(page);
+	await notifications.open();
+
+	return notifications;
+}

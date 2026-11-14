@@ -14,8 +14,6 @@ import type { SendouRouteHandle } from "~/utils/remix.server";
 import { tournamentPage } from "~/utils/urls";
 import { isRevalidation, metaTags } from "../../../utils/remix";
 import { TournamentNav } from "../components/TournamentNav";
-import { parseTournamentLoaderData } from "../core/layout-payload";
-
 import { loader, type TournamentLoaderData } from "../loaders/to.$id.server";
 
 export { loader };
@@ -32,11 +30,9 @@ export const shouldRevalidate: ShouldRevalidateFunction = (args) => {
 };
 
 export const meta: MetaFunction = (args) => {
-	const rawData = args.loaderData as string | undefined;
+	const data = args.loaderData as TournamentLoaderData | undefined;
 
-	if (!rawData) return [];
-
-	const data = parseTournamentLoaderData(rawData);
+	if (!data) return [];
 
 	return metaTags({
 		title: data.tournament.ctx.name,
@@ -52,11 +48,9 @@ export const meta: MetaFunction = (args) => {
 export const handle: SendouRouteHandle = {
 	i18n: ["tournament", "calendar"],
 	breadcrumb: ({ match }) => {
-		const rawData = match.loaderData as string | undefined;
+		const data = match.loaderData as TournamentLoaderData | undefined;
 
-		if (!rawData) return [];
-
-		const data = parseTournamentLoaderData(rawData);
+		if (!data) return [];
 
 		return [
 			{
@@ -70,24 +64,17 @@ export const handle: SendouRouteHandle = {
 };
 
 export default function TournamentLayout() {
-	const rawData = useLoaderData<typeof loader>();
-	const data = React.useMemo(
-		() => parseTournamentLoaderData(rawData),
-		[rawData],
-	);
-	const tournament = React.useMemo(
-		() => new Tournament(data.tournament),
-		[data],
-	);
+	const data = useLoaderData<typeof loader>();
+	const tournament = new Tournament(data.tournament);
 	const [bracketExpanded, setBracketExpanded] = React.useState(true);
 
 	// for debugging in the browser console
-	if (process.env.NODE_ENV === "development") {
-		React.useEffect(() => {
-			// @ts-expect-error for dev purposes
-			window.tourney = tournament;
-		}, [tournament]);
-	}
+	React.useEffect(() => {
+		if (process.env.NODE_ENV !== "development") return;
+		// @ts-expect-error for dev purposes
+		window.tourney = tournament;
+	}, [tournament]);
+
 	const content = (
 		<>
 			<TournamentNav tournament={tournament} streamsCount={data.streamsCount} />

@@ -2,10 +2,10 @@ import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 import { useLoaderData } from "react-router";
 import { LinkButton } from "~/components/elements/Button";
+import { SendouSection } from "~/components/elements/Section";
 import { Image } from "~/components/Image";
 import { containerClassName } from "~/components/Main";
-import { MapPoolStages } from "~/components/MapPoolSelector";
-import { Section } from "~/components/Section";
+import { MapPoolStages } from "~/components/MapPoolStages";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import { mapsPageWithMapPool } from "~/features/map-list-generator/map-list-generator-urls";
 import { useTournament } from "~/features/tournament/tournament-context";
@@ -41,7 +41,7 @@ function OrganizerMapPool() {
 	const mapPool = new MapPool(tournament.ctx.toSetMapPool);
 
 	return (
-		<Section title={t("calendar:forms.mapPool")}>
+		<SendouSection title={t("calendar:forms.mapPool")}>
 			<div>
 				<MapPoolStages mapPool={mapPool} />
 				<div className="stack items-center mt-4">
@@ -51,26 +51,26 @@ function OrganizerMapPool() {
 					</LinkButton>
 				</div>
 			</div>
-		</Section>
+		</SendouSection>
 	);
 }
 
 function TeamPickRules() {
-	const { t } = useTranslation(["tournament", "game-misc"]);
+	const { t } = useTranslation(["tournament", "game-misc", "common"]);
 	const tournament = useTournament();
 	const teamPick = tournament.teamPickSettings;
 
 	if (!teamPick) return null;
 
 	const picks = teamPick.modes
-		.map(({ mode, count }) => `${count}× ${t(`game-misc:MODE_SHORT_${mode}`)}`)
+		.map(({ mode, count }) => `${count}× ${t(`common:modes.short.${mode}`)}`)
 		.join(", ");
 
 	return (
 		<div className="text-sm text-lighter text-semi-bold stack xs">
 			<div>{t("tournament:rules.teamPick.picks", { picks })}</div>
 			<div>{t(`tournament:rules.teamPick.pool.${teamPick.pool}`)}</div>
-			<div>{t("tournament:rules.teamPick.neutral")}</div>
+			<div>{t("tournament:rules.teamPick.mapList")}</div>
 			{teamPick.modes.length > 1 ? (
 				<div>
 					{t("tournament:rules.teamPick.stageRepeat", {

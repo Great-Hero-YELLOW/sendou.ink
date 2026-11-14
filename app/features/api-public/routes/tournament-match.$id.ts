@@ -1,5 +1,4 @@
 import type { LoaderFunctionArgs } from "react-router";
-import * as v from "valibot";
 import { db } from "~/db/sql";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
@@ -10,18 +9,14 @@ import { parseMaplistSource } from "~/modules/tournament-map-list-generator/sour
 import { jsonArrayFrom } from "~/utils/kysely.server";
 import { logger } from "~/utils/logger";
 import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
-import { id } from "~/utils/schema";
+import { idObject } from "~/utils/schema";
 import type { GetTournamentMatchResponse } from "../schema";
-
-const paramsSchema = v.object({
-	id,
-});
 
 export const loader = async ({ params }: LoaderFunctionArgs) => {
 	const t = await getFixedTForLanguage("en", ["game-misc"]);
 	const { id: matchId } = parseParams({
 		params,
-		schema: paramsSchema,
+		schema: idObject,
 	});
 
 	const match = notFoundIfNullish(
@@ -82,21 +77,21 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			return null;
 		}
 
-		if (match.winnerSide) {
-			return match.playedMapList.map((playedMap) => ({
-				map: {
-					mode: playedMap.mode,
-					stage: {
-						id: playedMap.stageId,
-						name: t(`game-misc:STAGE_${playedMap.stageId}`),
-					},
+		const playedMaps = match.playedMapList.map((playedMap) => ({
+			map: {
+				mode: playedMap.mode,
+				stage: {
+					id: playedMap.stageId,
+					name: t(`game-misc:STAGE_${playedMap.stageId}`),
 				},
-				participatedUserIds: playedMap.participants.map((p) => p.userId),
-				winnerTeamId: playedMap.winnerTeamId,
-				source: parseMaplistSource(playedMap.source),
-				ko: playedMap.ko !== null ? Boolean(playedMap.ko) : null,
-			}));
-		}
+			},
+			participatedUserIds: playedMap.participants.map((p) => p.userId),
+			winnerTeamId: playedMap.winnerTeamId,
+			source: parseMaplistSource(playedMap.source),
+			ko: playedMap.ko !== null ? Boolean(playedMap.ko) : null,
+		}));
+
+		if (match.winnerSide) return playedMaps;
 
 		const pickBanEvents = match.maps?.pickBan
 			? await TournamentRepository.findPickBanEventsByMatchId(match.id)
@@ -107,7 +102,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			opponentTwo.id,
 		]);
 
-		return resolveMapList({
+		const upcomingMaps = resolveMapList({
 			tournamentId: match.tournamentId,
 			matchId,
 			teams: [opponentOne.id, opponentTwo.id],
@@ -124,24 +119,31 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 							excludeMatchId: matchId,
 						}).catch((error) => {
 							logger.error("Failed to fetch recently played maps", error);
-							return [];
+							return undefined;
 						})
 					: undefined,
-		}).map((mapListMap) => {
-			return {
-				map: {
-					mode: mapListMap.mode,
-					stage: {
-						id: mapListMap.stageId,
-						name: t(`game-misc:STAGE_${mapListMap.stageId}`),
+			isWaitingForPreviousRound:
+				tournament.matchStatusById(matchId) === "PENDING",
+		})
+			.filter((mapListMap) => !mapListMap.bannedByTournamentTeamId)
+			.slice(playedMaps.length)
+			.map((mapListMap) => {
+				return {
+					map: {
+						mode: mapListMap.mode,
+						stage: {
+							id: mapListMap.stageId,
+							name: t(`game-misc:STAGE_${mapListMap.stageId}`),
+						},
 					},
-				},
-				participatedUserIds: null,
-				winnerTeamId: null,
-				source: mapListMap.source,
-				ko: null,
-			};
-		});
+					participatedUserIds: null,
+					winnerTeamId: null,
+					source: mapListMap.source,
+					ko: null,
+				};
+			});
+
+		return [...playedMaps, ...upcomingMaps];
 	};
 
 	const { bracketName, roundNameWithoutMatchIdentifier } =

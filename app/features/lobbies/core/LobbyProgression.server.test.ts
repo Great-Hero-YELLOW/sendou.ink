@@ -1,0 +1,444 @@
+import { addMinutes, subMinutes } from "date-fns";
+import { beforeEach, describe, expect, test } from "vitest";
+import * as LobbyFactory from "~/db/seed/factories/LobbyFactory";
+import * as UserFactory from "~/db/seed/factories/UserFactory";
+import { modesShort } from "~/modules/in-game-lists/modes";
+import { stageIds } from "~/modules/in-game-lists/stage-ids";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
+import { withUserId } from "~/utils/Test";
+import * as LobbyMatchRepository from "../LobbyMatchRepository.server";
+import * as LobbyRepository from "../LobbyRepository.server";
+import type { LobbyWeaponRandomizer } from "../lobbies-constants";
+import { editArgs } from "../tests/fixtures";
+import * as LobbyProgression from "./LobbyProgression.server";
+import * as LobbySet from "./LobbySet";
+
+const users = UserFactory.pool();
+
+const hostId = () => users.id(1);
+
+const startedAt = () => dateToDatabaseTimestamp(subMinutes(new Date(), 1));
+
+async function startedLobby({
+	checkedInCount,
+	waitlistedCount = 0,
+	roomSize = 8,
+	weaponRandomizer = "OFF",
+}: {
+	checkedInCount: number;
+	waitlistedCount?: number;
+	roomSize?: 8 | 9 | 10;
+	weaponRandomizer?: LobbyWeaponRandomizer;
+}) {
+	const lobby = await LobbyFactory.create(
+		{ hostUserId: hostId(), startsAt: startedAt(), roomSize, weaponRandomizer },
+		{
+			signedUpUserIds: users.ids(checkedInCount).slice(1),
+			checkedInUserIds: users.ids(checkedInCount),
+			lateWaitlistedUserIds: users
+				.ids(checkedInCount + waitlistedCount)
+				.slice(checkedInCount),
+		},
+	);
+	await LobbyProgression.advance(lobby.id);
+
+	return lobby.id;
+}
+
+async function latestSet(lobbyId: number) {
+	const sets = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+	return sets.at(-1)!;
+}
+
+/** Reports every map to the alpha side until the set is decided, then confirms it as bravo. */
+async function playOut(lobbyId: number) {
+	const set = await latestSet(lobbyId);
+	const alphaPlayer = LobbySet.playersOf(set, "ALPHA")[0];
+	const bravoPlayer = LobbySet.playersOf(set, "BRAVO")[0];
+
+	for (let i = 0; i < Math.ceil(set.bestOf / 2); i++) {
+		await withUserId(alphaPlayer, () =>
+			LobbyMatchRepository.reportGame({
+				setId: set.id,
+				winnerSide: "ALPHA",
+				reportedCount: i,
+			}),
+		);
+	}
+	await withUserId(bravoPlayer, () => LobbyMatchRepository.confirmSet(set.id));
+	await LobbyProgression.advance(lobbyId);
+}
+
+describe("LobbyProgression.advance", () => {
+	beforeEach(async () => {
+		await users.create(12);
+	});
+
+	test.each([
+		{ signedUpCount: 8, isOpen: true },
+		{ signedUpCount: 7, isOpen: false },
+	])(
+		"near the start check-in opens with 8 signed up: $signedUpCount signed up → $isOpen",
+		async ({ signedUpCount, isOpen }) => {
+			const lobby = await LobbyFactory.create(
+				{
+					hostUserId: hostId(),
+					startsAt: dateToDatabaseTimestamp(addMinutes(new Date(), 5)),
+				},
+				{ signedUpUserIds: users.ids(signedUpCount).slice(1) },
+			);
+
+			await LobbyProgression.advance(lobby.id);
+
+			const state = await LobbyRepository.findProgressionStateById(lobby.id);
+			expect(state?.checkInOpenedAt !== null).toBe(isOpen);
+		},
+	);
+
+	test("nothing starts before the start time", async () => {
+		const lobby = await LobbyFactory.create(
+			{ hostUserId: hostId() },
+			{
+				signedUpUserIds: users.ids(8).slice(1),
+				checkedInUserIds: users.ids(8),
+			},
+		);
+
+		await LobbyProgression.advance(lobby.id);
+
+		expect(await roomMemberIds(lobby.id)).toEqual([]);
+		expect(
+			await LobbyMatchRepository.findAllSetsByLobbyId(lobby.id),
+		).toHaveLength(0);
+	});
+
+	test("fills the room and starts its first set with 8 checked in", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+
+		const set = await latestSet(lobbyId);
+
+		expect(await roomMemberIds(lobbyId)).toHaveLength(8);
+		expect(LobbySet.playersOf(set, "ALPHA")).toHaveLength(4);
+		expect(LobbySet.playersOf(set, "BRAVO")).toHaveLength(4);
+		expect(set.games).toHaveLength(3);
+	});
+
+	test("stores whose pools each map was picked from", async () => {
+		for (const userId of users.ids(8)) {
+			await UserFactory.grant(userId, {
+				matchProfile: {
+					mapModePreferences: {
+						modes: [],
+						pool: modesShort.map((mode) => ({ mode, stages: [...stageIds] })),
+					},
+				},
+			});
+		}
+
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+
+		expect((await latestSet(lobbyId)).games.map((game) => game.source)).toEqual(
+			["BOTH", "BOTH", "BOTH"],
+		);
+	});
+
+	test.each(["CHAOTIC", "BALANCED"] as const)(
+		"a %s weapon randomizer rolls 4 different weapons for each side as the set starts",
+		async (weaponRandomizer) => {
+			const lobbyId = await startedLobby({
+				checkedInCount: 8,
+				weaponRandomizer,
+			});
+
+			const { rolledWeapons } = await latestSet(lobbyId);
+
+			expect(rolledWeapons?.ALPHA).toHaveLength(4);
+			expect(rolledWeapons?.BRAVO).toHaveLength(4);
+			expect(
+				new Set([...rolledWeapons!.ALPHA, ...rolledWeapons!.BRAVO]).size,
+			).toBe(8);
+		},
+	);
+
+	test.each([
+		{ why: "a player avoids it", noScreen: 1 as const, expected: 1 },
+		{ why: "nobody avoids it", noScreen: 0 as const, expected: 0 },
+	])(
+		"a set bans Splattercolor Screen as it starts when $why",
+		async ({ noScreen, expected }) => {
+			await UserFactory.grant(users.id(5), { matchProfile: { noScreen } });
+
+			const lobbyId = await startedLobby({ checkedInCount: 8 });
+
+			expect((await latestSet(lobbyId)).noScreen).toBe(expected);
+		},
+	);
+
+	test("without a weapon randomizer a set has no weapons", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+
+		expect((await latestSet(lobbyId)).rolledWeapons).toBeNull();
+	});
+
+	test("the weapons stay the same through the set, a changed randomizer applying from the next one", async () => {
+		const lobbyId = await startedLobby({
+			checkedInCount: 8,
+			weaponRandomizer: "BALANCED",
+		});
+		const set = await latestSet(lobbyId);
+
+		await LobbyRepository.edit(
+			editArgs({ id: lobbyId, ownerId: hostId(), weaponRandomizer: "OFF" }),
+		);
+		await LobbyProgression.advance(lobbyId);
+
+		expect((await latestSet(lobbyId)).rolledWeapons).toEqual(set.rolledWeapons);
+
+		await playOut(lobbyId);
+
+		expect((await latestSet(lobbyId)).rolledWeapons).toBeNull();
+	});
+
+	test("a map pool set mid-set gives the next set its maps", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+		const mapPool = [
+			{ mode: "TC" as const, stageId: 1 as const },
+			{ mode: "TC" as const, stageId: 2 as const },
+			{ mode: "TC" as const, stageId: 3 as const },
+		];
+
+		await LobbyRepository.edit(
+			editArgs({ id: lobbyId, ownerId: hostId(), modes: ["TC"], mapPool }),
+		);
+		await playOut(lobbyId);
+
+		const { games } = await latestSet(lobbyId);
+		expect(
+			games.every((game) =>
+				mapPool.some(
+					(map) => map.mode === game.mode && map.stageId === game.stageId,
+				),
+			),
+		).toBe(true);
+	});
+
+	test("stays pending with 7 checked in", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 7 });
+
+		const lobby = await LobbyRepository.findProgressionStateById(lobbyId);
+
+		expect(await roomMemberIds(lobbyId)).toEqual([]);
+		expect(lobby?.pendingSince).not.toBeNull();
+	});
+
+	test("starts the next set once the previous is confirmed", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+
+		await playOut(lobbyId);
+
+		const sets = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+		expect(sets).toHaveLength(2);
+		expect(LobbySet.status(sets[0])).toBe("CONFIRMED");
+		expect(LobbySet.status(sets[1])).toBe("REPORTING");
+	});
+
+	test("a spectator sits out and rotates in", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 9, roomSize: 9 });
+
+		const first = await latestSet(lobbyId);
+		const firstSitOut = first.participants.find((p) => p.side === null)!;
+
+		await playOut(lobbyId);
+
+		const second = await latestSet(lobbyId);
+		expect(LobbySet.sideOf(second, firstSitOut.userId)).not.toBeNull();
+	});
+
+	test("who the host sits out stays out of sets until resumed", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 9, roomSize: 9 });
+		const sittingOutId = users.id(9);
+		await LobbyRepository.updateParticipant({
+			lobbyId,
+			userId: sittingOutId,
+			isSittingOut: true,
+		});
+
+		await playOut(lobbyId);
+		await playOut(lobbyId);
+
+		const sets = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+		for (const set of sets.slice(1)) {
+			expect(set.participants.map((p) => p.userId)).not.toContain(sittingOutId);
+		}
+	});
+
+	test("leaving mid-set forfeits it for the leaver's side", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+		const set = await latestSet(lobbyId);
+		const leaverId = LobbySet.playersOf(set, "BRAVO")[0];
+		await withUserId(leaverId, () =>
+			LobbyMatchRepository.reportGame({
+				setId: set.id,
+				winnerSide: "BRAVO",
+				reportedCount: 0,
+			}),
+		);
+
+		const setEnding = await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: leaverId,
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		const sets = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+		expect(setEnding).toBe("FORFEITED");
+		expect(LobbySet.status(sets[0])).toBe("FORFEITED");
+		expect(LobbySet.winnerSide(sets[0])).toBe("ALPHA");
+	});
+
+	test("leaving before a map is reported calls the set off", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+		const set = await latestSet(lobbyId);
+
+		const setEnding = await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: LobbySet.playersOf(set, "BRAVO")[0],
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		expect(setEnding).toBe("CALLED_OFF");
+		expect(
+			await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId),
+		).toHaveLength(0);
+	});
+
+	test("leaving after the deciding map confirms the set", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+		const set = await latestSet(lobbyId);
+		const [reporterId, leaverId] = LobbySet.playersOf(set, "ALPHA");
+		for (let i = 0; i < Math.ceil(set.bestOf / 2); i++) {
+			await withUserId(reporterId, () =>
+				LobbyMatchRepository.reportGame({
+					setId: set.id,
+					winnerSide: "ALPHA",
+					reportedCount: i,
+				}),
+			);
+		}
+
+		const setEnding = await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: leaverId,
+			unfinishedSetId: set.id,
+		});
+
+		const [endedSet] = await LobbyMatchRepository.findAllSetsByLobbyId(lobbyId);
+		expect(setEnding).toBe("CONFIRMED");
+		expect(LobbySet.status(endedSet)).toBe("CONFIRMED");
+	});
+
+	test("a room short of players pings the waitlist", async () => {
+		const lobbyId = await startedLobby({
+			checkedInCount: 8,
+			waitlistedCount: 2,
+		});
+		const set = await latestSet(lobbyId);
+
+		await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: LobbySet.playersOf(set, "BRAVO")[0],
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		const state = await LobbyRepository.findProgressionStateById(lobbyId);
+		expect(state?.readyChecks).toHaveLength(1);
+		expect(state?.readyChecks[0].users).toHaveLength(2);
+	});
+
+	test("the head of the waitlist confirming fills the slot right away", async () => {
+		const lobbyId = await startedLobby({
+			checkedInCount: 8,
+			waitlistedCount: 2,
+		});
+		const set = await latestSet(lobbyId);
+		const waitlistHeadId = users.id(9);
+
+		await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: LobbySet.playersOf(set, "BRAVO")[0],
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+		await LobbyMatchRepository.confirmReadyChecks({
+			lobbyId,
+			userId: waitlistHeadId,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		const nextSet = await latestSet(lobbyId);
+		expect(LobbySet.sideOf(nextSet, waitlistHeadId)).not.toBeNull();
+	});
+
+	test("dropping after the set leaves once it's confirmed", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 9, roomSize: 9 });
+		const set = await latestSet(lobbyId);
+		const dropperId = LobbySet.playersOf(set, "ALPHA")[1];
+
+		await LobbyRepository.updateParticipant({
+			lobbyId,
+			userId: dropperId,
+			isDroppingAfterSet: true,
+		});
+		await LobbyProgression.advance(lobbyId);
+		expect(
+			(await LobbyRepository.findProgressionStateById(lobbyId))?.participants,
+		).toHaveLength(9);
+
+		await playOut(lobbyId);
+
+		const state = await LobbyRepository.findProgressionStateById(lobbyId);
+		expect(state?.participants.map((p) => p.userId)).not.toContain(dropperId);
+	});
+
+	test("the host leaving passes the host on", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 8 });
+		const set = await latestSet(lobbyId);
+
+		await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: hostId(),
+			unfinishedSetId: LobbySet.sideOf(set, hostId()) ? set.id : null,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		const state = await LobbyRepository.findProgressionStateById(lobbyId);
+		expect(state?.hostUserId).toBe(users.id(2));
+	});
+
+	test("who checked in past the room size takes the spot of a leaver", async () => {
+		const lobbyId = await startedLobby({ checkedInCount: 9 });
+		const set = await latestSet(lobbyId);
+		const waitingId = users.id(9);
+
+		await LobbyRepository.removeParticipant({
+			lobbyId,
+			userId: LobbySet.playersOf(set, "BRAVO")[0],
+			unfinishedSetId: set.id,
+		});
+		await LobbyProgression.advance(lobbyId);
+
+		const nextSet = await latestSet(lobbyId);
+		expect(LobbySet.sideOf(nextSet, waitingId)).not.toBeNull();
+	});
+});
+
+async function roomMemberIds(lobbyId: number) {
+	const state = await LobbyRepository.findProgressionStateById(lobbyId);
+
+	return (state?.participants ?? [])
+		.filter((participant) => participant.status === "IN_ROOM")
+		.map((participant) => participant.userId);
+}

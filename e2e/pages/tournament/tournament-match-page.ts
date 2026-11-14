@@ -298,7 +298,7 @@ export class TournamentMatchPage {
 	 * which auto-submits the cast channel on pick. */
 	setCastedBy(twitchAccount: string) {
 		return waitForPOSTResponse(this.page, async () => {
-			await this.page.locator(`label[for$="-${twitchAccount}"]`).click();
+			await this.page.locator(`label[for$="-TWITCH:${twitchAccount}"]`).click();
 		});
 	}
 
@@ -315,6 +315,13 @@ export class TournamentMatchPage {
 
 	async backToBracket() {
 		await this.locators.backToBracketButton.click();
+		await expect(this.page.getByTestId("brackets-viewer")).toBeVisible();
+		return new TournamentBracketsPage(this.page);
+	}
+
+	/** Returns to the bracket with the browser's back button instead of the page's own link. */
+	async browserBack() {
+		await this.page.goBack();
 		await expect(this.page.getByTestId("brackets-viewer")).toBeVisible();
 		return new TournamentBracketsPage(this.page);
 	}

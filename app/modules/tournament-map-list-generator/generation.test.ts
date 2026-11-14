@@ -1,9 +1,16 @@
+import * as R from "remeda";
 import { describe, expect, test } from "vitest";
+import { modeStageKey } from "~/features/map-list-generator/core/MapList";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import { SENDOUQ_MAP_POOL } from "~/features/match-profile/banned-maps";
 import { unwrap, unwrapErr } from "~/utils/result";
 import { rankedModesShort } from "../in-game-lists/modes";
-import type { RankedModeShort } from "../in-game-lists/types";
+import type {
+	ModeShort,
+	ModeWithStage,
+	RankedModeShort,
+	StageId,
+} from "../in-game-lists/types";
 import { generateBalancedMapList } from "./balanced-map-list";
 import { starterMap } from "./starter-map";
 import type { TournamentMaplistInput } from "./types";
@@ -378,6 +385,113 @@ describe("Tournament map list generator", () => {
 				if (typeof mapList[j].source !== "number") continue;
 				expect(mapList[j].source).not.toBe(mapList[j + 1].source);
 			}
+		}
+	});
+
+	// paddling pool 394: many teams picked the same two RM maps
+	const identicalModeArgs = (modeOrder: ModeShort[]) => ({
+		count: modeOrder.length,
+		pool: MapPool.ALL,
+		modesIncluded: ["SZ", "TC", "RM", "CB"] as ModeShort[],
+		modeOrder,
+		teams: [
+			{
+				id: 1,
+				maps: new MapPool({
+					...MapPool.EMPTY.parsed,
+					SZ: [0, 1],
+					TC: [2, 3],
+					RM: [16, 17],
+					CB: [4, 5],
+				}),
+			},
+			{
+				id: 2,
+				maps: new MapPool({
+					...MapPool.EMPTY.parsed,
+					SZ: [6, 7],
+					TC: [8, 9],
+					RM: [16, 17],
+					CB: [10, 11],
+				}),
+			},
+		] as TournamentMaplistInput["teams"],
+	});
+
+	const pickSources = (mapList: Array<{ source: unknown }>) =>
+		mapList
+			.map((map) => map.source)
+			.filter((source) => typeof source === "number");
+
+	test.each([
+		{ why: "first slot", modeOrder: ["RM", "SZ", "CB"] },
+		{ why: "middle slot", modeOrder: ["TC", "RM", "SZ"] },
+		{ why: "Bo5", modeOrder: ["TC", "RM", "SZ", "CB", "TC"] },
+	] satisfies Array<{ why: string; modeOrder: ModeShort[] }>)(
+		"Uses a map both teams picked instead of a random map when its mode can't be a team's pick ($why)",
+		({ modeOrder }) => {
+			for (let i = 1; i <= 10; i++) {
+				const mapList = generateMaps({
+					...identicalModeArgs(modeOrder),
+					seed: String(i),
+				});
+
+				expect(mapList.map((map) => map.mode)).toEqual(modeOrder);
+				expect(mapList.some((map) => map.source === "RANDOM")).toBe(false);
+				expect(R.sort(pickSources(mapList), (a, b) => a - b)).toEqual(
+					modeOrder.length === 3 ? [1, 2] : [1, 1, 2, 2],
+				);
+			}
+		},
+	);
+
+	test("Picks alternate between the teams across a map both teams picked", () => {
+		for (let i = 1; i <= 10; i++) {
+			const mapList = generateMaps({
+				...identicalModeArgs(["CB", "RM", "SZ", "RM", "TC"]),
+				seed: String(i),
+			});
+
+			const sources = pickSources(mapList);
+			for (let j = 0; j < sources.length - 1; j++) {
+				expect(sources[j]).not.toBe(sources[j + 1]);
+			}
+		}
+	});
+
+	test("Fills a slot the picks can't fairly with a random map when there is no mode order", () => {
+		for (let i = 1; i <= 5; i++) {
+			const mapList = generateMaps({
+				count: 7,
+				seed: String(i),
+				pool: MapPool.ALL,
+				modesIncluded: ["SZ", "TC", "RM"],
+				teams: [
+					{
+						id: 1,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [3, 1],
+							TC: [8, 9],
+							RM: [6, 7],
+						}),
+					},
+					{
+						id: 2,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [1, 3],
+							TC: [5, 9],
+							RM: [0, 3],
+						}),
+					},
+				],
+			});
+
+			expect(mapList.filter((map) => map.source === "RANDOM")).toHaveLength(1);
+			expect(R.sort(pickSources(mapList), (a, b) => a - b)).toEqual([
+				1, 1, 2, 2,
+			]);
 		}
 	});
 
@@ -845,13 +959,9 @@ describe("TournamentMapListGeneratorOneMode", () => {
 			count: 7,
 		});
 
-		for (const [i, stage] of mapList.entries()) {
-			if (i === 6) {
-				expect(stage?.source).toBe("RANDOM");
-			} else {
-				expect(stage?.source).toBe("BOTH");
-			}
-		}
+		expect(mapList.filter((map) => map.source === "BOTH")).toHaveLength(6);
+		expect(mapList.filter((map) => map.source === "RANDOM")).toHaveLength(1);
+		expect(mapList[6].source).toBe("BOTH");
 	});
 
 	test("Handles one team submitted no maps", () => {
@@ -914,25 +1024,22 @@ describe("TournamentMapListGeneratorOneMode", () => {
 	});
 });
 
+type RecentlyPlayedMaps = NonNullable<
+	TournamentMaplistInput["recentlyPlayedMaps"]
+>;
+
 describe("Recently played maps", () => {
+	const splatZones = (stageIds: readonly StageId[]) =>
+		stageIds.map((stageId) => ({ mode: "SZ" as const, stageId }));
+
 	test("One mode Bo7 avoids recently played maps when a full avoiding list exists", () => {
-		const team1Pool = new MapPool(
-			([1, 2, 3, 4, 5, 6] as const).map((stageId) => ({
-				mode: "SZ" as const,
-				stageId,
-			})),
-		);
-		const team2Pool = new MapPool(
-			([7, 8, 9, 10, 11, 12] as const).map((stageId) => ({
-				mode: "SZ" as const,
-				stageId,
-			})),
-		);
+		const team1Pool = new MapPool(splatZones([1, 2, 3, 4, 5, 6]));
+		const team2Pool = new MapPool(splatZones([7, 8, 9, 10, 11, 12]));
 		// the bo5 both teams played right before this match
-		const recentlyPlayedMaps = ([1, 7, 2, 8, 3] as const).map((stageId) => ({
-			mode: "SZ" as const,
-			stageId,
-		}));
+		const recentlyPlayedMaps: RecentlyPlayedMaps = [
+			splatZones([3, 2, 1]),
+			splatZones([8, 7]),
+		];
 
 		const mapList = generateMaps({
 			count: 7,
@@ -945,19 +1052,13 @@ describe("Recently played maps", () => {
 			recentlyPlayedMaps,
 		});
 
-		const recentMapsInList = mapList.filter((map) =>
-			recentlyPlayedMaps.some(
-				(recent) => recent.mode === map.mode && recent.stageId === map.stageId,
-			),
-		);
-
-		expect(recentMapsInList).toEqual([]);
+		expect(mapList.filter(isIn(recentlyPlayedMaps))).toEqual([]);
 	});
 
 	test("Avoids recently played maps when possible", () => {
-		const recentlyPlayedMaps = [
-			{ mode: "SZ" as const, stageId: 4 as const },
-			{ mode: "TC" as const, stageId: 5 as const },
+		const recentlyPlayedMaps: RecentlyPlayedMaps = [
+			[{ mode: "SZ", stageId: 4 }],
+			[{ mode: "TC", stageId: 5 }],
 		];
 
 		const mapList = generateMaps({
@@ -965,31 +1066,29 @@ describe("Recently played maps", () => {
 			recentlyPlayedMaps,
 		});
 
-		const hasRecentMap = mapList.some((map) =>
-			recentlyPlayedMaps.some(
-				(recent) => recent.mode === map.mode && recent.stageId === map.stageId,
-			),
-		);
-
-		expect(hasRecentMap).toBe(false);
+		expect(mapList.some(isIn(recentlyPlayedMaps))).toBe(false);
 	});
 
 	test("Works correctly with no recently played maps", () => {
 		const mapList = generateMaps({
-			recentlyPlayedMaps: [],
+			recentlyPlayedMaps: [[], []],
 		});
 
 		expect(mapList.length).toBe(5);
 	});
 
 	test("Penalties decrease for maps further back in history", () => {
-		const recentlyPlayedMaps = [
-			{ mode: "SZ" as const, stageId: 4 as const },
-			{ mode: "SZ" as const, stageId: 5 as const },
-			{ mode: "TC" as const, stageId: 5 as const },
-			{ mode: "TC" as const, stageId: 6 as const },
-			{ mode: "RM" as const, stageId: 7 as const },
-			{ mode: "RM" as const, stageId: 8 as const },
+		const recentlyPlayedMaps: RecentlyPlayedMaps = [
+			[
+				{ mode: "SZ", stageId: 4 },
+				{ mode: "TC", stageId: 5 },
+				{ mode: "RM", stageId: 7 },
+			],
+			[
+				{ mode: "SZ", stageId: 5 },
+				{ mode: "TC", stageId: 6 },
+				{ mode: "RM", stageId: 8 },
+			],
 		];
 
 		const mapListWithRecent = generateMaps({
@@ -997,32 +1096,134 @@ describe("Recently played maps", () => {
 			recentlyPlayedMaps,
 		});
 
-		const hasVeryRecentMap = mapListWithRecent.some((map) =>
-			recentlyPlayedMaps
-				.slice(0, 2)
-				.some(
-					(recent) =>
-						recent.mode === map.mode && recent.stageId === map.stageId,
-				),
-		);
-
-		expect(hasVeryRecentMap).toBe(false);
+		const mostRecentMaps: RecentlyPlayedMaps = [
+			recentlyPlayedMaps[0].slice(0, 1),
+			recentlyPlayedMaps[1].slice(0, 1),
+		];
+		expect(mapListWithRecent.some(isIn(mostRecentMaps))).toBe(false);
 	});
 
 	test("Still generates valid maplist even with many recently played maps", () => {
-		const recentlyPlayedMaps = [
-			...team1Picks.stageModePairs,
-			...team2Picks.stageModePairs,
-		];
-
 		const mapList = generateMaps({
 			seed: "many-recent",
-			recentlyPlayedMaps,
+			recentlyPlayedMaps: [
+				team1Picks.stageModePairs,
+				team2Picks.stageModePairs,
+			],
 		});
 
 		expect(mapList.length).toBe(5);
 	});
+
+	test.each(["1", "2", "3", "4", "5"])(
+		"Uses the pick a team played longest ago (seed %s)",
+		(seed) => {
+			const mapList = generateMaps({
+				count: 3,
+				seed,
+				teams: [
+					{ id: 1, maps: new MapPool(splatZones([1, 2, 3])) },
+					{ id: 2, maps: new MapPool(splatZones([7, 8, 9])) },
+				],
+				modesIncluded: ["SZ"],
+				recentlyPlayedMaps: [splatZones([3, 1, 2]), splatZones([9, 7, 8])],
+			});
+
+			expect(
+				mapList
+					.filter((map) => map.source === 1 || map.source === 2)
+					.map((map) => map.stageId)
+					.toSorted(),
+			).toEqual([2, 8]);
+		},
+	);
+
+	test("Uses each team's pick over a random map even when every pick was played recently", () => {
+		const team1Pool = splatZones([1, 2, 3]);
+		const team2Pool = splatZones([7, 8, 9]);
+
+		const mapList = generateMaps({
+			count: 3,
+			seed: "all-recent",
+			teams: [
+				{ id: 1, maps: new MapPool(team1Pool) },
+				{ id: 2, maps: new MapPool(team2Pool) },
+			],
+			modesIncluded: ["SZ"],
+			modeOrder: ["SZ", "SZ", "SZ"],
+			recentlyPlayedMaps: [team1Pool, team2Pool],
+		});
+
+		expect(
+			mapList
+				.slice(0, 2)
+				.map((map) => map.source)
+				.toSorted(),
+		).toEqual([1, 2]);
+	});
+
+	test.each(["a", "b", "c", "d", "e"])(
+		"Rotates through every pick of a team before repeating one (seed %s)",
+		(seedPrefix) => {
+			const team1Pool = splatZones([1, 2, 3, 4, 5, 6]);
+			const team2Pool = splatZones([7, 8, 9, 10, 11, 12]);
+			const playedMostRecentFirst: ModeWithStage[] = [];
+			const team1PicksUsed: StageId[] = [];
+
+			for (const set of [1, 2, 3, 4, 5, 6]) {
+				const recent = R.uniqueBy(playedMostRecentFirst, (map) =>
+					modeStageKey(map.mode, map.stageId),
+				);
+
+				const mapList = generateMaps({
+					count: 3,
+					seed: `${seedPrefix}-${set}`,
+					teams: [
+						{ id: 1, maps: new MapPool(team1Pool) },
+						{ id: 2, maps: new MapPool(team2Pool) },
+					],
+					modesIncluded: ["SZ"],
+					recentlyPlayedMaps: [recent, recent],
+				});
+
+				team1PicksUsed.push(
+					...mapList
+						.filter((map) => map.source === 1)
+						.map((map) => map.stageId),
+				);
+				playedMostRecentFirst.unshift(...mapList.toReversed());
+			}
+
+			expect(team1PicksUsed.toSorted((a, b) => a - b)).toEqual([
+				1, 2, 3, 4, 5, 6,
+			]);
+		},
+	);
+
+	test("A map counts as recent when the other team played it", () => {
+		const mapList = generateMaps({
+			count: 3,
+			seed: "other-team",
+			teams: [
+				{ id: 1, maps: new MapPool(splatZones([1, 2])) },
+				{ id: 2, maps: new MapPool(splatZones([7])) },
+			],
+			modesIncluded: ["SZ"],
+			recentlyPlayedMaps: [[], splatZones([1])],
+		});
+
+		expect(mapList.find((map) => map.source === 1)?.stageId).toBe(2);
+	});
 });
+
+function isIn(recentlyPlayedMaps: RecentlyPlayedMaps) {
+	return (map: { mode: string; stageId: number }) =>
+		recentlyPlayedMaps.some((teamMaps) =>
+			teamMaps.some(
+				(recent) => recent.mode === map.mode && recent.stageId === map.stageId,
+			),
+		);
+}
 
 describe("starterMap", () => {
 	const args = {
@@ -1073,6 +1274,61 @@ describe("starterMap", () => {
 		expect(map.source).toBe("RANDOM");
 	});
 
+	test.each([
+		{ why: "one common map not played", recent: [[1], [2]], expected: 3 },
+		{
+			why: "map only the other team played",
+			recent: [[], [1, 3]],
+			expected: 2,
+		},
+		{ why: "every common map played", recent: [[1, 3, 2], [3]], expected: 2 },
+	] as const)(
+		"uses the common map played longest ago ($why)",
+		({ recent, expected }) => {
+			const [map] = starterMap({
+				...args,
+				modesIncluded: ["SZ"],
+				teams: [
+					{
+						id: 1,
+						maps: new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1, 2, 3] }),
+					},
+					{
+						id: 2,
+						maps: new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1, 2, 3] }),
+					},
+				],
+				recentlyPlayedMaps: [
+					recent[0].map((stageId) => ({ mode: "SZ", stageId })),
+					recent[1].map((stageId) => ({ mode: "SZ", stageId })),
+				],
+			});
+
+			expect(map).toEqual({ mode: "SZ", stageId: expected, source: "BOTH" });
+		},
+	);
+
+	test("draws the pool map neither team picked that was played longest ago", () => {
+		const [map] = starterMap({
+			...args,
+			modesIncluded: ["SZ"],
+			pool: new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1, 2, 3, 4, 5] }),
+			teams: [
+				{ id: 1, maps: new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1] }) },
+				{ id: 2, maps: new MapPool({ ...MapPool.EMPTY.parsed, SZ: [2] }) },
+			],
+			recentlyPlayedMaps: [
+				[
+					{ mode: "SZ", stageId: 3 },
+					{ mode: "SZ", stageId: 4 },
+				],
+				[{ mode: "SZ", stageId: 5 }],
+			],
+		});
+
+		expect(map).toEqual({ mode: "SZ", stageId: 4, source: "RANDOM" });
+	});
+
 	test("falls back to a picked pool map when the mode has nothing left", () => {
 		const pool = new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1, 2] });
 
@@ -1088,5 +1344,139 @@ describe("starterMap", () => {
 
 		expect(map.source).toBe("RANDOM");
 		expect(pool.has(map)).toBe(true);
+	});
+
+	test("gives no map when the pool has none of the mode order's mode", () => {
+		const szPool = new MapPool({ ...MapPool.EMPTY.parsed, SZ: [1, 2] });
+
+		expect(
+			starterMap({
+				...args,
+				modesIncluded: ["SZ", "TC"],
+				modeOrder: ["TC"],
+				pool: szPool,
+				teams: [
+					{ id: 1, maps: szPool },
+					{ id: 2, maps: szPool },
+				],
+			}),
+		).toEqual([]);
+	});
+});
+
+describe("generateBalancedMapList", () => {
+	const szOnly = (stageIds: StageId[]) =>
+		new MapPool({ ...MapPool.EMPTY.parsed, SZ: stageIds });
+
+	test("Two mode tournaments alternate between the modes", () => {
+		for (let i = 1; i <= 10; i++) {
+			const mapList = generateMaps({
+				count: 5,
+				seed: String(i),
+				modesIncluded: ["SZ", "TC"],
+				teams: [
+					{
+						id: 1,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [4, 5],
+							TC: [5, 6],
+						}),
+					},
+					{
+						id: 2,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [11, 9],
+							TC: [2, 8],
+						}),
+					},
+				],
+			});
+
+			for (let j = 0; j < mapList.length - 1; j++) {
+				expect(mapList[j].mode).not.toBe(mapList[j + 1].mode);
+			}
+		}
+	});
+
+	test("Repeats no stage when the picks allow a list without repeats", () => {
+		for (let i = 1; i <= 10; i++) {
+			const mapList = generateMaps({
+				seed: String(i),
+				teams: [
+					{ id: 1, maps: duplicationPicks },
+					{ id: 2, maps: team2Picks },
+				],
+			});
+
+			expect(new Set(mapList.map((map) => map.stageId)).size).toBe(5);
+		}
+	});
+
+	test("Random map is the one pool map neither team picked", () => {
+		for (let i = 1; i <= 10; i++) {
+			const mapList = generateMaps({
+				count: 3,
+				seed: String(i),
+				modesIncluded: ["SZ"],
+				pool: szOnly([1, 2, 3, 4, 5]),
+				teams: [
+					{ id: 1, maps: szOnly([1, 2]) },
+					{ id: 2, maps: szOnly([3, 4]) },
+				],
+			});
+
+			expect(mapList.filter((map) => map.source === "RANDOM")).toEqual([
+				{ mode: "SZ", stageId: 5, source: "RANDOM" },
+			]);
+		}
+	});
+
+	test("Map both teams picked is played in its mode's slot when the last slot is another mode", () => {
+		for (let i = 1; i <= 10; i++) {
+			const mapList = generateMaps({
+				count: 3,
+				seed: String(i),
+				modesIncluded: ["SZ", "TC", "RM"],
+				modeOrder: ["SZ", "TC", "RM"],
+				teams: [
+					{
+						id: 1,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [1, 2],
+							TC: [5, 6],
+							RM: [7, 8],
+						}),
+					},
+					{
+						id: 2,
+						maps: new MapPool({
+							...MapPool.EMPTY.parsed,
+							SZ: [3, 4],
+							TC: [5, 9],
+							RM: [10, 11],
+						}),
+					},
+				],
+			});
+
+			expect(mapList[1]).toEqual({ mode: "TC", stageId: 5, source: "BOTH" });
+		}
+	});
+
+	test("Returns an error when no list without back-to-back stage repeats exists", () => {
+		const result = generateMapsResult({
+			count: 2,
+			modesIncluded: ["SZ"],
+			pool: szOnly([1]),
+			teams: [
+				{ id: 1, maps: szOnly([1]) },
+				{ id: 2, maps: szOnly([1]) },
+			],
+		});
+
+		expect(result.ok).toBe(false);
 	});
 });

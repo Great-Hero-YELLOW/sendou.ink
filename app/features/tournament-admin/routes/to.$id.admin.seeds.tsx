@@ -142,7 +142,7 @@ export default function TournamentAdminSeedsPage() {
 
 	return (
 		<div className="stack lg">
-			<SeedAlert teamOrder={teamOrder} />
+			<SeedAlert teamOrder={teamOrder} teams={teams} />
 			<div>
 				{noOrganizerSetSeeding ? (
 					<div className="text-lighter text-xs">
@@ -164,13 +164,19 @@ export default function TournamentAdminSeedsPage() {
 			</div>
 			{tournament.isMultiStartingBracket ? (
 				<StartingBracketDialog
-					key={teams.map((team) => team.startingBracketIdx ?? 0).join()}
+					key={teams
+						.map((team) => `${team.id}-${team.startingBracketIdx ?? 0}`)
+						.join()}
+					teams={teams}
 				/>
 			) : null}
 			{hasAbDivisionsStartingBracket(tournament) ? (
 				<>
 					<AbDivisionsDialog
-						key={teams.map((team) => team.abDivision ?? -1).join()}
+						key={teams
+							.map((team) => `${team.id}-${team.abDivision ?? -1}`)
+							.join()}
+						teams={teams}
 					/>
 					<AbDivisionImbalanceWarning />
 				</>
@@ -329,12 +335,12 @@ function SeedingDraggable({
 	);
 }
 
-function StartingBracketDialog() {
+function StartingBracketDialog({ teams }: { teams: TournamentTeamFull[] }) {
 	const tournament = useTournament();
 
 	const [isOpen, setIsOpen] = React.useState(false);
 	const [teamStartingBrackets, setTeamStartingBrackets] = React.useState(
-		tournament.ctx.teams.map((team) => ({
+		teams.map((team) => ({
 			tournamentTeamId: team.id,
 			startingBracketIdx: team.startingBracketIdx ?? 0,
 		})),
@@ -384,7 +390,7 @@ function StartingBracketDialog() {
 						</thead>
 
 						<tbody>
-							{tournament.ctx.teams.map((team) => {
+							{teams.map((team) => {
 								const { startingBracketIdx } = teamStartingBrackets.find(
 									({ tournamentTeamId }) => tournamentTeamId === team.id,
 								)!;
@@ -448,14 +454,9 @@ function AbDivisionImbalanceWarning() {
 		.map((bracket, bracketIdx) => {
 			if (bracket.sources || !bracket.settings?.hasAbDivisions) return null;
 
-			const bracketTeams = tournament.isMultiStartingBracket
-				? tournament.ctx.teams.filter(
-						(team) => (team.startingBracketIdx ?? 0) === bracketIdx,
-					)
-				: tournament.ctx.teams;
-			const checkedInTeams = bracketTeams.filter(
-				(team) => team.checkIns.length > 0,
-			);
+			const checkedInTeams = tournament
+				.teamsOfStartingBracket(bracketIdx)
+				.filter((team) => team.checkIns.length > 0);
 
 			const { a, b } = AbDivisions.countByDivision(checkedInTeams);
 			const diff = Math.abs(a - b);
@@ -501,14 +502,12 @@ function AbDivisionImbalanceWarning() {
 
 type AbDivisionValue = 0 | 1 | null;
 
-function AbDivisionsDialog() {
-	const tournament = useTournament();
-
+function AbDivisionsDialog({ teams }: { teams: TournamentTeamFull[] }) {
 	const [isOpen, setIsOpen] = React.useState(false);
 	const [teamAbDivisions, setTeamAbDivisions] = React.useState<
 		{ tournamentTeamId: number; abDivision: AbDivisionValue }[]
 	>(
-		tournament.ctx.teams.map((team) => ({
+		teams.map((team) => ({
 			tournamentTeamId: team.id,
 			abDivision:
 				team.abDivision === 0 || team.abDivision === 1 ? team.abDivision : null,
@@ -547,7 +546,7 @@ function AbDivisionsDialog() {
 							</tr>
 						</thead>
 						<tbody>
-							{tournament.ctx.teams.map((team) => {
+							{teams.map((team) => {
 								const { abDivision } = teamAbDivisions.find(
 									({ tournamentTeamId }) => tournamentTeamId === team.id,
 								)!;
@@ -606,10 +605,14 @@ function AbDivisionsDialog() {
 	);
 }
 
-function SeedAlert({ teamOrder }: { teamOrder: number[] }) {
-	const tournament = useTournament();
-
-	const teamOrderInDb = tournament.ctx.teams.map((t) => t.id);
+function SeedAlert({
+	teamOrder,
+	teams,
+}: {
+	teamOrder: number[];
+	teams: TournamentTeamFull[];
+}) {
+	const teamOrderInDb = teams.map((t) => t.id);
 	const teamOrderChanged = teamOrder.some((id, i) => id !== teamOrderInDb[i]);
 
 	return (
@@ -694,7 +697,7 @@ function RowContents({
 			</div>
 			<div className={styles.nameArea}>
 				<div className={styles.teamNameContainer}>
-					<span className={styles.teamName}>{team.name}</span>
+					<span className="truncate">{team.name}</span>
 					{isNewTeam ? <span className={styles.newBadge}>NEW</span> : null}
 				</div>
 			</div>

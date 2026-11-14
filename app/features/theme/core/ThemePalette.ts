@@ -1,3 +1,4 @@
+import * as R from "remeda";
 import * as v from "valibot";
 import type { CustomTheme } from "~/db/tables-json";
 import {
@@ -291,6 +292,7 @@ export function fromShareCode(code: string): ThemeInput | null {
 
 /**
  * Every color of a built theme as vars.css resolves them, for verifying the accessibility and gamut guarantees.
+ * @internal
  */
 export function resolveColors(theme: CustomTheme) {
 	const base = (lightness: number, chromaIndex: number): Oklch => ({
@@ -361,6 +363,7 @@ export function resolveColors(theme: CustomTheme) {
 
 /**
  * Text/background color pairs of a built theme as vars.css resolves them, for verifying the accessibility guarantee.
+ * @internal
  */
 export function textContrastPairs(theme: CustomTheme) {
 	const { dark, light } = resolveColors(theme);
@@ -440,7 +443,10 @@ function buildPalette({
 		});
 	const startLightness = (slot: AccentSlot) =>
 		slot.maxCuspLift
-			? clamp(cuspLightness(hue), slot.lightness, slot.maxCuspLift)
+			? R.clamp(cuspLightness(hue), {
+					min: slot.lightness,
+					max: slot.maxCuspLift,
+				})
 			: slot.lightness;
 
 	const [darkLow, darkMid, darkHigh, lightLow, lightMid, lightHigh] =
@@ -495,11 +501,10 @@ function buildLightFill({
 	const brightFill = ensureContrast({
 		colorAt,
 		start: colorAt(
-			clamp(
-				cuspLightness(hue),
-				BRIGHT_FILL.minLightness,
-				BRIGHT_FILL.maxLightness,
-			),
+			R.clamp(cuspLightness(hue), {
+				min: BRIGHT_FILL.minLightness,
+				max: BRIGHT_FILL.maxLightness,
+			}),
 		),
 		against: [darkText],
 		direction: "lighter",
@@ -540,17 +545,16 @@ function gamutBoost(lightness: number, gamut: number) {
 	const referenceGamut = maxChroma(lightness, GAMUT_BOOST.referenceHue);
 	if (referenceGamut <= 0) return 1;
 
-	return clamp(gamut / referenceGamut, 1, GAMUT_BOOST.max);
+	return R.clamp(gamut / referenceGamut, { min: 1, max: GAMUT_BOOST.max });
 }
 
 function shadeShiftedHue(hue: number, lightness: number) {
 	const weight = yellowWeight(hue);
 	if (weight === 0) return hue;
 
-	const depth = clamp(
+	const depth = R.clamp(
 		(cuspLightness(hue) - lightness) / SHADE_HUE_SHIFT.fullShiftDepth,
-		0,
-		1,
+		{ min: 0, max: 1 },
 	);
 
 	return (
@@ -624,8 +628,4 @@ function slotVars<Prefix extends "acc" | "second">(
 
 function round(value: number) {
 	return Math.round(value * 10_000) / 10_000;
-}
-
-function clamp(value: number, min: number, max: number) {
-	return Math.min(Math.max(value, min), max);
 }

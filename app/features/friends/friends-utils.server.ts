@@ -1,8 +1,14 @@
+import * as R from "remeda";
+import * as LiveStream from "~/features/live-streams/core/LiveStream";
+import type { StreamPlatform } from "~/features/live-streams/live-streams-constants";
+import * as LobbyRepository from "~/features/lobbies/LobbyRepository.server";
 import { FULL_GROUP_SIZE } from "~/features/sendouq/q-constants";
 import { cachedStreams } from "~/features/sendouq-streams/core/streams.server";
-import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
+import type {
+	Tournament,
+	TournamentStream,
+} from "~/features/tournament-bracket/core/Tournament";
 import * as UserActivity from "~/features/user-activity/core/UserActivity.server";
-import { twitchUrl } from "~/utils/urls";
 import {
 	type FriendActivityType,
 	SENDOUQ_ACTIVITY_LABEL,
@@ -14,25 +20,89 @@ export interface FriendActivity {
 	badge: string | null;
 	matchId: number | null;
 	tournamentId: number | null;
+	lobbyId: number | null;
 	/** Set when the friend's current match can be watched, making the activity show up as "LIVE". */
-	streamUrl: string | null;
+	stream: FriendActivityStream | null;
 }
 
-/** Twitch account streaming each ongoing SendouQ match, keyed by match id. Resolved once per request, activity being resolved per friend. */
-export async function resolveSendouQMatchStreams() {
-	const streams = await cachedStreams();
+interface FriendActivityStream {
+	url: string;
+	platform: StreamPlatform;
+}
 
-	const result = new Map<number, string>();
-	for (const { match, stream } of streams) {
-		if (!stream.twitchUserName || result.has(match.id)) continue;
+/** The soonest upcoming lobby each friend of the viewer signed up for that the viewer may see and join, keyed by friend id. */
+export async function resolveUpcomingLobbiesOfFriends(viewerId: number) {
+	const rows = await LobbyRepository.findAllUpcomingOfFriendsByUserId(viewerId);
 
-		result.set(match.id, stream.twitchUserName);
+	const result = new Map<number, (typeof rows)[number]>();
+	for (const row of rows.toSorted((a, b) => a.startsAt - b.startsAt)) {
+		if (!result.has(row.friendId)) result.set(row.friendId, row);
 	}
 
 	return result;
 }
 
-/** What a friend is currently doing, an ongoing SendouQ or tournament match taking priority over looking for members. */
+/** Lobbies the friends are present in that the viewer may see, keyed by id. */
+export async function resolveVisibleActiveLobbiesOfFriends({
+	viewerId,
+	friendIds,
+}: {
+	viewerId: number;
+	friendIds: number[];
+}) {
+	const lobbyIds = R.unique(
+		friendIds.flatMap((friendId) => {
+			const lobby = UserActivity.resolve(friendId).lobby;
+
+			return lobby ? [lobby.lobbyId] : [];
+		}),
+	);
+
+	const lobbies = await LobbyRepository.findAllVisible({
+		userId: viewerId,
+		lobbyIds,
+	});
+
+	return new Map(lobbies.map((lobby) => [lobby.id, lobby]));
+}
+
+type VisibleLobby = Awaited<
+	ReturnType<typeof LobbyRepository.findAllVisible>
+>[number];
+
+/** Whether the viewer could join the friend in the lobby they're present in: a spot is free and the viewer isn't in it already. */
+export function isJoinableFriendLobby({
+	activity,
+	visibleLobbies,
+}: {
+	activity: FriendActivity;
+	visibleLobbies: ReadonlyMap<number, VisibleLobby>;
+}) {
+	if (activity.type !== "LOBBY" || activity.lobbyId === null) return false;
+
+	const lobby = visibleLobbies.get(activity.lobbyId);
+
+	return Boolean(lobby?.hasOpenSlot && !lobby.isUserParticipant);
+}
+
+/** Stream of each ongoing SendouQ match, keyed by match id. Resolved once per request, activity being resolved per friend. */
+export async function resolveSendouQMatchStreams() {
+	const streams = await cachedStreams();
+
+	const result = new Map<number, FriendActivityStream>();
+	for (const { match, streams: playerStreams } of streams) {
+		if (result.has(match.id)) continue;
+
+		result.set(match.id, toActivityStream(playerStreams[0]));
+	}
+
+	return result;
+}
+
+/**
+ * What a friend is currently doing: an ongoing SendouQ or tournament match first, then being in a lobby, then
+ * looking for members and last an upcoming lobby the viewer could join.
+ */
 export function resolveFriendActivity({
 	friendId,
 	tournamentId,
@@ -40,32 +110,54 @@ export function resolveFriendActivity({
 	teamMemberCount,
 	tournamentMinTeamSize,
 	sendouQMatchStreams,
+	visibleLobbies,
+	upcomingLobby,
 }: {
 	friendId: number;
 	tournamentId: number | null;
 	tournamentName: string | null;
 	teamMemberCount: number | null;
 	tournamentMinTeamSize: number | null;
-	sendouQMatchStreams: ReadonlyMap<number, string>;
+	sendouQMatchStreams: ReadonlyMap<number, FriendActivityStream>;
+	/** Lobbies the viewer may see, see `resolveVisibleActiveLobbiesOfFriends` */
+	visibleLobbies: ReadonlyMap<number, VisibleLobby>;
+	/** Upcoming lobby the friend signed up for, visible to the viewer, see `LobbyRepository.findAllUpcomingOfFriendsByUserId` */
+	upcomingLobby?: {
+		lobbyId: number;
+		lobbyName: string;
+		participantCount: number | null;
+		roomSize: number;
+	};
 }): FriendActivity {
 	const activity = UserActivity.resolve(friendId);
 	const ownGroup = activity.sendouq?.group;
 
 	if (ownGroup?.matchId) {
-		const twitchAccount = sendouQMatchStreams.get(ownGroup.matchId);
-
 		return {
 			type: "SENDOUQ_MATCH",
 			subtitle: SENDOUQ_ACTIVITY_LABEL,
 			badge: null,
 			matchId: ownGroup.matchId,
 			tournamentId: null,
-			streamUrl: twitchAccount ? twitchUrl(twitchAccount) : null,
+			lobbyId: null,
+			stream: sendouQMatchStreams.get(ownGroup.matchId) ?? null,
 		};
 	}
 
 	const tournamentActivity = resolveTournamentActivity(activity, friendId);
 	if (tournamentActivity) return tournamentActivity;
+
+	if (activity.lobby && visibleLobbies.has(activity.lobby.lobbyId)) {
+		return {
+			type: "LOBBY",
+			subtitle: activity.lobby.lobbyName,
+			badge: null,
+			matchId: null,
+			tournamentId: null,
+			lobbyId: activity.lobby.lobbyId,
+			stream: null,
+		};
+	}
 
 	if (
 		ownGroup &&
@@ -78,7 +170,8 @@ export function resolveFriendActivity({
 			badge: `${ownGroup.members.length}/${FULL_GROUP_SIZE}`,
 			matchId: null,
 			tournamentId: null,
-			streamUrl: null,
+			lobbyId: null,
+			stream: null,
 		};
 	}
 
@@ -89,7 +182,20 @@ export function resolveFriendActivity({
 			badge: `${teamMemberCount ?? 1}/${tournamentMinTeamSize ?? FULL_GROUP_SIZE}`,
 			matchId: null,
 			tournamentId,
-			streamUrl: null,
+			lobbyId: null,
+			stream: null,
+		};
+	}
+
+	if (upcomingLobby) {
+		return {
+			type: "LOBBY_UPCOMING",
+			subtitle: upcomingLobby.lobbyName,
+			badge: `${upcomingLobby.participantCount ?? 1}/${upcomingLobby.roomSize}`,
+			matchId: null,
+			tournamentId: null,
+			lobbyId: upcomingLobby.lobbyId,
+			stream: null,
 		};
 	}
 
@@ -99,7 +205,8 @@ export function resolveFriendActivity({
 		badge: null,
 		matchId: null,
 		tournamentId: null,
-		streamUrl: null,
+		lobbyId: null,
+		stream: null,
 	};
 }
 
@@ -123,8 +230,9 @@ function resolveTournamentActivity(
 			badge: null,
 			matchId: isInMatch ? status.matchId : null,
 			tournamentId: tournament.ctx.id,
-			streamUrl: isInMatch
-				? tournamentStreamUrl({
+			lobbyId: null,
+			stream: isInMatch
+				? tournamentMatchStream({
 						tournament,
 						friendId,
 						matchId: status.matchId,
@@ -138,7 +246,7 @@ function resolveTournamentActivity(
 }
 
 /** Where the friend's tournament match can be watched, preferring the view showing them best: own stream, teammate's, official cast, opponent's. */
-function tournamentStreamUrl({
+function tournamentMatchStream({
 	tournament,
 	friendId,
 	matchId,
@@ -153,52 +261,52 @@ function tournamentStreamUrl({
 	const ownTeamUserIds =
 		tournament.teamMemberOfByUser({ id: friendId })?.memberUserIds ?? [];
 
-	const friendAccount = streamingTwitchAccount(
-		ownTeamUserIds.filter((userId) => userId === friendId),
-		streamingParticipants,
-	);
-	if (friendAccount) return twitchUrl(friendAccount);
+	const stream =
+		participantStream(
+			ownTeamUserIds.filter((userId) => userId === friendId),
+			streamingParticipants,
+		) ??
+		participantStream(
+			ownTeamUserIds.filter((userId) => userId !== friendId),
+			streamingParticipants,
+		) ??
+		liveCastStream(tournament, matchId) ??
+		participantStream(
+			tournament.teamById(opponentId)?.memberUserIds ?? [],
+			streamingParticipants,
+		);
 
-	const teammateAccount = streamingTwitchAccount(
-		ownTeamUserIds.filter((userId) => userId !== friendId),
-		streamingParticipants,
-	);
-	if (teammateAccount) return twitchUrl(teammateAccount);
-
-	const castAccount = liveCastAccount(tournament, matchId);
-	if (castAccount) return twitchUrl(castAccount);
-
-	const opponentAccount = streamingTwitchAccount(
-		tournament.teamById(opponentId)?.memberUserIds ?? [],
-		streamingParticipants,
-	);
-
-	return opponentAccount ? twitchUrl(opponentAccount) : null;
+	return stream ? toActivityStream(stream) : null;
 }
 
-/** Account casting the match, only when it is actually streaming right now. */
-function liveCastAccount(tournament: Tournament, matchId: number) {
+/** Stream of the account casting the match, only when it is actually streaming right now. */
+function liveCastStream(tournament: Tournament, matchId: number) {
 	const castAccount = tournament.ctx.castedMatchesInfo?.castedMatches.find(
 		(castedMatch) => castedMatch.matchId === matchId,
-	)?.twitchAccount;
+	);
 	if (!castAccount) return null;
 
-	const isLive = tournament.streams.some(
-		(stream) =>
-			stream.twitchUserName.toLowerCase() === castAccount.toLowerCase(),
+	return (
+		tournament.streams.find((stream) =>
+			LiveStream.isSameAccount(stream, castAccount),
+		) ?? null
 	);
-
-	return isLive ? castAccount : null;
 }
 
-function streamingTwitchAccount(
+function participantStream(
 	userIds: number[],
-	streamingParticipants: ReadonlyMap<number, string>,
+	streamingParticipants: ReadonlyMap<number, TournamentStream>,
 ) {
 	for (const userId of userIds) {
-		const twitchAccount = streamingParticipants.get(userId);
-		if (twitchAccount) return twitchAccount;
+		const stream = streamingParticipants.get(userId);
+		if (stream) return stream;
 	}
 
 	return null;
+}
+
+function toActivityStream(
+	stream: Parameters<typeof LiveStream.url>[0],
+): FriendActivityStream {
+	return { url: LiveStream.url(stream), platform: stream.platform };
 }

@@ -1,9 +1,10 @@
 import { cachified } from "@epic-web/cachified";
-import { subDays } from "date-fns";
+import { hoursToMilliseconds, subDays } from "date-fns";
 import * as R from "remeda";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
+import { cache, ttl } from "~/utils/cache.server";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import * as TournamentOrganizationRepository from "../TournamentOrganizationRepository.server";
+import * as Series from "./Series";
 
 const CACHE_KEY = "series-team-counts";
 /** How old an edition can be and still say something about the next one. */
@@ -33,12 +34,10 @@ export async function lookup() {
 		const series = seriesByOrganizationId.get(tournament.organizationId);
 		if (!series) return tournament.teamCount;
 
-		const nameLower = tournament.name.toLowerCase();
-		const match = series.find((candidate) =>
-			candidate.substringMatches.some((substring) =>
-				nameLower.includes(substring.toLowerCase()),
-			),
-		);
+		const match = Series.findByEventName({
+			series,
+			eventName: tournament.name,
+		});
 		if (!match) return tournament.teamCount;
 
 		return Math.max(
@@ -52,18 +51,21 @@ function cachedSeriesTeamCounts() {
 	return cachified({
 		key: CACHE_KEY,
 		cache,
-		ttl: ttl(IN_MILLISECONDS.TWO_HOURS),
+		ttl: ttl(hoursToMilliseconds(2)),
 		getFreshValue: seriesTeamCounts,
 	});
 }
 
 async function seriesTeamCounts() {
-	const [series, tournaments] = await Promise.all([
-		TournamentOrganizationRepository.findAllSeries(),
-		TournamentOrganizationRepository.findAllOrganizedTournamentTeamCounts({
-			startedAfter: dateToDatabaseTimestamp(subDays(new Date(), LOOKBACK_DAYS)),
-		}),
-	]);
+	const series = await TournamentOrganizationRepository.findAllSeries();
+	const tournaments =
+		await TournamentOrganizationRepository.findAllOrganizedTournamentTeamCounts(
+			{
+				startedAfter: dateToDatabaseTimestamp(
+					subDays(new Date(), LOOKBACK_DAYS),
+				),
+			},
+		);
 
 	const result = new Map<number, Array<SeriesTeamCounts>>();
 	for (const row of series) {
@@ -71,9 +73,7 @@ async function seriesTeamCounts() {
 			.filter(
 				(tournament) =>
 					tournament.organizationId === row.organizationId &&
-					row.substringMatches.some((substring) =>
-						tournament.name.toLowerCase().includes(substring.toLowerCase()),
-					),
+					Series.matchesEventName({ series: row, eventName: tournament.name }),
 			)
 			.slice(-EDITIONS_CONSIDERED)
 			.map((tournament) => tournament.teamCount);

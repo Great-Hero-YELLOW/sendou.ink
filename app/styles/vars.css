@@ -1,6 +1,6 @@
 @layer reset, base, elements, components, features, utilities;
 
-/* ⚠️ Read styles.md before editing colors in this file */
+/* ⚠️ Read docs/site/src/content/docs/dev/styles.mdx before editing colors in this file */
 
 /*
 Tokens settable by custom themes and their defaults. Not to be consumed directly, only as a base
@@ -160,8 +160,11 @@ html.dark [data-custom-theme],
 	--color-error: oklch(65% 0.25 10);
 	--color-error-high: oklch(87% 0.07 10);
 
-	--color-chart-alpha: #da5b76;
-	--color-chart-bravo: #6572e4;
+	--color-chart-alpha: oklch(64% 0.16 10);
+	--color-chart-bravo: oklch(60% 0.17 275);
+	--color-chart-splatted: oklch(66% 0.03 var(--_base-h));
+	--color-chart-special: oklch(80% 0.14 84);
+	--color-chart-kill: oklch(78% 0.19 150);
 
 	/* inlined instead of var() because data URIs can't read custom properties: keep in sync with --color-text-high */
 	--field-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='rgb(122, 139, 183)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
@@ -226,8 +229,11 @@ html.light [data-custom-theme],
 	--color-error: oklch(65.223% 0.22164 5.216);
 	--color-error-high: oklch(41.268% 0.15511 8.446);
 
-	--color-chart-alpha: #b82851;
-	--color-chart-bravo: #4246c2;
+	--color-chart-alpha: oklch(52% 0.18 10);
+	--color-chart-bravo: oklch(47% 0.19 275);
+	--color-chart-splatted: oklch(50% 0.03 var(--_base-h));
+	--color-chart-special: oklch(67% 0.14 72);
+	--color-chart-kill: oklch(55% 0.17 150);
 
 	/* inlined instead of var() because data URIs can't read custom properties: keep in sync with --color-text-high */
 	--field-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='rgb(72, 87, 124)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
@@ -254,6 +260,9 @@ html,
 		var(--color-bg-high) 25%
 	);
 	--color-bg-ability: oklch(11.736% 0.00867 215.976);
+	/* behind content laid over a video or thumbnail, dark in every theme (text: --color-text-on-dark) */
+	--color-bg-overlay: rgb(0 0 0 / 0.65);
+	--color-bg-overlay-high: rgb(0 0 0 / 0.85);
 	--color-bg-badge: oklch(0% 0 0);
 	--color-bg-accent: var(--color-accent-low);
 	--color-bg-second: var(--color-second-low);
@@ -309,6 +318,11 @@ html,
 	to the document scroll, for a smooth transition between sticking and un-sticking
 	*/
 	--layout-nav-height: 55px;
+	--mobile-nav-height: calc(
+		var(--layout-nav-height) +
+		env(safe-area-inset-bottom)
+	);
+	--mobile-tab-bar-display: flex;
 	--layout-sidenav-width: 250px;
 	--layout-fuse-bottom-height: 90px;
 	--layout-main-padding: var(--s-3);

@@ -3,13 +3,20 @@ import pLimit from "p-limit";
 import { type Urgency, WebPushError } from "web-push";
 import type { NotificationSubscription } from "~/db/tables-json";
 import * as ChatSystemMessage from "~/features/chat/ChatSystemMessage.server";
+import { IS_DEV_BUILD } from "~/utils/dev-build";
 import { IS_E2E_TEST_RUN } from "~/utils/e2e";
+import { toDBBoolean } from "~/utils/sql";
 import { APP_ICON_URL, type UserLinkArgs } from "~/utils/urls";
 import { getFixedTForLanguage } from "../../../modules/i18n/i18next.server";
 import { logger } from "../../../utils/logger";
 import * as NotificationRepository from "../NotificationRepository.server";
 import type { Notification } from "../notifications-types";
-import { notificationLink, notificationMeta } from "../notifications-utils";
+import {
+	isPushServiceEndpoint,
+	notificationLink,
+	notificationMeta,
+} from "../notifications-utils";
+import { isWebPushSuppressed } from "./push-suppression.server";
 import { webPush, webPushEnabled } from "./webPush.server";
 
 const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
@@ -44,10 +51,23 @@ const NOTIFICATION_URGENCY: Record<Notification["type"], Urgency> = {
 	FRIEND_REQUEST_RECEIVED: "normal",
 	TEAM_EVENT_ADDED: "normal",
 	SCHEDULE_TEAM_REMINDER: "normal",
+	CHAT_MENTION: "high",
+	LOBBY_CHECK_IN_OPENED: "high",
+	LOBBY_STARTED: "high",
+	LOBBY_PROMOTED: "high",
+	LOBBY_HOST: "normal",
+	LOBBY_READY_CHECK: "high",
+	LOBBY_APPLICATION_RECEIVED: "normal",
+	LOBBY_APPLICATION_APPROVED: "high",
 };
 
-/** How long a push is held back; anything marking the notification seen meanwhile (addressing it, opening the list, `defaultSeenUserIds`) cancels it for that user. */
+/**
+ * How long a push is held back; anything marking the notification seen meanwhile (addressing it, opening the list, `defaultSeenUserIds`) cancels it for that user.
+ * @internal
+ */
 export const PUSH_NOTIFICATION_GRACE_PERIOD_MS = 15 * 1000;
+
+const PUSH_NOTIFICATION_TIMEOUT_MS = 10 * 1000;
 
 /** Creates notifications and sends pushes (if enabled) after {@link PUSH_NOTIFICATION_GRACE_PERIOD_MS}, only to users whose notification is still unseen by then. */
 export async function notify({
@@ -79,7 +99,7 @@ export async function notify({
 			notification,
 			dededuplicatedUserIds.map((userId) => ({
 				userId,
-				seen: defaultSeenUserIds?.includes(userId) ? 1 : 0,
+				seen: toDBBoolean(Boolean(defaultSeenUserIds?.includes(userId))),
 			})),
 		);
 		notificationId = inserted.id;
@@ -103,7 +123,7 @@ function schedulePushNotifications({
 	notificationId: number;
 	notification: Notification;
 }) {
-	if (!webPushEnabled) return;
+	if (!webPushEnabled || (IS_DEV_BUILD && isWebPushSuppressed())) return;
 
 	setTimeout(() => {
 		sendPushNotificationsToUnseen({ notificationId, notification }).catch(
@@ -119,7 +139,7 @@ async function sendPushNotificationsToUnseen({
 	notificationId: number;
 	notification: Notification;
 }) {
-	if (!webPushEnabled) return;
+	if (!webPushEnabled || (IS_DEV_BUILD && isWebPushSuppressed())) return;
 
 	const subscriptions =
 		await NotificationRepository.findUnseenSubscriptionsByNotificationId(
@@ -132,13 +152,13 @@ async function sendPushNotificationsToUnseen({
 	const limit = pLimit(50);
 
 	await Promise.all(
-		subscriptions.map(({ id, subscription, discordId, customUrl }) =>
+		subscriptions.map(({ id, subscription, userId, customUrl }) =>
 			limit(() =>
 				sendPushNotification({
 					subscription,
 					subscriptionId: id,
 					notification,
-					recipient: { discordId, customUrl },
+					recipient: { id: userId, customUrl },
 					t,
 				}),
 			),
@@ -150,6 +170,10 @@ const SENT_NOTIFICATION_TTL_MS = 1000 * 60 * 60;
 
 const sentNotifications = new Map<string, number>();
 
+/**
+ *
+ * @internal
+ */
 export function clearSentNotificationsForTesting() {
 	sentNotifications.clear();
 }
@@ -197,11 +221,19 @@ async function sendPushNotification({
 	recipient: UserLinkArgs;
 	t: TFunction<["common"], undefined>;
 }) {
+	if (!isPushServiceEndpoint(subscription.endpoint)) {
+		await NotificationRepository.deleteSubscriptionById(subscriptionId);
+		return;
+	}
+
 	try {
 		await webPush.sendNotification(
 			subscription,
 			JSON.stringify(pushNotificationOptions(notification, recipient, t)),
-			{ urgency: NOTIFICATION_URGENCY[notification.type] },
+			{
+				urgency: NOTIFICATION_URGENCY[notification.type],
+				timeout: PUSH_NOTIFICATION_TIMEOUT_MS,
+			},
 		);
 	} catch (err) {
 		if (!(err instanceof WebPushError)) {

@@ -12,11 +12,17 @@ import { SendouSwitch } from "~/components/elements/Switch";
 import { useTheme } from "~/features/theme/core/provider";
 import { useCopyPngToClipboard } from "~/hooks/useCopyToClipboard";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { downloadBlob } from "~/utils/download";
 import { SENDOU_INK_BASE_URL } from "~/utils/urls";
+import { SNAPDOM_CAPTURE_OPTIONS } from "../img-export-constants";
 import { GraphicQrCodeContext } from "./Graphic";
 import styles from "./ImageExportDialog.module.css";
 
-const EXPORT_SCALE = 1.75;
+const EXPORT_CAPTURE_OPTIONS = {
+	...SNAPDOM_CAPTURE_OPTIONS,
+	quality: 1,
+	scale: 1.75,
+};
 
 const COARSE_POINTER_QUERY = "(pointer: coarse)";
 
@@ -111,17 +117,21 @@ function ImageExportDialogContent({
 
 	// snapdom re-downloads every image at export and silently drops failures, so they are warmed
 	// while the preview idles. Runs after every render since settings can mount new images
-	// (e.g. ability chunks); re-running once cached is ~7ms.
+	// (e.g. ability chunks); snapdom memoizes the capture so unchanged re-runs are cheap.
 	React.useEffect(() => {
 		if (exportAction) return;
 
 		let cancelled = false;
 
-		import("@zumer/snapdom")
-			.then(({ preCache }) => {
+		loadSnapdom()
+			.then(({ snapdom }) => {
 				if (cancelled || !frameRef.current) return;
 
-				return preCache(frameRef.current);
+				return snapdom(frameRef.current, {
+					...EXPORT_CAPTURE_OPTIONS,
+					// yields to the page so the preview stays responsive
+					fast: false,
+				});
 			})
 			.catch(() => {});
 
@@ -134,24 +144,20 @@ function ImageExportDialogContent({
 		if (!frameRef.current) return;
 
 		setExportAction("download");
-		try {
-			const blob = await capturePng(frameRef.current);
-
-			await saveImage(blob, `${filename}.png`, { canShare: isMobile });
-		} finally {
-			setExportAction(null);
-		}
+		await capturePng(frameRef.current)
+			.then((blob) =>
+				saveImage(blob, `${filename}.png`, { canShare: isMobile }),
+			)
+			.finally(() => setExportAction(null));
 	};
 
 	const handleCopy = async () => {
 		if (!frameRef.current) return;
 
 		setExportAction("copy");
-		try {
-			await copyPngToClipboard(capturePng(frameRef.current));
-		} finally {
-			setExportAction(null);
-		}
+		await copyPngToClipboard(capturePng(frameRef.current)).finally(() =>
+			setExportAction(null),
+		);
 	};
 
 	return (
@@ -219,26 +225,17 @@ function ImageExportDialogContent({
 	);
 }
 
+function loadSnapdom() {
+	return import("@zumer/snapdom");
+}
+
 async function capturePng(frame: HTMLDivElement) {
-	const { snapdom } = await import("@zumer/snapdom");
+	const { snapdom } = await loadSnapdom();
 
 	// defensive/speculative fix
 	await document.fonts.ready;
 
-	return snapdom.toBlob(frame, {
-		type: "png",
-		quality: 1,
-		scale: EXPORT_SCALE,
-		// snapdom's own download helper forces this, without it the export size would vary by device
-		dpr: 1,
-		embedFonts: true,
-		// without this snapdom re-encodes images down to their rendered size, making e.g. the tier image look rough
-		compress: false,
-		// names ending in a glyph outside the graphic's font (emoji, Greek, ...) get measured with
-		// one fallback font in the page and another when rasterized, so a box frozen to its exact
-		// text width ends up an ellipsis short. This re-measures the clone and pins diverging boxes
-		reconcile: true,
-	});
+	return snapdom.toBlob(frame, EXPORT_CAPTURE_OPTIONS);
 }
 
 function canCopyPngToClipboard() {
@@ -263,14 +260,7 @@ async function saveImage(
 	}
 
 	// a blob url is used over a data url because iOS Safari fails to save big data urls
-	const url = URL.createObjectURL(blob);
-	const anchor = document.createElement("a");
-	anchor.href = url;
-	anchor.download = filename;
-	document.body.appendChild(anchor);
-	anchor.click();
-	anchor.remove();
-	URL.revokeObjectURL(url);
+	downloadBlob(filename, blob);
 }
 
 function useIsMobile() {

@@ -1,17 +1,22 @@
 import type { LoaderFunctionArgs } from "react-router";
 import * as R from "remeda";
 import type { getUser } from "~/features/auth/core/user.server";
+import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
 import { resolveNotifications } from "~/features/notifications/core/resolve.server";
+import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
 	tournamentFromParams,
-	tournamentSharedCached,
 	tournamentTeamsFullCached,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
-import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import type { SerializeFrom } from "~/utils/remix";
-import type { LFGGroup, LFGGroupMember } from "../components/LFGGroupCard";
+import { notFound } from "~/utils/remix.server";
+import type {
+	LFGGroup,
+	LFGGroupMember,
+	LFGOwnTeam,
+} from "../components/LFGGroupCard";
 import * as TournamentLFGRepository from "../TournamentLFGRepository.server";
 
 export type SubEntry = Extract<
@@ -28,11 +33,11 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	);
 
 	if (!tournament.lfgEnabled) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	if (tournament.isInvitational) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	if (user) {
@@ -49,21 +54,23 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	}
 
 	if (tournament.registrationOpen) {
-		return lookingMode({ tournamentId, user });
+		return lookingMode({ tournament, user });
 	}
 
-	return subsMode({ tournamentId, user });
+	return subsMode({ tournament, user });
 };
 
 async function lookingMode({
-	tournamentId,
+	tournament,
 	user,
 }: {
-	tournamentId: number;
+	tournament: Tournament;
 	user: ReturnType<typeof getUser>;
 }) {
 	const rawGroups =
-		await TournamentLFGRepository.findLookingTeamsByTournamentId(tournamentId);
+		await TournamentLFGRepository.findLookingTeamsByTournamentId(
+			tournament.ctx.id,
+		);
 
 	const groups: LFGGroup[] = rawGroups.map((group) => {
 		const members = transformMembers(group.members);
@@ -75,7 +82,7 @@ async function lookingMode({
 			teamAvatarUrl: group.isPlaceholder ? null : (group.teamAvatarUrl ?? null),
 			note: group.note ?? null,
 			members,
-			usersRole: members.find((m) => m.id === user?.id)?.role ?? null,
+			permissions: group.permissions,
 		};
 	});
 
@@ -90,7 +97,7 @@ async function lookingMode({
 
 	const ownTeam = await resolveOwnTeam({
 		user,
-		tournamentId,
+		tournament,
 		ownGroup,
 	});
 
@@ -108,23 +115,24 @@ async function lookingMode({
 		ownGroup,
 		ownTeam,
 		likes,
-		tournamentId,
+		matchProfile: ownGroup || ownTeam ? null : await findOwnMatchProfile(user),
 	};
 }
 
 async function subsMode({
-	tournamentId,
+	tournament,
 	user,
 }: {
-	tournamentId: number;
+	tournament: Tournament;
 	user: ReturnType<typeof getUser>;
 }) {
-	const rawSubGroups =
-		await TournamentLFGRepository.findSubGroups(tournamentId);
+	const rawSubGroups = await TournamentLFGRepository.findSubGroups(
+		tournament.ctx.id,
+	);
 
 	const subs = rawSubGroups.map((group) => {
 		const member = group.members[0];
-		const weapons = parseWeapons(member.weapons);
+		const weapons = toWeapons(member.weapons);
 
 		const languages = member.languages ?? [];
 
@@ -132,9 +140,7 @@ async function subsMode({
 			teamId: group.id,
 			userId: member.id,
 			username: member.username,
-			discordId: member.discordId,
-			discordAvatar: member.discordAvatar,
-			customAvatarUrl: member.customAvatarUrl,
+			avatar: member.avatar,
 			customUrl: member.customUrl,
 			vc: member.vc,
 			languages,
@@ -144,35 +150,38 @@ async function subsMode({
 		};
 	});
 
+	const hasOwnSubPost = subs.some((sub) => sub.userId === user?.id);
+
 	return {
 		mode: "subs" as const,
 		...(await UserCardRepository.findAllByUserIds({
 			userIds: subs.map((sub) => sub.userId),
 		})),
 		subs,
-		hasOwnSubPost: subs.some((sub) => sub.userId === user?.id),
-		tournamentId,
+		hasOwnSubPost,
+		matchProfile: hasOwnSubPost ? null : await findOwnMatchProfile(user),
 	};
 }
 
 async function resolveOwnTeam({
 	user,
-	tournamentId,
+	tournament,
 	ownGroup,
 }: {
 	user: ReturnType<typeof getUser>;
-	tournamentId: number;
+	tournament: Tournament;
 	ownGroup: LFGGroup | null;
-}): Promise<LFGGroup | null> {
+}): Promise<LFGOwnTeam | null> {
 	if (!user) return null;
 	if (ownGroup) return null;
-
-	const tournament = await tournamentSharedCached(tournamentId);
 
 	const teamLite = tournament.teamMemberOfByUser(user);
 	if (!teamLite) return null;
 
-	const teamsFull = await tournamentTeamsFullCached({ tournamentId, user });
+	const teamsFull = await tournamentTeamsFullCached({
+		tournamentId: tournament.ctx.id,
+		user,
+	});
 	const team = teamsFull.find((t) => t.id === teamLite.id);
 	if (!team) return null;
 
@@ -183,9 +192,7 @@ async function resolveOwnTeam({
 	const members: LFGGroupMember[] = team.members.map((m) => ({
 		id: m.userId,
 		username: m.username,
-		discordId: m.discordId,
-		discordAvatar: m.discordAvatar,
-		customAvatarUrl: m.customAvatarUrl,
+		avatar: m.avatar,
 		customUrl: m.customUrl,
 		languages: [],
 		vc: null,
@@ -206,22 +213,29 @@ async function resolveOwnTeam({
 	};
 }
 
-function transformMembers(
-	rawMembers: Awaited<
-		ReturnType<typeof TournamentLFGRepository.findLookingTeamsByTournamentId>
-	>[number]["members"],
-): LFGGroupMember[] {
+async function findOwnMatchProfile(user: ReturnType<typeof getUser>) {
+	if (!user) return null;
+
+	const { vc, languages, weaponPool } =
+		await MatchProfileRepository.findSettingsByUserId(user.id);
+
+	return { vc, languages: languages ?? [], weaponPool };
+}
+
+type MemberRow = Awaited<
+	ReturnType<typeof TournamentLFGRepository.findLookingTeamsByTournamentId>
+>[number]["members"][number];
+
+function transformMembers(rawMembers: MemberRow[]): LFGGroupMember[] {
 	return rawMembers.map((m) => {
 		const languages = m.languages ?? [];
 
-		const weapons = parseWeapons(m.weapons);
+		const weapons = toWeapons(m.weapons);
 
 		return {
 			id: m.id,
 			username: m.username,
-			discordId: m.discordId,
-			discordAvatar: m.discordAvatar,
-			customAvatarUrl: m.customAvatarUrl,
+			avatar: m.avatar,
 			customUrl: m.customUrl,
 			languages,
 			vc: m.vc,
@@ -233,25 +247,12 @@ function transformMembers(
 	});
 }
 
-function parseWeapons(raw: unknown): Array<{
-	weaponSplId: MainWeaponId;
-	isFavorite: boolean;
-	isTenStar: boolean;
-}> | null {
-	if (!raw) return null;
+function toWeapons(weapons: MemberRow["weapons"]) {
+	if (weapons.length === 0) return null;
 
-	const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-	if (!Array.isArray(parsed) || parsed.length === 0) return null;
-
-	return parsed.map(
-		(w: {
-			weaponSplId: MainWeaponId;
-			isFavorite: number | boolean;
-			isTenStar: number | boolean;
-		}) => ({
-			weaponSplId: w.weaponSplId,
-			isFavorite: Boolean(w.isFavorite),
-			isTenStar: Boolean(w.isTenStar),
-		}),
-	);
+	return weapons.map((weapon) => ({
+		weaponSplId: weapon.weaponSplId,
+		isFavorite: Boolean(weapon.isFavorite),
+		isTenStar: Boolean(weapon.isTenStar),
+	}));
 }

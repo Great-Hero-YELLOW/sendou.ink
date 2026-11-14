@@ -1,6 +1,8 @@
 import * as R from "remeda";
 import type { Tables } from "~/db/tables";
 import { ADMIN_ID, STAFF_IDS } from "~/features/admin/admin-constants";
+import * as LobbyMatchRepository from "~/features/lobbies/LobbyMatchRepository.server";
+import * as LobbyRepository from "~/features/lobbies/LobbyRepository.server";
 import * as ScrimPostRepository from "~/features/scrims/ScrimPostRepository.server";
 import * as SQGroupRepository from "~/features/sendouq/SQGroupRepository.server";
 import * as SQMatchRepository from "~/features/sendouq-match/SQMatchRepository.server";
@@ -12,11 +14,13 @@ import { requirePermission } from "~/modules/permissions/guards.server";
 import { databaseTimestampNow } from "~/utils/dates";
 import { notFoundIfNullish } from "~/utils/remix.server";
 import {
+	lobbyPage,
 	SENDOUQ_LOOKING_PAGE,
 	scrimPage,
 	sendouQMatchPage,
 	tournamentMatchPage,
 	tournamentSubsPage,
+	tournamentTeamPage,
 } from "~/utils/urls";
 import * as ChatRepository from "./ChatRepository.server";
 import type { ChatRoomType } from "./chat-types";
@@ -54,6 +58,7 @@ export interface ResolvedRoom {
 	closedAt: number | null;
 	/** Whether the owner's activity has concluded (e.g. the match was finalized). */
 	inactive: boolean;
+	isLookingForMembers: boolean;
 }
 
 type ChatRoomRow = Tables["ChatRoom"];
@@ -82,9 +87,10 @@ export async function findAllByUserId(userId: number): Promise<ResolvedRoom[]> {
 
 	const resolved = await resolveAll(roomIds);
 
-	// a solo group has no conversation to show yet
 	return resolved.filter(
-		(room) => room.type !== "SQ_GROUP" || room.participantUserIds.length >= 2,
+		(room) =>
+			(room.type !== "SQ_GROUP" && room.type !== "TOURNAMENT_TEAM") ||
+			room.participantUserIds.length >= 2,
 	);
 }
 
@@ -104,6 +110,8 @@ export async function resolveAll(roomIds: number[]): Promise<ResolvedRoom[]> {
 			resolveTournamentMatchRooms(byType("TOURNAMENT_MATCH")),
 			resolveTournamentTeamRooms(byType("TOURNAMENT_TEAM")),
 			resolveScrimRooms(byType("SCRIM")),
+			resolveLobbyRooms(byType("LOBBY")),
+			resolveLobbyTeamRooms(byType("LOBBY_TEAM")),
 		])
 	).flat();
 
@@ -166,12 +174,12 @@ async function resolveTournamentMatchRooms(
 			),
 		),
 	);
-	const [members, organizers] = await Promise.all([
-		TournamentTeamRepository.findAllMembersByTeamIds(teamIds),
-		TournamentRepository.findOrganizerPermissionsByTournamentIds(
+	const members =
+		await TournamentTeamRepository.findAllMembersByTeamIds(teamIds);
+	const organizers =
+		await TournamentRepository.findOrganizerPermissionsByTournamentIds(
 			R.unique(owners.map((owner) => owner.tournamentId)),
-		),
-	]);
+		);
 
 	return joinOwners(rooms, owners, (owner) => {
 		const opponentTeamIds = [
@@ -219,12 +227,18 @@ async function resolveTournamentTeamRooms(
 			teamName: owner.name,
 			tournamentName: owner.tournamentName,
 		},
-		url: tournamentSubsPage(owner.tournamentId),
+		url: owner.isLooking
+			? tournamentSubsPage(owner.tournamentId)
+			: tournamentTeamPage({
+					tournamentId: owner.tournamentId,
+					tournamentTeamId: owner.id,
+				}),
 		imageUrl: owner.logoUrl,
 		participantUserIds: owner.members.map((member) => member.userId),
 		observerUserIds: organizers.get(owner.tournamentId)?.ORGANIZE ?? [],
 		labelByUserId: organizerLabels(organizers.get(owner.tournamentId)),
 		inactive: Boolean(owner.isFinalized),
+		isLookingForMembers: Boolean(owner.isLooking),
 	}));
 }
 
@@ -251,6 +265,49 @@ async function resolveScrimRooms(
 	}));
 }
 
+async function resolveLobbyRooms(
+	rooms: ChatRoomRow[],
+): Promise<ResolvedRoom[]> {
+	if (rooms.length === 0) return [];
+
+	const owners = await LobbyRepository.findAllByChatRoomIds(
+		rooms.map((room) => room.id),
+	);
+
+	return joinOwners(rooms, owners, (owner) => ({
+		titleParams: { name: owner.name },
+		url: lobbyPage(owner.id),
+		imageUrl: null,
+		// leaving after playing a set keeps the chat, only a kick takes it away
+		participantUserIds: R.unique(
+			[...owner.participants, ...owner.leftUsers].map(
+				(participant) => participant.userId,
+			),
+		),
+		observerUserIds: [],
+		inactive: owner.endedAt !== null,
+	}));
+}
+
+async function resolveLobbyTeamRooms(
+	rooms: ChatRoomRow[],
+): Promise<ResolvedRoom[]> {
+	if (rooms.length === 0) return [];
+
+	const owners = await LobbyMatchRepository.findAllTeamChatsByChatRoomIds(
+		rooms.map((room) => room.id),
+	);
+
+	return joinOwners(rooms, owners, (owner) => ({
+		titleParams: { name: owner.lobbyName, side: owner.side },
+		url: lobbyPage(owner.lobbyId),
+		imageUrl: null,
+		participantUserIds: owner.userIds,
+		observerUserIds: [],
+		inactive: owner.isInactive,
+	}));
+}
+
 function joinOwners<T extends { chatRoomId: number }>(
 	rooms: ChatRoomRow[],
 	owners: T[],
@@ -260,7 +317,9 @@ function joinOwners<T extends { chatRoomId: number }>(
 	> & {
 		participantUserIds: number[];
 		observerUserIds: number[];
-	} & Partial<Pick<ResolvedRoom, "inactive" | "labelByUserId">>,
+	} & Partial<
+			Pick<ResolvedRoom, "inactive" | "labelByUserId" | "isLookingForMembers">
+		>,
 ): ResolvedRoom[] {
 	const ownerByRoomId = new Map(
 		owners.map((owner) => [owner.chatRoomId, owner]),
@@ -278,6 +337,7 @@ function joinOwners<T extends { chatRoomId: number }>(
 			expiresAt: room.expiresAt,
 			closedAt: room.closedAt,
 			inactive: Boolean(room.inactive),
+			isLookingForMembers: false,
 			...built,
 			labelByUserId: nonParticipantLabels(
 				labelByUserId ?? {},
@@ -325,7 +385,10 @@ function nonParticipantLabels(
 	);
 }
 
-/** Who may view, post to and observe a room, given the participants and observers its owner resolved to. */
+/**
+ * Who may view, post to and observe a room, given the participants and observers its owner resolved to.
+ * @internal
+ */
 export function permissionsOf(args: {
 	room: Pick<ChatRoomRow, "type" | "expiresAt" | "closedAt">;
 	participantUserIds: number[];

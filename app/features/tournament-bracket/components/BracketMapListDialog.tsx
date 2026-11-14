@@ -10,6 +10,7 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { type FetcherWithComponents, Link, useFetcher } from "react-router";
+import * as R from "remeda";
 import { SendouDatePicker } from "~/components/elements/DatePicker";
 import { SendouDialog } from "~/components/elements/Dialog";
 import {
@@ -38,7 +39,6 @@ import * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import * as LeagueScheduling from "~/features/tournament-match/core/LeagueScheduling";
 import { modesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
-import { nullFilledArray } from "~/utils/arrays";
 import { invariant } from "~/utils/invariant";
 import { assertUnreachable } from "~/utils/types";
 import { SendouButton } from "../../../components/elements/Button";
@@ -55,6 +55,7 @@ import {
 	type TournamentRoundMapList,
 } from "../core/toMapList";
 import { bracketSchema } from "../tournament-bracket-schemas";
+import { isEliminationType } from "../tournament-bracket-utils";
 import styles from "./BracketMapListDialog.module.css";
 import { CustomFlowBuilder } from "./CustomFlowBuilder";
 
@@ -79,9 +80,7 @@ export function BracketMapListDialog({
 	const bracketTeamsCount = bracket.participantTournamentTeamIds.length;
 
 	const preparedMaps =
-		!isPreparing &&
-		(bracket.type === "single_elimination" ||
-			bracket.type === "double_elimination")
+		!isPreparing && isEliminationType(bracket.type)
 			? // we are about to start bracket, "trim" prepared map for actual
 				PreparedMaps.trimPreparedEliminationMaps({
 					preparedMaps: untrimmedPreparedMaps,
@@ -119,7 +118,7 @@ export function BracketMapListDialog({
 	const [thirdPlaceMatchLinked, setThirdPlaceMatchLinked] = React.useState(
 		() => {
 			if (
-				!Engine.hasThirdPlaceMatch({
+				!Engine.thirdPlaceMatchLinkable({
 					type: bracket.type,
 					settings: bracket.settings,
 					participantsCount: eliminationTeamCount ?? 2,
@@ -165,7 +164,7 @@ export function BracketMapListDialog({
 				bracket,
 				teamCount: eliminationTeamCount ?? 2,
 			})
-		: bracket.data;
+		: PreparedMaps.mapListData(bracket.data);
 	const rounds = bracketData.round;
 	const defaultRoundBestOfs = bracket.defaultRoundBestOfs(bracketData);
 
@@ -225,47 +224,12 @@ export function BracketMapListDialog({
 		tournamentRoundMapList: maps,
 	});
 
-	const roundsWithNames = React.useMemo(() => {
-		if (bracket.type === "round_robin" || bracket.type === "swiss") {
-			return Array.from(maps.keys()).map((roundId, i) => {
-				return {
-					id: roundId,
-					name: `Round ${i + 1}`,
-				};
-			});
-		}
-
-		if (bracket.type === "double_elimination") {
-			const winners = getRounds({ type: "winners", bracketData });
-			const losers = getRounds({ type: "losers", bracketData });
-
-			return [...winners, ...losers];
-		}
-
-		if (bracket.type === "single_elimination") {
-			const singleElimRounds = getRounds({ type: "single", bracketData });
-
-			const hasThirdPlaceMatch = singleElimRounds.some(
-				(round) => round.section === "finals",
-			);
-
-			if (!thirdPlaceMatchLinked || !hasThirdPlaceMatch)
-				return singleElimRounds;
-
-			return singleElimRounds
-				.filter((round) => round.section !== "finals")
-				.map((round) =>
-					round.name === "Finals"
-						? {
-								...round,
-								name: TOURNAMENT.ROUND_NAMES.FINALS_THIRD_PLACE_MATCH_UNIFIED,
-							}
-						: round,
-				);
-		}
-
-		assertUnreachable(bracket.type);
-	}, [bracketData, maps, bracket.type, thirdPlaceMatchLinked]);
+	const roundsWithNames = roundsWithNamesFor({
+		bracketType: bracket.type,
+		bracketData,
+		roundIds: Array.from(maps.keys()),
+		thirdPlaceMatchLinked,
+	});
 
 	const mapCountsWithGlobalCount = (newCount: number) => {
 		const newMap = new Map(defaultRoundBestOfs);
@@ -362,9 +326,7 @@ export function BracketMapListDialog({
 		bracket.type === "round_robin" || bracket.type === "swiss";
 
 	const needsToPickEliminationTeamCount =
-		(bracket.type === "single_elimination" ||
-			bracket.type === "double_elimination") &&
-		!eliminationTeamCount;
+		isEliminationType(bracket.type) && !eliminationTeamCount;
 
 	const roundMapsInput = Array.from(maps.entries()).map(([key, value]) => ({
 		...value,
@@ -399,9 +361,7 @@ export function BracketMapListDialog({
 					name="maps"
 					value={JSON.stringify(roundMapsInput)}
 				/>
-				{isPreparing &&
-				(bracket.type === "single_elimination" ||
-					bracket.type === "double_elimination") ? (
+				{isPreparing && isEliminationType(bracket.type) ? (
 					<input
 						type="hidden"
 						name="eliminationTeamCount"
@@ -439,9 +399,7 @@ export function BracketMapListDialog({
 					<>
 						<div className="stack horizontal items-center justify-between">
 							<div className="stack horizontal lg flex-wrap">
-								{isPreparing &&
-								(bracket.type === "single_elimination" ||
-									bracket.type === "double_elimination") ? (
+								{isPreparing && isEliminationType(bracket.type) ? (
 									<EliminationTeamCountSelect
 										type={bracket.type}
 										count={eliminationTeamCount}
@@ -886,15 +844,17 @@ function teamCountAdjustedBracketData({
 		case "round_robin":
 			// full bracket (no bye round) even if registration is underway
 			return bracket.generateMatchesData(
-				nullFilledArray(
+				R.times(
 					bracket.settings?.teamsPerGroup ??
 						TOURNAMENT.RR_DEFAULT_TEAM_COUNT_PER_GROUP,
-				).map((_, i) => i + 1),
+					(i) => i + 1,
+				),
 			);
 		case "single_elimination":
 		case "double_elimination":
-			return bracket.generateMatchesData(
-				nullFilledArray(teamCount).map((_, i) => i + 1),
+			// groups share map lists
+			return PreparedMaps.mapListData(
+				bracket.generateMatchesData(R.times(teamCount, (i) => i + 1)),
 			);
 	}
 }
@@ -1074,6 +1034,7 @@ function RoundMapList({
 	hoveredMap: string | null;
 }) {
 	const { t } = useTranslation(["forms"]);
+	const playableAtId = React.useId();
 	const minCount = TOURNAMENT.AVAILABLE_BEST_OF[0];
 	const maxCount = TOURNAMENT.AVAILABLE_BEST_OF.at(-1)!;
 
@@ -1082,8 +1043,11 @@ function RoundMapList({
 			<h3>{name}</h3>
 			{playableAt ? (
 				<div className={styles.playableAt}>
+					<Label htmlFor={playableAtId}>
+						{t("forms:labels.roundPlayableFrom")}
+					</Label>
 					<SendouDatePicker
-						label={t("forms:labels.roundPlayableFrom")}
+						id={playableAtId}
 						granularity="day"
 						value={
 							playableAt.value !== null
@@ -1155,7 +1119,7 @@ function RoundMapList({
 			</div>
 			<ol className="pl-0">
 				{maps.pickBan === "CUSTOM"
-					? nullFilledArray(maps.count).map((_, i) => (
+					? R.times(maps.count, (i) => (
 							<MysteryRow
 								key={i}
 								number={i + 1}
@@ -1163,61 +1127,64 @@ function RoundMapList({
 								isCustomFlow
 							/>
 						))
-					: nullFilledArray(
+					: R.times(
 							maps.pickBan === "BAN_2" ? maps.count + 2 : maps.count,
-						).map((_, i) => {
-							const map = maps.list?.[i];
+							(i) => {
+								const map = maps.list?.[i];
 
-							if (map) {
+								if (map) {
+									return (
+										<MapListRow
+											key={i}
+											map={map}
+											number={i + 1}
+											onHoverMap={onHoverMap}
+											hoveredMap={hoveredMap}
+											onMapChange={(newMap) => {
+												onRoundMapListChange({
+													...maps,
+													list: maps.list?.map((m, j) =>
+														i === j ? newMap : m,
+													),
+												});
+											}}
+										/>
+									);
+								}
+
+								const isTeamsPick = !maps.list && i === 0;
+								const isCounterpicks =
+									!isTeamsPick && maps.pickBan === "COUNTERPICK";
+								const mode = maps.modes?.[i];
+
+								if (mode) {
+									return (
+										<ModeListRow
+											key={i}
+											mode={mode}
+											number={i + 1}
+											isCounterpicks={isCounterpicks}
+											onModeChange={(newMode) => {
+												onRoundMapListChange({
+													...maps,
+													modes: maps.modes?.map((m, j) =>
+														i === j ? newMode : m,
+													),
+												});
+											}}
+										/>
+									);
+								}
+
 								return (
-									<MapListRow
+									<MysteryRow
 										key={i}
-										map={map}
-										number={i + 1}
-										onHoverMap={onHoverMap}
-										hoveredMap={hoveredMap}
-										onMapChange={(newMap) => {
-											onRoundMapListChange({
-												...maps,
-												list: maps.list?.map((m, j) => (i === j ? newMap : m)),
-											});
-										}}
-									/>
-								);
-							}
-
-							const isTeamsPick = !maps.list && i === 0;
-							const isCounterpicks =
-								!isTeamsPick && maps.pickBan === "COUNTERPICK";
-							const mode = maps.modes?.[i];
-
-							if (mode) {
-								return (
-									<ModeListRow
-										key={i}
-										mode={mode}
 										number={i + 1}
 										isCounterpicks={isCounterpicks}
-										onModeChange={(newMode) => {
-											onRoundMapListChange({
-												...maps,
-												modes: maps.modes?.map((m, j) =>
-													i === j ? newMode : m,
-												),
-											});
-										}}
 									/>
 								);
-							}
-
-							return (
-								<MysteryRow
-									key={i}
-									number={i + 1}
-									isCounterpicks={isCounterpicks}
-								/>
-							);
-						})}
+							},
+						)}
 			</ol>
 		</div>
 	);
@@ -1260,14 +1227,24 @@ function MapListRow({
 		];
 	});
 
+	const isHighlighted = serializedMapMode(map) === hoveredMap;
+
 	return (
 		<li
 			className={clsx(styles.mapListRow, {
-				"text-theme-secondary underline": serializedMapMode(map) === hoveredMap,
+				[styles.mapListRowHighlighted]: isHighlighted,
 			})}
 			onMouseEnter={() => onHoverMap(serializedMapMode(map))}
+			onMouseLeave={() => onHoverMap(null)}
 		>
-			<span className="text-sm text-lighter font-semi-bold">{number}.</span>
+			<span
+				className={clsx(
+					"text-sm font-semi-bold",
+					isHighlighted ? "text-theme" : "text-lighter",
+				)}
+			>
+				{number}.
+			</span>
 			<SendouSelect
 				aria-label="Map"
 				items={items}
@@ -1318,6 +1295,7 @@ function MapListRow({
 /**
  * Map search filter with an optional mode prefix: "sz" matches every Splat Zones map, "sz crab" those
  * whose stage name contains "crab", no prefix matches the stage name. `textValue` is `"${modeShort} ${stageName}"`.
+ * @internal
  */
 export function mapSearchFilter(
 	textValue: string,
@@ -1507,4 +1485,55 @@ function PatternInputs({
 			</div>
 		</div>
 	);
+}
+
+function roundsWithNamesFor({
+	bracketType,
+	bracketData,
+	roundIds,
+	thirdPlaceMatchLinked,
+}: {
+	bracketType: Bracket["type"];
+	bracketData: Parameters<typeof getRounds>[0]["bracketData"];
+	roundIds: number[];
+	thirdPlaceMatchLinked: boolean;
+}) {
+	if (bracketType === "round_robin" || bracketType === "swiss") {
+		return roundIds.map((roundId, i) => {
+			return {
+				id: roundId,
+				name: `Round ${i + 1}`,
+			};
+		});
+	}
+
+	if (bracketType === "double_elimination") {
+		const winners = getRounds({ type: "winners", bracketData });
+		const losers = getRounds({ type: "losers", bracketData });
+
+		return [...winners, ...losers];
+	}
+
+	if (bracketType === "single_elimination") {
+		const singleElimRounds = getRounds({ type: "single", bracketData });
+
+		const hasThirdPlaceMatch = singleElimRounds.some(
+			(round) => round.section === "finals",
+		);
+
+		if (!thirdPlaceMatchLinked || !hasThirdPlaceMatch) return singleElimRounds;
+
+		return singleElimRounds
+			.filter((round) => round.section !== "finals")
+			.map((round) =>
+				round.name === "Finals"
+					? {
+							...round,
+							name: TOURNAMENT.ROUND_NAMES.FINALS_THIRD_PLACE_MATCH_UNIFIED,
+						}
+					: round,
+			);
+	}
+
+	assertUnreachable(bracketType);
 }

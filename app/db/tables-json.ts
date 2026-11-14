@@ -2,6 +2,7 @@
 
 import type { DBBoolean } from "~/db/tables";
 import type { CalendarFilters } from "~/features/calendar/calendar-types";
+import type { StreamAccount } from "~/features/live-streams/live-streams-constants";
 import type { ScrimFilters } from "~/features/scrims/scrims-types";
 import type { CustomThemeVar } from "~/features/theme/theme-constants";
 import type {
@@ -58,6 +59,9 @@ export interface UserPreferences {
 	/** Hides recent tournament results and scores until revealed */
 	spoilerFreeMode?: boolean;
 	weaponReportDefaultOpen?: boolean;
+	voicePushToTalk?: boolean;
+	/** Dev only: the front page shows the feed */
+	newHomePage?: boolean;
 	/** Start of the week the schedule sidebar nudge was last dismissed for, so it stays gone until the horizon rolls over. */
 	scheduleNudgeDismissedWeekStartsAt?: number;
 	/** Who may see the user's schedule. Missing = everyone. Once set it is an allow-list, so a team joined later stays hidden until added. */
@@ -101,7 +105,6 @@ export interface TournamentSettings {
 	maxMembersPerTeam?: number;
 	isTest?: boolean;
 	isDraft?: boolean;
-	requireSendouQParticipation?: boolean;
 	/** Is this tournament a league? Leagues are played over many weeks, each starting bracket being a division. */
 	isLeague?: boolean;
 	/** Team picked map configuration, always set when `Tournament.mapPickingStyle` is "AUTO". */
@@ -114,15 +117,19 @@ export interface TeamPickSettings {
 	pool: TeamPickPool;
 }
 
+/** Official cast channel of a tournament. */
+export interface CastAccount extends StreamAccount {
+	/** Shown in place of `account`, which for YouTube is a channel id. */
+	name: string;
+}
+
+type CastedMatch = StreamAccount & { matchId: number };
+
 export interface CastedMatchesInfo {
 	/** Matches locked because they are pending to be casted */
-	lockedMatches: Array<{ twitchAccount: string; matchId: number }>;
-	castedMatches: { twitchAccount: string; matchId: number }[];
-	castedMatchHistory?: Array<{
-		twitchAccount: string;
-		matchId: number;
-		timestamp: number;
-	}>;
+	lockedMatches: CastedMatch[];
+	castedMatches: CastedMatch[];
+	castedMatchHistory?: Array<CastedMatch & { timestamp: number }>;
 }
 
 export interface SeedingSnapshot {
@@ -168,15 +175,28 @@ export interface CustomPickBanFlow {
 	postGame: CustomPickBanStep[];
 }
 
+/** Named rounds of an elimination bracket that can be left unplayed, see `SkippedRounds`. */
+export type SkippableRound =
+	// SE
+	| "SEMIS"
+	| "FINALS"
+	| "THIRD_PLACE_MATCH"
+	// DE
+	| "WB_FINALS"
+	| "LB_SEMIS"
+	| "LB_FINALS"
+	| "GRAND_FINALS"
+	| "BRACKET_RESET";
+
 /** When updating this also update `settingsFromFormValues` in calendar-progression-form.ts */
 export interface TournamentStageSettings {
-	// SE
-	thirdPlaceMatch?: boolean;
 	// RR
 	teamsPerGroup?: number;
+	/** (SE & DE only) Rounds not played, the bracket stops once enough teams are resolved. */
+	skippedRounds?: SkippableRound[];
 	/** (RR only) When true, teams are split into A and B divisions and matches only pair A-vs-B. Only valid on starting brackets. */
 	hasAbDivisions?: boolean;
-	// SWISS
+	/** Swiss, SE & DE. SE & DE: more than 1 = the bracket is split into groups, each playing its own elimination bracket. */
 	groupCount?: number;
 	// SWISS
 	roundCount?: number;

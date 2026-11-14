@@ -1,75 +1,164 @@
 /**
  * PlayerStatus: per-player state off the eight squid/octo icons flanking the
  * timer, emitted alongside each Objective read (same frame, same `time`).
- * Pixel-class fractions decide a slot (calibration in rois.ts): alive =
- * saturated team-ink body; special held = pale team-tinted wash that PULSES
- * (bright frames light the shoulder probe, trough frames only read tinted);
- * splatted = neutral grey plate under a grey X, ink-poor and untinted whatever
- * the backdrop brightness. Three geometries, named by which
- * side sits at the packed pitch: "even", "narrow-right" (usual spectator HUD;
- * S3 POV draws it too) and "narrow-left" (right column nearly coincides with
- * even's). Camera badges prove a broadcast, but broadcasts can hide them, so a
- * badge-less frame picks the geometry reading more decisively, with a slot-comb
- * win proving narrow-left and a history-less near-tie staying narrow-right
- * (pickLayout). On narrow layouts only the unsaturated glow counts toward ready
- * so saturated backdrop leaks cannot fake or suppress a state.
+ *
+ * Geometry is fitted, not picked: each side's four icons sit at one pitch
+ * from an inner icon pinned beside the timer, and the game resizes a side
+ * continuously (S3 POV swings it with the objective, a splatted POV player
+ * shrinks the strip, spectators toggle views, broadcasts mirror it), through
+ * in-between pitches no fixed arrangement fits. Every (pitch, inner center)
+ * hypothesis scores how cleanly its four apexes stand out from the backdrop
+ * beside them: the apex is the one part of an icon no weapon render, gauge
+ * digit or badge covers, and its triangle core lies inside a squid's kite and
+ * an octoling's dome alike. The previous read's fit holds unless the best
+ * beats it clearly. Camera badges only prove a broadcast (`cast`): a white
+ * backdrop under a POV strip fakes them now and then, so they never place it.
+ *
+ * State reads off the apex core alone, which the wash and the X cover whole:
+ * saturated ink of any hue = alive; pale = special ready (the wash pulses from
+ * lilac or pink to near-white, but never saturates or greys); else splatted
+ * (the dark plate under grey X strokes, or a blown-out backdrop through it).
+ * A pale apex over a body still in team ink on both sides is a weapon render
+ * (Painbrush's head), not the wash, which pales the whole icon.
  */
+import { CANONICAL_WIDTH } from "../../canonical";
 import type { Mat } from "../../cv";
 import { copyRoi, type Roi } from "../../image";
 import type { DetectedEvent } from "../types";
 import {
-	STATUS_BODY_BOX_EVEN,
-	STATUS_BODY_BOX_NARROW,
+	STATUS_ALIVE_MIN_INK,
+	STATUS_APEX_RISE,
+	STATUS_BAND,
 	STATUS_CAST_MIN_DPAD_WHITE,
-	STATUS_COMB_BAND_H,
-	STATUS_COMB_BAND_Y,
-	STATUS_COMB_CENTER_HALF_WIDTH,
-	STATUS_COMB_GAP_HALF_WIDTH,
-	STATUS_COMB_MAX_SHIFT,
-	STATUS_COMB_SIDE_SPANS,
-	STATUS_DEAD_MAX_BODY_INK,
-	STATUS_DEAD_MAX_SHOULDER_GLOW,
+	STATUS_DARK_MAX_VALUE,
+	STATUS_DOME_CENTER_DY,
+	STATUS_DOME_RADIUS,
 	STATUS_DPAD_PROBES_EVEN,
 	STATUS_DPAD_PROBES_NARROW_LEFT,
 	STATUS_DPAD_PROBES_NARROW_RIGHT,
-	STATUS_FRESH_EVEN_MIN_LEAD,
-	STATUS_FRESH_NARROW_LEFT_MIN_LEFT_LEAD,
-	STATUS_FRESH_NARROW_LEFT_RIVAL_COMB_VETO,
-	STATUS_FRESH_NARROW_RIGHT_MIN_DECISIVENESS,
-	STATUS_GLOW_MAX_SPREAD,
-	STATUS_GLOW_MIN_VALUE,
-	STATUS_INK_MIN_SPREAD,
+	STATUS_FIT_REFINED_SEEDS,
+	STATUS_FIT_ROW_STEP,
+	STATUS_GAP_WEIGHT,
+	STATUS_GREY_MAX_SATURATION,
+	STATUS_ICON_CENTER_Y,
+	STATUS_INK_MIN_SATURATION,
 	STATUS_INK_MIN_VALUE,
-	STATUS_LAYOUT_SCORE_CAP,
-	STATUS_LAYOUT_STICKY_MARGIN,
-	STATUS_NARROW_LEFT_COMB_LEAD,
-	STATUS_NARROW_LEFT_COMB_MIN,
-	STATUS_PALE_MAX_SPREAD,
+	STATUS_INNER_CENTER_RANGES,
 	STATUS_PALE_MIN_VALUE,
-	STATUS_READY_CLEAN_WASH_MAX_BODY_INK,
-	STATUS_READY_INKY_WASH_MIN_BODY_PALE,
-	STATUS_READY_MIN_BODY_PALE,
-	STATUS_READY_MIN_SHOULDER_GLOW,
-	STATUS_READY_MIN_WASH_BODY_PALE,
-	STATUS_READY_WASH_MAX_BODY_INK,
-	STATUS_SHOULDER_BOX_EVEN,
-	STATUS_SHOULDER_BOX_NARROW,
-	STATUS_SLOT_CENTERS_EVEN,
-	STATUS_SLOT_CENTERS_NARROW_LEFT,
-	STATUS_SLOT_CENTERS_NARROW_RIGHT,
-	STATUS_STICKY_FLIP_COMB_MIN,
-	STATUS_TINT_MIN_SPREAD,
-	STATUS_TINT_MIN_VALUE,
-	STATUS_WASH_MIN_BODY_TINT,
+	STATUS_PITCH_RANGE,
+	STATUS_READY_MAX_GREY,
+	STATUS_READY_MIN_PALE,
+	STATUS_REFERENCE_PITCH,
+	STATUS_STICKY_SCORE_RATIO,
+	STATUS_TEAM_HUE_ROIS,
+	STATUS_TEAM_MAX_HUE_DIST,
+	STATUS_TEAM_WEIGHT,
+	STATUS_VACANT_BODY,
+	STATUS_VACANT_MAX_GREY,
+	STATUS_VACANT_MIN_DARK,
+	STATUS_WASH_BODY_SIDE,
+	STATUS_WASH_MAX_BODY_INK,
 	STATUS_WHITE_MAX_SPREAD,
 	STATUS_WHITE_MIN_VALUE,
 } from "./rois";
 
 export const PLAYER_STATUS_EVENT_TYPE = "PlayerStatus";
 
-export type PlayerStatusFlags = [boolean, boolean, boolean, boolean];
+const BADGE_ROWS = [
+	STATUS_DPAD_PROBES_NARROW_RIGHT,
+	STATUS_DPAD_PROBES_NARROW_LEFT,
+	STATUS_DPAD_PROBES_EVEN,
+];
 
-export type PlayerStatusLayout = "even" | "narrow-right" | "narrow-left";
+const PREFIX_FIELDS = 5;
+
+const PITCH_GEOMETRY: PitchGeometry[] = (() => {
+	const geometries: PitchGeometry[] = [];
+	for (
+		let pitch = STATUS_PITCH_RANGE[0];
+		pitch <= STATUS_PITCH_RANGE[1];
+		pitch++
+	) {
+		const scale = pitch / STATUS_REFERENCE_PITCH;
+		const apex = STATUS_ICON_CENTER_Y - STATUS_APEX_RISE * scale;
+		const domeCenter = STATUS_ICON_CENTER_Y + STATUS_DOME_CENTER_DY * scale;
+		// fit rows land on every STATUS_FIT_ROW_STEP-th band row, the only ones readBand sums
+		const rows = (top: number, bottom: number, step = STATUS_FIT_ROW_STEP) => {
+			const ys: number[] = [];
+			let y = Math.round(apex + top * scale);
+			y += (step - ((y - STATUS_BAND.y) % step)) % step;
+			for (; y <= apex + bottom * scale; y += step) ys.push(y);
+			return ys;
+		};
+		geometries.push({
+			edge: rows(5, 28).flatMap((y) => [
+				y,
+				Math.floor(y - apex - 3),
+				Math.ceil(y - apex + 3),
+				Math.floor(y - apex + 9),
+			]),
+			dome: rows(6, 20).flatMap((y) => {
+				const half = Math.sqrt(
+					Math.max(
+						0,
+						(STATUS_DOME_RADIUS * scale) ** 2 - (y - domeCenter) ** 2,
+					),
+				);
+				return [
+					y,
+					Math.floor(half - 3),
+					Math.ceil(half + 3),
+					Math.floor(half + 9),
+				];
+			}),
+			corners: rows(-2, 12),
+			cornerNear: Math.round(0.4 * pitch),
+			cornerFar: Math.floor(0.5 * pitch),
+			state: rows(8, 26, 1).flatMap((y) => [y, Math.floor(y - apex - 3)]),
+		});
+	}
+	return geometries;
+})();
+
+/** Hue of every 5-bit-per-channel color (at its cell's center), for the per-pixel team test. */
+const HUE_TABLE = (() => {
+	const table = new Uint16Array(1 << 15);
+	for (let index = 0; index < table.length; index++) {
+		table[index] = Math.round(
+			hueOf(
+				((index >> 10) << 3) + 4,
+				(((index >> 5) & 31) << 3) + 4,
+				((index & 31) << 3) + 4,
+			),
+		);
+	}
+	return table;
+})();
+
+/** Band rows (every STATUS_FIT_ROW_STEP-th from the top) the fit samples: the only ones with prefix sums. */
+const FIT_ROWS =
+	Math.floor(
+		(Math.max(
+			...PITCH_GEOMETRY.flatMap(({ edge, corners }) => [
+				edge[edge.length - 4]!,
+				corners[corners.length - 1]!,
+			]),
+		) -
+			STATUS_BAND.y) /
+			STATUS_FIT_ROW_STEP,
+	) + 1;
+
+/** Prefix entry of x = 0 on each fit row (indexed by frame y), so lookups skip the row arithmetic. */
+const ROW_BASE = (() => {
+	const bases = new Int32Array(STATUS_BAND.y + STATUS_BAND.h);
+	for (let row = 0; row < FIT_ROWS; row++) {
+		bases[STATUS_BAND.y + row * STATUS_FIT_ROW_STEP] =
+			row * (STATUS_BAND.w + 1) - STATUS_BAND.x;
+	}
+	return bases;
+})();
+
+export type PlayerStatusFlags = [boolean, boolean, boolean, boolean];
 
 export interface PlayerStatusData {
 	/** match timer seconds, same as the paired Objective event's */
@@ -78,21 +167,22 @@ export interface PlayerStatusData {
 	special: [PlayerStatusFlags, PlayerStatusFlags];
 	/** splatted per slot, same arrangement */
 	dead: [PlayerStatusFlags, PlayerStatusFlags];
-	/**
-	 * strip geometry, named by which side sits at the packed ~76px pitch ("even"
-	 * = both at ~88px). Pure geometry, never footage type: S3 POV draws both
-	 * narrow arrangements (2026-08-11 Um'ami VoD = narrow-right, 2026-08-22
-	 * Sendou VoD = narrow-left) and the SWS26 broadcast draws even, so only
-	 * `cast` is broadcast evidence
-	 */
-	layout: PlayerStatusLayout;
 	/** true when camera badges proved a cast; never false since badge absence proves nothing */
 	cast: true | null;
 }
 
+/** One side's fitted strip: slot centers left-to-right at `pitch` from the inner icon. */
+interface StripSideFit {
+	pitch: number;
+	inner: number;
+	centers: [number, number, number, number];
+}
+
+export type StripFit = [StripSideFit, StripSideFit];
+
 /**
  * Timeline content guard: reads merge only while every slot state matches.
- * `time` (ticks every second) and `layout` (same states = same state) are not compared.
+ * `time` (ticks every second) is not compared.
  */
 export function samePlayerStatusData(a: unknown, b: unknown): boolean {
 	const da = a as PlayerStatusData;
@@ -106,469 +196,507 @@ export function samePlayerStatusData(a: unknown, b: unknown): boolean {
 	return true;
 }
 
-interface SlotRead {
-	dead: boolean;
-	special: boolean;
-	confidence: number;
-	bodyInk: number;
-	bodyPale: number;
-	bodyTint: number;
-	shoulderGlow: number;
-	shoulderPaleGlow: number;
-}
+type SlotState = "alive" | "ready" | "dead" | "vacant";
 
 /**
  * Parse the icon strip of a frame the objective gate anchored; emitted only
- * alongside a successful Objective read (its lookalike rejection covers both).
- * `prevLayout` is sticky: a badge-less frame only switches geometry on a clear
- * decisiveness margin, since a busy scene can nudge the score.
+ * alongside a successful Objective read or, with no counter (Turf War), a
+ * readable timer (their lookalike rejection covers the strip).
+ * `prevFit` (the previous read's, when recent) holds unless clearly beaten.
  */
 export function parsePlayerStatus(
 	frame: Mat,
 	t: number,
 	time: number | null,
-	prevLayout?: PlayerStatusLayout,
-): DetectedEvent<PlayerStatusData> {
-	const { layout, scores } = pickLayout(frame, prevLayout);
-	const sides = readSlots(frame, layout);
+	prevFit?: StripFit,
+): { event: DetectedEvent<PlayerStatusData>; fit: StripFit } {
+	const band = readBand(frame);
+	const fit = [0, 1].map((side) =>
+		fitSide(band, side as 0 | 1, prevFit?.[side]),
+	) as StripFit;
+	const reads = fit.map((sideFit) =>
+		sideFit.centers.map((cx) => readSlot(band, cx, sideFit.pitch)),
+	);
+	const cast = BADGE_ROWS.some((probes) => badgesVisible(frame, probes));
 
-	const reads = sides.flat();
 	return {
-		type: PLAYER_STATUS_EVENT_TYPE,
-		t,
-		confidence:
-			reads.reduce((sum, read) => sum + read.confidence, 0) / reads.length,
-		data: {
-			time,
-			special: sides.map((side) =>
-				side.map((read) => read.special),
-			) as PlayerStatusData["special"],
-			dead: sides.map((side) =>
-				side.map((read) => read.dead),
-			) as PlayerStatusData["dead"],
-			layout,
-			cast: scores === null ? true : null,
+		event: {
+			type: PLAYER_STATUS_EVENT_TYPE,
+			t,
+			confidence:
+				reads.flat().reduce((sum, read) => sum + read.confidence, 0) / 8,
+			data: {
+				time,
+				special: reads.map((side) =>
+					side.map((read) => read.state === "ready"),
+				) as PlayerStatusData["special"],
+				dead: reads.map((side) =>
+					side.map((read) => read.state === "dead"),
+				) as PlayerStatusData["dead"],
+				cast: cast ? true : null,
+			},
+			debug: {
+				pitches: fit.map((sideFit) => sideFit.pitch),
+				centers: fit.map((sideFit) => sideFit.centers),
+				apex: reads.flat().map((read) => read.fractions),
+			},
 		},
-		debug: {
-			layout,
-			layoutScores: scores
-				? Object.fromEntries(
-						Object.entries(scores).map(([name, score]) => [
-							name,
-							Number(score.toFixed(3)),
-						]),
-					)
-				: "badges",
-			bodyInk: reads.map((read) => Number(read.bodyInk.toFixed(2))),
-			bodyPale: reads.map((read) => Number(read.bodyPale.toFixed(2))),
-			bodyTint: reads.map((read) => Number(read.bodyTint.toFixed(2))),
-			shoulderGlow: reads.map((read) => Number(read.shoulderGlow.toFixed(2))),
-			shoulderPaleGlow: reads.map((read) =>
-				Number(read.shoulderPaleGlow.toFixed(2)),
-			),
-		},
+		fit,
 	};
 }
 
-function readSlots(
-	frame: Mat,
-	layout: PlayerStatusLayout,
-): [SlotRead[], SlotRead[]] {
-	const centers =
-		layout === "even"
-			? STATUS_SLOT_CENTERS_EVEN
-			: layout === "narrow-right"
-				? STATUS_SLOT_CENTERS_NARROW_RIGHT
-				: STATUS_SLOT_CENTERS_NARROW_LEFT;
-	const shoulderBox =
-		layout === "even" ? STATUS_SHOULDER_BOX_EVEN : STATUS_SHOULDER_BOX_NARROW;
-	const bodyBox =
-		layout === "even" ? STATUS_BODY_BOX_EVEN : STATUS_BODY_BOX_NARROW;
-
-	return centers.map((sideCenters) =>
-		sideCenters.map((cx): SlotRead => {
-			const shoulder = classFractions(frame, {
-				x: cx + shoulderBox.dx,
-				y: shoulderBox.y,
-				w: shoulderBox.w,
-				h: shoulderBox.h,
-			});
-			const body = classFractions(frame, {
-				x: cx + bodyBox.dx,
-				y: bodyBox.y,
-				w: bodyBox.w,
-				h: bodyBox.h,
-			});
-			return classifySlot(
-				body.ink,
-				body.pale,
-				body.tint,
-				shoulder.glow,
-				shoulder.paleGlow,
-				layout,
-			);
-		}),
-	) as [SlotRead[], SlotRead[]];
+/**
+ * The band's pixels plus per-row prefix sums of each channel, the summed
+ * squares and team-ink membership, interleaved (PREFIX_FIELDS per entry, row
+ * stride `width + 1` entries), so any row segment's color statistics cost one
+ * pair of lookups across the few hundred fit hypotheses.
+ */
+interface Band {
+	width: number;
+	pixels: Uint8Array;
+	channels: number;
+	prefix: Int32Array;
 }
 
-const ALL_LAYOUTS: readonly PlayerStatusLayout[] = [
-	"even",
-	"narrow-right",
-	"narrow-left",
-];
-
 /**
- * Layouts a badge-less frame may flip to on score alone. Decisiveness cannot
- * tell even from narrow-left (right columns coincide); a wrong even pick on a
- * broadcast self-heals at the next badge frame while a wrong narrow-left on POV
- * never would, so narrow-left is only reachable via badges or from an
- * established narrow-right (specced POV switching teams, AREA CUP VoD). A fresh
- * frame may still open narrow-left through the left-column gate (pickLayout).
+ * Per-pitch row geometry relative to a slot center: the apex triangle just
+ * inside its 45° flanks vs a band just outside them (`edge`: y, inner half
+ * width, outer band from/to), the gap corners beside the apex (`corners`: y),
+ * outside a kite and a dome alike, and the apex core a state reads off
+ * (`state`: y, half width).
  */
-const SCORED_FLIPS: Record<PlayerStatusLayout, readonly PlayerStatusLayout[]> =
-	{
-		even: ["narrow-right"],
-		"narrow-right": ["even", "narrow-left"],
-		"narrow-left": ["narrow-right"],
-	};
+interface PitchGeometry {
+	/** kite apex flanks per row: y, inside half-width, outside near and far offsets */
+	edge: number[];
+	/** an octoling dome's top arc, same layout */
+	dome: number[];
+	corners: number[];
+	cornerNear: number;
+	cornerFar: number;
+	state: number[];
+}
 
-/**
- * Badges prove an arrangement outright. Badge-less frames are NOT proven even,
- * so geometries are scored by how decisively body reads land on either side of
- * the dead threshold: a mispicked geometry puts outer boxes on backdrop, which
- * reads mid-range ink. Featureless dark backdrop still reads "decisively dead",
- * so the sticky margin stops one noisy frame flipping an established layout and
- * SCORED_FLIPS keeps the even/narrow-left false friends from trading places.
- * Three decisions decisiveness cannot make alone:
- * - badge-less narrow-left (sendou-triton VoD) scores below narrow-right even
- *   when true, so a decisive slot-comb win (combContrast) overrides all but
- *   badges — positional, so only the differing left columns can lead;
- * - a history-less even-vs-narrow-right near-tie stays narrow-right unless it
- *   reads under the floor or even leads decisively (STATUS_FRESH_*);
- * - badge-less narrow-left POV over pale backdrops (2026-08-22 Sendou VoD)
- *   drowns the comb, so a fresh narrow-left pick may also come from the left
- *   column winning decisiveness, vetoed by a readable rival left comb
- *   (STATUS_FRESH_NARROW_LEFT_*).
- */
-function pickLayout(
-	frame: Mat,
-	prevLayout: PlayerStatusLayout | undefined,
-): {
-	layout: PlayerStatusLayout;
-	scores: Record<PlayerStatusLayout, number> | null;
-} {
-	if (badgesVisible(frame, STATUS_DPAD_PROBES_NARROW_RIGHT))
-		return { layout: "narrow-right", scores: null };
-	if (badgesVisible(frame, STATUS_DPAD_PROBES_NARROW_LEFT))
-		return { layout: "narrow-left", scores: null };
-	if (badgesVisible(frame, STATUS_DPAD_PROBES_EVEN))
-		return { layout: "even", scores: null };
-	const sideScores = Object.fromEntries(
-		ALL_LAYOUTS.map((layout) => [
-			layout,
-			readSlots(frame, layout).map(sideDecisiveness) as [number, number],
-		]),
-	) as Record<PlayerStatusLayout, [number, number]>;
-	const scores = Object.fromEntries(
-		ALL_LAYOUTS.map((layout) => [
-			layout,
-			(sideScores[layout][0] + sideScores[layout][1]) / 2,
-		]),
-	) as Record<PlayerStatusLayout, number>;
-	const sideCombs = combScores(frame);
-	const combs = Object.fromEntries(
-		ALL_LAYOUTS.map((layout) => [
-			layout,
-			sideCombs[layout][0] + sideCombs[layout][1],
-		]),
-	) as Record<PlayerStatusLayout, number>;
-	if (
-		combs["narrow-left"] >= STATUS_NARROW_LEFT_COMB_MIN &&
-		combs["narrow-left"] >=
-			combs["narrow-right"] + STATUS_NARROW_LEFT_COMB_LEAD &&
-		combs["narrow-left"] >= combs.even + STATUS_NARROW_LEFT_COMB_LEAD
-	) {
-		return { layout: "narrow-left", scores };
+function readBand(frame: Mat): Band {
+	const crop = copyRoi(frame, STATUS_BAND);
+	const pixels = new Uint8Array(crop.data);
+	const channels = crop.channels();
+	crop.delete();
+	const width = STATUS_BAND.w;
+	const teamHues = [0, 1].map((side) =>
+		modalInkHue(pixels, channels, side as 0 | 1),
+	);
+	const stride = (width + 1) * PREFIX_FIELDS;
+	const prefix = new Int32Array(stride * FIT_ROWS);
+	const midline = CANONICAL_WIDTH / 2 - STATUS_BAND.x;
+	for (let row = 0; row < FIT_ROWS; row++) {
+		let o = row * stride;
+		const rowStart = row * STATUS_FIT_ROW_STEP * width;
+		for (let x = 0; x < width; x++, o += PREFIX_FIELDS) {
+			const i = (rowStart + x) * channels;
+			const red = pixels[i]!;
+			const green = pixels[i + 1]!;
+			const blue = pixels[i + 2]!;
+			const value = maxOf(red, green, blue);
+			const ink =
+				value >= STATUS_INK_MIN_VALUE &&
+				value - minOf(red, green, blue) >= STATUS_INK_MIN_SATURATION * value;
+			const n = o + PREFIX_FIELDS;
+			prefix[n] = prefix[o]! + red;
+			prefix[n + 1] = prefix[o + 1]! + green;
+			prefix[n + 2] = prefix[o + 2]! + blue;
+			prefix[n + 3] = prefix[o + 3]! + red * red + green * green + blue * blue;
+			prefix[n + 4] =
+				prefix[o + 4]! +
+				(ink &&
+				hueDistance(
+					HUE_TABLE[((red >> 3) << 10) | ((green >> 3) << 5) | (blue >> 3)]!,
+					teamHues[x < midline ? 0 : 1]!,
+				) <= STATUS_TEAM_MAX_HUE_DIST
+					? 1
+					: 0);
+		}
 	}
-	if (prevLayout) {
-		// flips away from narrow-right also need comb corroboration: on S3 POV the
-		// strip shrinks toward the timer while the POV player is dead, spiking the
-		// challenger past the sticky margin (2026-08-11 VoD locked into narrow-left)
-		const challengers = SCORED_FLIPS[prevLayout].filter(
-			(layout) =>
-				prevLayout !== "narrow-right" ||
-				(combs[layout] >= STATUS_STICKY_FLIP_COMB_MIN &&
-					combs[layout] >=
-						combs["narrow-right"] + STATUS_NARROW_LEFT_COMB_LEAD),
+	return { width, pixels, channels, prefix };
+}
+
+/** Modal 10° hue bin of the side's ink pixels: the team's, as icons fill most of the strip. */
+function modalInkHue(pixels: Uint8Array, channels: number, side: 0 | 1) {
+	const { x: bandX, y: bandY, w: width } = STATUS_BAND;
+	const sample = STATUS_TEAM_HUE_ROIS[side];
+	const histogram = new Array<number>(36).fill(0);
+	for (let y = sample.y; y < sample.y + sample.h; y += 2) {
+		for (let x = sample.x; x < sample.x + sample.w; x += 2) {
+			const i = ((y - bandY) * width + (x - bandX)) * channels;
+			const red = pixels[i]!;
+			const green = pixels[i + 1]!;
+			const blue = pixels[i + 2]!;
+			if (isInk(red, green, blue)) {
+				histogram[Math.min(35, Math.floor(hueOf(red, green, blue) / 10))]! += 1;
+			}
+		}
+	}
+	let best = 0;
+	for (let bin = 1; bin < 36; bin++) {
+		if (histogram[bin]! > histogram[best]!) best = bin;
+	}
+	return best * 10 + 5;
+}
+
+/**
+ * Best (pitch, inner center) for one side, or `prev` while it scores within
+ * STATUS_STICKY_SCORE_RATIO of the best. Searched coarse to fine: every other
+ * pitch and center, then each step around the best few (a 1px step shifts
+ * the outer apex by 3px, well inside a sample's tolerance).
+ */
+function fitSide(band: Band, side: 0 | 1, prev?: StripSideFit): StripSideFit {
+	const [innerMin, innerMax] = STATUS_INNER_CENTER_RANGES[side];
+	const [pitchMin, pitchMax] = STATUS_PITCH_RANGE;
+	const scored = new Map<number, Hypothesis>();
+	const score = (pitch: number, inner: number): Hypothesis => {
+		const key = pitch * 10_000 + inner;
+		let hypothesis = scored.get(key);
+		if (!hypothesis) {
+			hypothesis = {
+				pitch,
+				inner,
+				score: hypothesisScore(band, side, pitch, inner),
+			};
+			scored.set(key, hypothesis);
+		}
+		return hypothesis;
+	};
+	const coarse: Hypothesis[] = [];
+	for (let pitch = pitchMin; pitch <= pitchMax; pitch += 2) {
+		for (let inner = innerMin; inner <= innerMax; inner += 2) {
+			coarse.push(score(pitch, inner));
+		}
+	}
+	let best = coarse[0]!;
+	for (const seed of coarse
+		.sort((a, b) => b.score - a.score)
+		.slice(0, STATUS_FIT_REFINED_SEEDS)) {
+		for (let pitch = seed.pitch - 1; pitch <= seed.pitch + 1; pitch++) {
+			for (let inner = seed.inner - 1; inner <= seed.inner + 1; inner++) {
+				if (
+					pitch < pitchMin ||
+					pitch > pitchMax ||
+					inner < innerMin ||
+					inner > innerMax
+				)
+					continue;
+				const candidate = score(pitch, inner);
+				if (candidate.score > best.score) best = candidate;
+			}
+		}
+	}
+	const kept =
+		prev &&
+		score(prev.pitch, prev.inner).score >=
+			best.score * STATUS_STICKY_SCORE_RATIO
+			? prev
+			: best;
+	return stripSide(side, kept.pitch, kept.inner);
+}
+
+interface Hypothesis {
+	pitch: number;
+	inner: number;
+	score: number;
+}
+
+function stripSide(side: 0 | 1, pitch: number, inner: number): StripSideFit {
+	return {
+		pitch,
+		inner,
+		centers: [0, 1, 2, 3].map((slot) =>
+			side === 0 ? inner - (3 - slot) * pitch : inner + slot * pitch,
+		) as StripSideFit["centers"],
+	};
+}
+
+function hypothesisScore(
+	band: Band,
+	side: 0 | 1,
+	pitch: number,
+	inner: number,
+): number {
+	const geometry = PITCH_GEOMETRY[pitch - STATUS_PITCH_RANGE[0]]!;
+	let score = 0;
+	for (let slot = 0; slot < 4; slot++) {
+		score += slotScore(
+			band,
+			side === 0 ? inner - slot * pitch : inner + slot * pitch,
+			geometry,
 		);
-		const challenger =
-			challengers.length > 0
-				? challengers.reduce((a, b) => (scores[b] > scores[a] ? b : a))
-				: null;
+	}
+	return score;
+}
+
+/**
+ * Apex edge contrast + gap-corner contrast + team ink inside the apex vs
+ * beside it, under the kite's outline or the dome's, whichever fits better.
+ */
+function slotScore(band: Band, cx: number, geometry: PitchGeometry): number {
+	const { corners, cornerNear, cornerFar } = geometry;
+	const cornersOut = newStats();
+	for (const y of corners) {
+		addSegment(band, cornersOut, y, cx - cornerFar, cx - cornerNear);
+		addSegment(band, cornersOut, y, cx + cornerNear, cx + cornerFar);
+	}
+	return Math.max(
+		outlineScore(band, cx, geometry.edge, cornersOut),
+		outlineScore(band, cx, geometry.dome, cornersOut),
+	);
+}
+
+function outlineScore(
+	band: Band,
+	cx: number,
+	outline: number[],
+	cornersOut: SegmentStats,
+): number {
+	const edgeIn = newStats();
+	const edgeOut = newStats();
+	for (let i = 0; i < outline.length; i += 4) {
+		const y = outline[i]!;
+		const half = outline[i + 1]!;
+		addSegment(band, edgeIn, y, cx - half, cx + half);
+		addSegment(band, edgeOut, y, cx - outline[i + 3]!, cx - outline[i + 2]!);
+		addSegment(band, edgeOut, y, cx + outline[i + 2]!, cx + outline[i + 3]!);
+	}
+	return (
+		contrast(edgeIn, edgeOut) +
+		STATUS_GAP_WEIGHT * contrast(edgeIn, cornersOut) +
+		STATUS_TEAM_WEIGHT *
+			(edgeIn.team / edgeIn.count - edgeOut.team / edgeOut.count)
+	);
+}
+
+interface SegmentStats {
+	count: number;
+	r: number;
+	g: number;
+	b: number;
+	squares: number;
+	team: number;
+}
+
+function newStats(): SegmentStats {
+	return { count: 0, r: 0, g: 0, b: 0, squares: 0, team: 0 };
+}
+
+/** Adds the inclusive row segment [x0, x1] at y (frame coordinates). */
+function addSegment(
+	band: Band,
+	stats: SegmentStats,
+	y: number,
+	x0: number,
+	x1: number,
+): void {
+	if (x1 < x0) return;
+	const { prefix } = band;
+	const row = ROW_BASE[y]!;
+	const from = (row + x0) * PREFIX_FIELDS;
+	const to = (row + x1 + 1) * PREFIX_FIELDS;
+	stats.count += x1 - x0 + 1;
+	stats.r += prefix[to]! - prefix[from]!;
+	stats.g += prefix[to + 1]! - prefix[from + 1]!;
+	stats.b += prefix[to + 2]! - prefix[from + 2]!;
+	stats.squares += prefix[to + 3]! - prefix[from + 3]!;
+	stats.team += prefix[to + 4]! - prefix[from + 4]!;
+}
+
+/** Mean color distance over the pooled spread: high only where two flat regions meet. */
+function contrast(a: SegmentStats, b: SegmentStats): number {
+	const ar = a.r / a.count;
+	const ag = a.g / a.count;
+	const ab = a.b / a.count;
+	const br = b.r / b.count;
+	const bg = b.g / b.count;
+	const bb = b.b / b.count;
+	const spreadA = Math.sqrt(
+		Math.max(0, a.squares / a.count - ar * ar - ag * ag - ab * ab),
+	);
+	const spreadB = Math.sqrt(
+		Math.max(0, b.squares / b.count - br * br - bg * bg - bb * bb),
+	);
+	return Math.hypot(ar - br, ag - bg, ab - bb) / (spreadA + spreadB + 10);
+}
+
+/**
+ * State from the apex core's ink / pale / grey fractions; confidence scales
+ * with the deciding fraction (1 at twice its threshold).
+ */
+function readSlot(
+	band: Band,
+	cx: number,
+	pitch: number,
+): {
+	state: SlotState;
+	confidence: number;
+	fractions: [number, number, number];
+} {
+	const { state: rows } = PITCH_GEOMETRY[pitch - STATUS_PITCH_RANGE[0]]!;
+	let ink = 0;
+	let pale = 0;
+	let grey = 0;
+	let count = 0;
+	for (let row = 0; row < rows.length; row += 2) {
+		const y = rows[row]!;
+		const half = rows[row + 1]!;
+		for (let x = cx - half; x <= cx + half; x++) {
+			const i =
+				((y - STATUS_BAND.y) * band.width + (x - STATUS_BAND.x)) *
+				band.channels;
+			const red = band.pixels[i]!;
+			const green = band.pixels[i + 1]!;
+			const blue = band.pixels[i + 2]!;
+			const value = maxOf(red, green, blue);
+			const saturation = value ? (value - minOf(red, green, blue)) / value : 0;
+			if (isInk(red, green, blue)) ink++;
+			else if (value >= STATUS_PALE_MIN_VALUE) pale++;
+			else if (
+				value <= STATUS_DARK_MAX_VALUE ||
+				saturation <= STATUS_GREY_MAX_SATURATION
+			)
+				grey++;
+			count++;
+		}
+	}
+	const fractions: [number, number, number] = [
+		ink / count,
+		pale / count,
+		grey / count,
+	];
+	const [inkShare, paleShare, greyShare] = fractions;
+	if (inkShare >= STATUS_ALIVE_MIN_INK) {
 		return {
-			layout:
-				challenger !== null &&
-				scores[challenger] > scores[prevLayout] + STATUS_LAYOUT_STICKY_MARGIN
-					? challenger
-					: prevLayout,
-			scores,
+			state: "alive",
+			confidence: Math.min(1, inkShare / (2 * STATUS_ALIVE_MIN_INK)),
+			fractions,
 		};
 	}
 	if (
-		scores["narrow-left"] > scores.even &&
-		scores["narrow-left"] > scores["narrow-right"] &&
-		sideScores["narrow-left"][0] >=
-			Math.max(sideScores.even[0], sideScores["narrow-right"][0]) +
-				STATUS_FRESH_NARROW_LEFT_MIN_LEFT_LEAD &&
-		Math.max(sideCombs.even[0], sideCombs["narrow-right"][0]) <
-			STATUS_FRESH_NARROW_LEFT_RIVAL_COMB_VETO
+		paleShare >= STATUS_READY_MIN_PALE &&
+		greyShare <= STATUS_READY_MAX_GREY
 	) {
-		return { layout: "narrow-left", scores };
-	}
-	if (
-		scores["narrow-right"] >= STATUS_FRESH_NARROW_RIGHT_MIN_DECISIVENESS &&
-		scores.even < scores["narrow-right"] + STATUS_FRESH_EVEN_MIN_LEAD
-	) {
-		return { layout: "narrow-right", scores };
+		return {
+			state: bodyStaysInked(band, cx, pitch) ? "alive" : "ready",
+			confidence: Math.min(1, paleShare / (2 * STATUS_READY_MIN_PALE)),
+			fractions,
+		};
 	}
 	return {
-		layout: scores.even >= scores["narrow-right"] ? "even" : "narrow-right",
-		scores,
-	};
-}
-
-function sideDecisiveness(reads: SlotRead[]): number {
-	return (
-		reads.reduce(
-			(sum, read) =>
-				sum +
-				Math.min(
-					Math.abs(read.bodyInk - STATUS_DEAD_MAX_BODY_INK),
-					STATUS_LAYOUT_SCORE_CAP,
-				),
-			0,
-		) / reads.length
-	);
-}
-
-/**
- * State from the class fractions; confidence scales with distance to the
- * nearest boundary (1 at twice the threshold / at zero). An ink-poor body is a
- * splat or a wash, and its tint tells them apart: the wash is a pale team tint
- * at every pulse phase while the splat is neutral grey — even when a blown-out
- * backdrop turns the plate near-white, or the trough dims the wash under both
- * ready floors. On narrow layouts the wash replaces the body's ink, so an
- * ink-heavy body means backdrop leak unless strongly pale too (graded
- * STATUS_READY_*WASH* guards), and only unsaturated glow counts
- * (STATUS_GLOW_MAX_SPREAD). A pale backdrop can still light a DEAD icon's
- * shoulder, so narrow ready reads also need the wash's pale body and the
- * narrow dead read trusts the body classes alone.
- */
-function classifySlot(
-	bodyInk: number,
-	bodyPale: number,
-	bodyTint: number,
-	shoulderGlow: number,
-	shoulderPaleGlow: number,
-	layout: PlayerStatusLayout,
-): SlotRead {
-	const washGlow = layout === "even" ? shoulderGlow : shoulderPaleGlow;
-	const inkPoor = bodyInk <= STATUS_DEAD_MAX_BODY_INK;
-	const tinted = bodyTint >= STATUS_WASH_MIN_BODY_TINT;
-	const dead =
-		inkPoor &&
-		!tinted &&
-		(layout !== "even" || washGlow <= STATUS_DEAD_MAX_SHOULDER_GLOW);
-	const washedBody =
-		bodyInk <= STATUS_READY_CLEAN_WASH_MAX_BODY_INK ||
-		(bodyInk <= STATUS_READY_WASH_MAX_BODY_INK &&
-			bodyPale >= STATUS_READY_INKY_WASH_MIN_BODY_PALE);
-	const special =
-		!dead &&
-		((inkPoor && tinted) ||
-			((washGlow >= STATUS_READY_MIN_SHOULDER_GLOW ||
-				bodyPale >= STATUS_READY_MIN_BODY_PALE) &&
-				(layout === "even" ||
-					(washedBody && bodyPale >= STATUS_READY_MIN_WASH_BODY_PALE))));
-	const confidence = dead
-		? Math.min(
-				1,
-				(STATUS_DEAD_MAX_BODY_INK - bodyInk) / STATUS_DEAD_MAX_BODY_INK,
-			)
-		: special
-			? Math.min(
-					1,
-					Math.max(
-						washGlow / (STATUS_READY_MIN_SHOULDER_GLOW * 2),
-						bodyPale / (STATUS_READY_MIN_BODY_PALE * 2),
-						inkPoor ? bodyTint / (STATUS_WASH_MIN_BODY_TINT * 2) : 0,
-					),
-				)
-			: Math.min(1, bodyInk / (STATUS_DEAD_MAX_BODY_INK * 2));
-	return {
-		dead,
-		special,
-		confidence,
-		bodyInk,
-		bodyPale,
-		bodyTint,
-		shoulderGlow,
-		shoulderPaleGlow,
-	};
-}
-
-/** Ink, glow, pale, and tint pixel fractions of a ROI (see rois.ts for the classes). */
-function classFractions(
-	frame: Mat,
-	roi: Roi,
-): { ink: number; glow: number; paleGlow: number; pale: number; tint: number } {
-	const crop = copyRoi(frame, roi);
-	const { data } = crop;
-	const channels = crop.channels();
-	let ink = 0;
-	let glow = 0;
-	let paleGlow = 0;
-	let pale = 0;
-	let tint = 0;
-	let count = 0;
-	for (let i = 0; i < data.length; i += channels) {
-		const r = data[i]!;
-		const g = data[i + 1]!;
-		const b = data[i + 2]!;
-		const value = Math.max(r, g, b);
-		const spread = value - Math.min(r, g, b);
-		if (spread >= STATUS_INK_MIN_SPREAD && value >= STATUS_INK_MIN_VALUE) ink++;
-		if (value >= STATUS_GLOW_MIN_VALUE) {
-			glow++;
-			if (spread <= STATUS_GLOW_MAX_SPREAD) paleGlow++;
-		}
-		if (value >= STATUS_PALE_MIN_VALUE && spread <= STATUS_PALE_MAX_SPREAD)
-			pale++;
-		if (
-			value >= STATUS_TINT_MIN_VALUE &&
-			spread > STATUS_TINT_MIN_SPREAD &&
-			spread < STATUS_INK_MIN_SPREAD
-		)
-			tint++;
-		count++;
-	}
-	crop.delete();
-	return {
-		ink: ink / count,
-		glow: glow / count,
-		paleGlow: paleGlow / count,
-		pale: pale / count,
-		tint: tint / count,
+		state: isVacant(band, cx, pitch) ? "vacant" : "dead",
+		confidence: Math.min(1, greyShare / (2 * STATUS_READY_MAX_GREY)),
+		fractions,
 	};
 }
 
 /**
- * Slot-comb contrast per layout and side: mean iconness (ink-or-pale column
- * fraction) at slot centers minus at gap midpoints, maximized over a small
- * shift. A rigid comb at the wrong pitch cannot score all four slots at once:
- * positional evidence orthogonal to body decisiveness (STATUS_NARROW_LEFT_COMB_*).
+ * Both body sides still in team ink: the pale apex is a weapon render over it
+ * (Painbrush's head), not the wash, which pales the whole icon.
  */
-function combScores(frame: Mat): Record<PlayerStatusLayout, [number, number]> {
-	const profiles = STATUS_COMB_SIDE_SPANS.map(([x0, x1]) =>
-		iconnessProfile(frame, x0, x1),
-	);
-	const centersOf = (layout: PlayerStatusLayout) =>
-		layout === "even"
-			? STATUS_SLOT_CENTERS_EVEN
-			: layout === "narrow-right"
-				? STATUS_SLOT_CENTERS_NARROW_RIGHT
-				: STATUS_SLOT_CENTERS_NARROW_LEFT;
-	return Object.fromEntries(
-		ALL_LAYOUTS.map((layout) => [
-			layout,
-			centersOf(layout).map((sideCenters, side) =>
-				combContrast(
-					profiles[side]!,
-					STATUS_COMB_SIDE_SPANS[side]![0],
-					sideCenters,
-				),
-			) as [number, number],
-		]),
-	) as Record<PlayerStatusLayout, [number, number]>;
-}
-
-function iconnessProfile(frame: Mat, x0: number, x1: number): number[] {
-	const crop = copyRoi(frame, {
-		x: x0,
-		y: STATUS_COMB_BAND_Y,
-		w: x1 - x0,
-		h: STATUS_COMB_BAND_H,
-	});
-	const { data } = crop;
-	const channels = crop.channels();
-	const width = crop.cols;
-	const height = crop.rows;
-	const profile = new Array<number>(width).fill(0);
-	for (let y = 0; y < height; y++) {
-		for (let x = 0; x < width; x++) {
-			const i = (y * width + x) * channels;
-			const r = data[i]!;
-			const g = data[i + 1]!;
-			const b = data[i + 2]!;
-			const value = Math.max(r, g, b);
-			const spread = value - Math.min(r, g, b);
-			const isInk =
-				spread >= STATUS_INK_MIN_SPREAD && value >= STATUS_INK_MIN_VALUE;
-			const isPale =
-				value >= STATUS_PALE_MIN_VALUE && spread <= STATUS_PALE_MAX_SPREAD;
-			if (isInk || isPale) profile[x]! += 1 / height;
-		}
-	}
-	crop.delete();
-	return profile;
-}
-
-function combContrast(
-	profile: number[],
-	x0: number,
-	centers: readonly number[],
-): number {
-	let best = -1;
-	for (
-		let shift = -STATUS_COMB_MAX_SHIFT;
-		shift <= STATUS_COMB_MAX_SHIFT;
-		shift += 2
-	) {
-		let onCenters = 0;
-		for (const cx of centers)
-			onCenters += bandMean(
-				profile,
-				x0,
-				cx + shift,
-				STATUS_COMB_CENTER_HALF_WIDTH,
+function bodyStaysInked(band: Band, cx: number, pitch: number): boolean {
+	const scale = pitch / STATUS_REFERENCE_PITCH;
+	return [-1, 1].every((direction) => {
+		let ink = 0;
+		let count = 0;
+		for (
+			let y = Math.round(
+				STATUS_ICON_CENTER_Y + STATUS_WASH_BODY_SIDE.top * scale,
 			);
-		onCenters /= centers.length;
-		let onGaps = 0;
-		for (let i = 0; i < centers.length - 1; i++) {
-			const mid = Math.round((centers[i]! + centers[i + 1]!) / 2);
-			onGaps += bandMean(profile, x0, mid + shift, STATUS_COMB_GAP_HALF_WIDTH);
+			y <= STATUS_ICON_CENTER_Y + STATUS_WASH_BODY_SIDE.bottom * scale;
+			y++
+		) {
+			for (
+				let offset = Math.round(STATUS_WASH_BODY_SIDE.inner * scale);
+				offset <= STATUS_WASH_BODY_SIDE.outer * scale;
+				offset++
+			) {
+				const i =
+					((y - STATUS_BAND.y) * band.width +
+						(cx + direction * offset - STATUS_BAND.x)) *
+					band.channels;
+				if (isInk(band.pixels[i]!, band.pixels[i + 1]!, band.pixels[i + 2]!))
+					ink++;
+				count++;
+			}
 		}
-		onGaps /= centers.length - 1;
-		best = Math.max(best, onCenters - onGaps);
-	}
-	return best;
+		return ink / count >= STATUS_WASH_MAX_BODY_INK;
+	});
 }
 
-function bandMean(
-	profile: number[],
-	x0: number,
-	center: number,
-	halfWidth: number,
-): number {
-	let sum = 0;
+/**
+ * An empty seat (a 1v1 lobby, a disconnected player) draws an opaque black
+ * squid: no X strokes, no greyed weapon render, which every splat shows.
+ */
+function isVacant(band: Band, cx: number, pitch: number): boolean {
+	const scale = pitch / STATUS_REFERENCE_PITCH;
+	const half = Math.round(STATUS_VACANT_BODY.halfWidth * scale);
+	let dark = 0;
+	let grey = 0;
 	let count = 0;
-	for (let x = center - halfWidth; x <= center + halfWidth; x++) {
-		const i = x - x0;
-		if (i < 0 || i >= profile.length) continue;
-		sum += profile[i]!;
-		count++;
+	for (
+		let y = Math.round(STATUS_ICON_CENTER_Y + STATUS_VACANT_BODY.top * scale);
+		y <= STATUS_ICON_CENTER_Y + STATUS_VACANT_BODY.bottom * scale;
+		y++
+	) {
+		for (let x = cx - half; x <= cx + half; x++) {
+			const i =
+				((y - STATUS_BAND.y) * band.width + (x - STATUS_BAND.x)) *
+				band.channels;
+			const red = band.pixels[i]!;
+			const green = band.pixels[i + 1]!;
+			const blue = band.pixels[i + 2]!;
+			const value = maxOf(red, green, blue);
+			if (value <= STATUS_DARK_MAX_VALUE) dark++;
+			else if (
+				value - minOf(red, green, blue) <=
+				STATUS_GREY_MAX_SATURATION * value
+			)
+				grey++;
+			count++;
+		}
 	}
-	return count ? sum / count : 0;
+	return (
+		dark / count >= STATUS_VACANT_MIN_DARK &&
+		grey / count < STATUS_VACANT_MAX_GREY
+	);
+}
+
+function isInk(red: number, green: number, blue: number): boolean {
+	const value = maxOf(red, green, blue);
+	return (
+		value >= STATUS_INK_MIN_VALUE &&
+		value - minOf(red, green, blue) >= STATUS_INK_MIN_SATURATION * value
+	);
+}
+
+function maxOf(red: number, green: number, blue: number): number {
+	return Math.max(red, green, blue);
+}
+
+function minOf(red: number, green: number, blue: number): number {
+	return Math.min(red, green, blue);
+}
+
+function hueOf(red: number, green: number, blue: number): number {
+	const value = maxOf(red, green, blue);
+	const delta = value - minOf(red, green, blue);
+	if (delta === 0) return 0;
+	const sector =
+		value === red
+			? ((green - blue) / delta + 6) % 6
+			: value === green
+				? (blue - red) / delta + 2
+				: (red - green) / delta + 4;
+	return sector * 60;
+}
+
+function hueDistance(a: number, b: number): number {
+	const d = a > b ? a - b : b - a;
+	return d > 180 ? 360 - d : d;
 }
 
 /** All four badge probes reading white = that casted spectator arrangement. */
@@ -580,13 +708,11 @@ function badgesVisible(frame: Mat, probes: readonly Roi[]): boolean {
 		let white = 0;
 		let count = 0;
 		for (let i = 0; i < data.length; i += channels) {
-			const r = data[i]!;
-			const g = data[i + 1]!;
-			const b = data[i + 2]!;
-			const value = Math.max(r, g, b);
+			const value = Math.max(data[i]!, data[i + 1]!, data[i + 2]!);
 			if (
 				value >= STATUS_WHITE_MIN_VALUE &&
-				value - Math.min(r, g, b) <= STATUS_WHITE_MAX_SPREAD
+				value - Math.min(data[i]!, data[i + 1]!, data[i + 2]!) <=
+					STATUS_WHITE_MAX_SPREAD
 			) {
 				white++;
 			}

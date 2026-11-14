@@ -45,14 +45,20 @@ export interface GraphicTeam {
 export function GraphicContainer({
 	children,
 	width,
+	className,
 }: {
 	children: React.ReactNode;
 	width?: number;
+	/** Overrides the container's own styles (e.g. its padding or background) */
+	className?: string;
 }) {
 	const qrCodeUrl = React.useContext(GraphicQrCodeContext);
 
 	return (
-		<div className={styles.container} style={width ? { width } : undefined}>
+		<div
+			className={clsx(styles.container, className)}
+			style={width ? { width } : undefined}
+		>
 			{children}
 			{qrCodeUrl ? (
 				<div className={styles.qrCodeRow}>
@@ -110,7 +116,9 @@ export function GraphicHeader({
 }
 
 export function GraphicTitle({ children }: { children: React.ReactNode }) {
-	return <span className={styles.headerTitle}>{children}</span>;
+	return (
+		<span className={clsx(styles.headerTitle, "truncate")}>{children}</span>
+	);
 }
 
 export function GraphicDateSubtitle({ date }: { date: number | Date }) {
@@ -186,7 +194,7 @@ export function GraphicTeamRow({
 				) : null}
 			</div>
 			<div className={styles.teamInfo}>
-				<div className={styles.teamName}>{team.name}</div>
+				<div className={clsx(styles.teamName, "truncate")}>{team.name}</div>
 				<div className={styles.playersList}>
 					{team.players.map((player) => (
 						<GraphicPlayerChip key={player.name} player={player} />

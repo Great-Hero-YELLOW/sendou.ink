@@ -1,10 +1,14 @@
-import { describe, expect, test } from "vitest";
+import { subMinutes } from "date-fns";
+import { beforeEach, describe, expect, test } from "vitest";
+import * as LobbyFactory from "~/db/seed/factories/LobbyFactory";
 import * as SQMatchFactory from "~/db/seed/factories/SQMatchFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
 import { db } from "~/db/sql";
+import * as LobbyProgression from "~/features/lobbies/core/LobbyProgression.server";
 import type { ScannerMatch } from "~/features/scanner/core/scanner-match";
 import { FULL_GROUP_SIZE } from "~/features/sendouq/q-constants";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
 import * as Matches from "./core/Matches";
 import type { IngestableGame } from "./core/Scoreboards";
 import { NAMES, scannerMatch, WEAPONS } from "./core/tests/fixtures";
@@ -186,9 +190,9 @@ describe("addLinks", () => {
 		expect(await fetchLinks()).toHaveLength(2);
 	});
 
-	test("reports the POV player's weapon once", async () => {
-		const povUser = await UserFactory.create();
-		const { match: groupMatch, maps } = await setupSendouqMatch();
+	test("reports the POV player's weapon once, tagged with its scan and dated to the game", async () => {
+		const { match: groupMatch, maps, users } = await setupSendouqMatch();
+		const povUser = users[0]!;
 
 		const { effectiveMatches } =
 			await ScannerIngestRepository.addOrMergeMatches({
@@ -201,7 +205,9 @@ describe("addLinks", () => {
 			{
 				ingestedMatchId: effectiveMatches[0].id,
 				match: effectiveMatches[0].data,
-				game: sendouqGame(maps[0]),
+				game: sendouqGame(maps[0], {
+					winnerUserIds: users.slice(0, FULL_GROUP_SIZE).map((user) => user.id),
+				}),
 			},
 		];
 
@@ -215,6 +221,116 @@ describe("addLinks", () => {
 		expect(reportedWeapons[0].mapIndex).toBe(maps[0].index);
 		expect(reportedWeapons[0].userId).toBe(povUser.id);
 		expect(reportedWeapons[0].weaponSplId).toBe(WEAPONS[0]);
+		expect(reportedWeapons[0].ingestedMatchId).toBe(effectiveMatches[0].id);
+		expect(reportedWeapons[0].createdAt).toBe(Math.floor(PLAYED_AT / 1000));
+	});
+
+	test("reports no weapon for a game other than the one the scan stays linked to", async () => {
+		const { maps, users } = await setupSendouqMatch();
+		const povUser = users[0]!;
+		const winnerUserIds = users
+			.slice(0, FULL_GROUP_SIZE)
+			.map((user) => user.id);
+
+		const { effectiveMatches } =
+			await ScannerIngestRepository.addOrMergeMatches({
+				povUserId: povUser.id,
+				submitterUserId: povUser.id,
+				matches: [testMatch({ pov: { team: 0, index: 0 } })],
+				context: null,
+			});
+		const linkTo = (map: (typeof maps)[number]) => ({
+			ingestedMatchId: effectiveMatches[0].id,
+			match: effectiveMatches[0].data,
+			game: sendouqGame(map, { winnerUserIds }),
+		});
+
+		await ScannerIngestRepository.addLinks({
+			links: [linkTo(maps[0])],
+			povUserId: null,
+		});
+		await ScannerIngestRepository.addLinks({
+			links: [linkTo(maps[1])],
+			povUserId: povUser.id,
+		});
+
+		expect(await fetchReportedWeapons()).toHaveLength(0);
+
+		await ScannerIngestRepository.addLinks({
+			links: [linkTo(maps[0])],
+			povUserId: povUser.id,
+		});
+
+		const reportedWeapons = await fetchReportedWeapons();
+		expect(reportedWeapons).toHaveLength(1);
+		expect(reportedWeapons[0].mapIndex).toBe(maps[0].index);
+	});
+
+	test("reports no weapon for a sender outside the game's rosters", async () => {
+		const outsider = await UserFactory.create();
+		const { maps, users } = await setupSendouqMatch();
+
+		const { effectiveMatches } =
+			await ScannerIngestRepository.addOrMergeMatches({
+				povUserId: outsider.id,
+				submitterUserId: outsider.id,
+				matches: [testMatch({ pov: { team: 0, index: 0 } })],
+				context: null,
+			});
+
+		const linkedCount = await ScannerIngestRepository.addLinks({
+			links: [
+				{
+					ingestedMatchId: effectiveMatches[0].id,
+					match: effectiveMatches[0].data,
+					game: sendouqGame(maps[0], {
+						winnerUserIds: users
+							.slice(0, FULL_GROUP_SIZE)
+							.map((user) => user.id),
+					}),
+				},
+			],
+			povUserId: outsider.id,
+		});
+
+		expect(linkedCount).toBe(1);
+		expect(await fetchReportedWeapons()).toHaveLength(0);
+	});
+
+	test("deleting the ingested match deletes the weapon reported from it", async () => {
+		const { maps, users } = await setupSendouqMatch();
+		const povUser = users[0]!;
+
+		const { effectiveMatches } =
+			await ScannerIngestRepository.addOrMergeMatches({
+				povUserId: povUser.id,
+				submitterUserId: povUser.id,
+				matches: [testMatch({ pov: { team: 0, index: 0 } })],
+				context: null,
+			});
+		await ScannerIngestRepository.addLinks({
+			links: [
+				{
+					ingestedMatchId: effectiveMatches[0].id,
+					match: effectiveMatches[0].data,
+					game: sendouqGame(maps[0], {
+						winnerUserIds: users
+							.slice(0, FULL_GROUP_SIZE)
+							.map((user) => user.id),
+					}),
+				},
+			],
+			povUserId: povUser.id,
+		});
+		expect(await fetchReportedWeapons()).toHaveLength(1);
+
+		// biome-ignore lint/plugin: no production path deletes ingested matches yet
+		await db
+			.deleteFrom("IngestedMatch")
+			.where("id", "=", effectiveMatches[0].id)
+			.execute();
+
+		expect(await fetchReportedWeapons()).toHaveLength(0);
 	});
 });
 
@@ -270,7 +386,88 @@ describe("findScoreboardsByGroupMatchId", () => {
 	});
 });
 
-describe("gamesInTournamentMatch", () => {
+describe("findScoreboardsByTournamentMatchIds", () => {
+	test("returns the given matches' scoreboards tagged with their match id", async () => {
+		const users = await UserFactory.createMany(TOURNAMENT_TEAM_COUNT);
+		const tournament = await TournamentFactory.createPlayed(
+			{ authorId: users[0]!.id, minMembersPerTeam: 1 },
+			{
+				teamRosters: users.map((user) => [user.id]),
+				playedOut: 0,
+			},
+		);
+		const [firstMatchId, secondMatchId, otherMatchId] = tournament.matches
+			.map((match) => match.id)
+			.sort((a, b) => a - b);
+		const games = await ScannerIngestRepository.gamesInTournamentMatches([
+			secondMatchId!,
+			firstMatchId!,
+			otherMatchId!,
+		]);
+		const firstGameOf = (matchId: number) =>
+			games.find(
+				(game) =>
+					game.target.type === "tournament" &&
+					game.target.tournamentMatchId === matchId,
+			)!;
+		const linkedGames = [
+			firstGameOf(secondMatchId!),
+			firstGameOf(firstMatchId!),
+			firstGameOf(otherMatchId!),
+		];
+
+		const { effectiveMatches } =
+			await ScannerIngestRepository.addOrMergeMatches({
+				povUserId: users[0]!.id,
+				submitterUserId: users[0]!.id,
+				matches: linkedGames.map((game, i) =>
+					testMatch({
+						playedAt: PLAYED_AT + i * 60 * 60 * 1000,
+						stage: game.stageId,
+					}),
+				),
+				context: null,
+			});
+		await ScannerIngestRepository.addLinks({
+			links: linkedGames.map((game, i) => ({
+				ingestedMatchId: effectiveMatches[i]!.id,
+				match: effectiveMatches[i]!.data,
+				game,
+			})),
+			povUserId: users[0]!.id,
+		});
+
+		const scoreboards =
+			await ScannerIngestRepository.findScoreboardsByTournamentMatchIds([
+				secondMatchId!,
+				firstMatchId!,
+			]);
+
+		expect(
+			scoreboards.map(({ tournamentMatchId, mapIndex }) => ({
+				tournamentMatchId,
+				mapIndex,
+			})),
+		).toEqual([
+			{
+				tournamentMatchId: firstMatchId,
+				mapIndex: firstGameOf(firstMatchId!).mapIndex,
+			},
+			{
+				tournamentMatchId: secondMatchId,
+				mapIndex: firstGameOf(secondMatchId!).mapIndex,
+			},
+		]);
+	});
+
+	test("returns an empty array for no match ids", async () => {
+		expect(
+			await ScannerIngestRepository.findScoreboardsByTournamentMatchIds([]),
+		).toEqual([]);
+	});
+});
+
+describe("gamesInTournamentMatches", () => {
 	test("returns the match's own games only, leaving the rest of the tournament out", async () => {
 		const users = await UserFactory.createMany(TOURNAMENT_TEAM_COUNT);
 		const tournament = await TournamentFactory.createPlayed(
@@ -289,9 +486,9 @@ describe("gamesInTournamentMatch", () => {
 					?.memberUserIds[0] === user.id,
 		)!.id;
 
-		const games = await ScannerIngestRepository.gamesInTournamentMatch(
+		const games = await ScannerIngestRepository.gamesInTournamentMatches([
 			firstMatch!.id,
-		);
+		]);
 
 		expect(games.length).toBeGreaterThan(0);
 		expect(
@@ -323,6 +520,70 @@ describe("gamesInTournamentMatch", () => {
 	});
 });
 
+describe("lobbySetIdAt", () => {
+	const users = UserFactory.pool();
+	const playerId = () => users.id(1);
+
+	beforeEach(async () => {
+		await users.create(8);
+	});
+
+	test.each([
+		{ why: "played after the set started", setStartedMinutesBefore: 30 },
+		{
+			why: "set started a little after the client clock",
+			setStartedMinutesBefore: -4,
+		},
+	])("finds the set: $why", async ({ setStartedMinutesBefore }) => {
+		const lobbyId = await startedLobby(
+			subMinutes(PLAYED_AT, setStartedMinutesBefore),
+		);
+		const [set] = await db
+			.selectFrom("LobbySet")
+			.select("id")
+			.where("lobbyId", "=", lobbyId)
+			.execute();
+
+		expect(
+			await ScannerIngestRepository.lobbySetIdAt({
+				userId: playerId(),
+				at: PLAYED_AT,
+			}),
+		).toBe(set!.id);
+	});
+
+	test.each([
+		{ why: "set started over two hours before", setStartedMinutesBefore: 121 },
+		{ why: "set started well after", setStartedMinutesBefore: -6 },
+	])("returns null: $why", async ({ setStartedMinutesBefore }) => {
+		await startedLobby(subMinutes(PLAYED_AT, setStartedMinutesBefore));
+
+		expect(
+			await ScannerIngestRepository.lobbySetIdAt({
+				userId: playerId(),
+				at: PLAYED_AT,
+			}),
+		).toBeNull();
+	});
+
+	async function startedLobby(setStartedAt: Date) {
+		const lobby = await LobbyFactory.create(
+			{
+				hostUserId: users.id(1),
+				startsAt: dateToDatabaseTimestamp(subMinutes(new Date(), 1)),
+			},
+			{
+				signedUpUserIds: users.ids(8).slice(1),
+				checkedInUserIds: users.ids(8),
+			},
+		);
+		await LobbyProgression.advance(lobby.id);
+		await LobbyFactory.backdateSets(lobby.id, setStartedAt);
+
+		return lobby.id;
+	}
+});
+
 /** The default roster's match, stamped with the fixed PLAYED_AT this suite asserts on. */
 function testMatch(partial: Partial<ScannerMatch> = {}): ScannerMatch {
 	return scannerMatch({ playedAt: PLAYED_AT, ...partial });
@@ -345,7 +606,7 @@ async function setupSendouqMatch(options: { isConcluded?: boolean } = {}) {
 		.orderBy("index", "asc")
 		.execute();
 
-	return { match, maps };
+	return { match, maps, users };
 }
 
 function fetchIngestedMatches() {
@@ -368,13 +629,16 @@ function fetchReportedWeapons() {
 	return db.selectFrom("ReportedWeapon").selectAll().execute();
 }
 
-function sendouqGame(map: {
-	id: number;
-	matchId: number;
-	index: number;
-	mode: IngestableGame["mode"];
-	stageId: IngestableGame["stageId"];
-}): IngestableGame {
+function sendouqGame(
+	map: {
+		id: number;
+		matchId: number;
+		index: number;
+		mode: IngestableGame["mode"];
+		stageId: IngestableGame["stageId"];
+	},
+	rosters: Partial<Pick<IngestableGame, "winnerUserIds" | "loserUserIds">> = {},
+): IngestableGame {
 	return {
 		target: {
 			type: "sendouq",
@@ -386,9 +650,9 @@ function sendouqGame(map: {
 		stageId: map.stageId,
 		winnerUserIds: [],
 		loserUserIds: [],
-		winnerInGameNames: [],
-		loserInGameNames: [],
+		inGameNameByUserId: new Map(),
 		playedAt: Math.floor(PLAYED_AT / 1000),
 		linkedPlayerNames: null,
+		...rosters,
 	};
 }

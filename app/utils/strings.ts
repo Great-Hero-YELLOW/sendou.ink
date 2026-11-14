@@ -2,39 +2,15 @@ import type { GearType } from "~/modules/in-game-lists/types";
 import { assertUnreachable } from "./types";
 
 export function inGameNameWithoutDiscriminator(inGameName: string) {
-	return inGameName.split("#")[0];
+	const discriminatorIdx = inGameName.lastIndexOf("#");
+
+	return discriminatorIdx === -1
+		? inGameName
+		: inGameName.slice(0, discriminatorIdx);
 }
 
 export const rawSensToString = (sens: number) =>
 	`${sens > 0 ? "+" : ""}${sens / 10}`;
-
-type WithStart<
-	S extends string,
-	Start extends string,
-> = S extends `${Start}${infer Rest}` ? `${Start}${Rest}` : never;
-
-export function startsWith<S extends string, Start extends string>(
-	str: S,
-	start: Start,
-	// @ts-expect-error TS 4.9 upgrade
-): str is WithStart<S, Start> {
-	return str.startsWith(start);
-}
-
-type Split<S extends string, Sep extends string> = string extends S
-	? string[]
-	: S extends ""
-		? []
-		: S extends `${infer T}${Sep}${infer U}`
-			? [T, ...Split<U, Sep>]
-			: [S];
-
-export function split<S extends string, Sep extends string>(
-	str: S,
-	seperator: Sep,
-) {
-	return str.split(seperator) as Split<S, Sep>;
-}
 
 export function gearTypeToInitial(gearType: GearType) {
 	switch (gearType) {
@@ -109,6 +85,11 @@ const NAMED_HTML_ENTITIES: Record<string, string> = {
 	quot: '"',
 	apos: "'",
 };
+
+/** Strips diacritics, so "Café" becomes "Cafe". */
+export function removeDiacritics(value: string) {
+	return value.normalize("NFD").replace(/\p{M}/gu, "");
+}
 
 export function removeMarkdown(value: string) {
 	const htmlReplaceRegex = /<[^>]*>/g;

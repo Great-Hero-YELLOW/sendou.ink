@@ -22,6 +22,7 @@ import { Config } from "~/config";
 import { useUser } from "~/features/auth/core/user";
 import {
 	AvailabilityMemberRow,
+	AvailabilityMemberRows,
 	type AvailabilityPanelEntry,
 	AvailabilityRowDetail,
 	type AvailabilityRowStatus,
@@ -31,6 +32,7 @@ import {
 	availabilityRowStatus,
 	RegistrationAvailabilityPanel,
 } from "~/features/availability/components/RegistrationAvailabilityPanel";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
 import type {
 	MemberRole,
 	MemberRoleType,
@@ -46,6 +48,7 @@ import {
 import { useTournament } from "~/features/tournament/tournament-context";
 import { tournamentJoinPage } from "~/features/tournament/tournament-urls";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
+import { tournamentTeamChannel } from "~/features/tournament-bracket/tournament-bracket-utils";
 import { LUTI_ORGANIZATION_ID } from "~/features/tournament-organization/tournament-organization-constants";
 import { FormField } from "~/form/FormField";
 import { SendouForm, useFormFieldContext } from "~/form/SendouForm";
@@ -106,6 +109,17 @@ export default function TournamentRegisterPage() {
 
 	const teamMemberOf = tournament.teamMemberOfByUser(user);
 	const teamOwned = tournament.ownedTeamByUser(user);
+
+	// own team's room only, refetching this page for every team's changes would be costly
+	useTopicRevalidation(
+		teamMemberOf
+			? tournamentTeamChannel({
+					tournamentId: tournament.ctx.id,
+					teamId: teamMemberOf.id,
+				})
+			: "",
+		Boolean(teamMemberOf) && !tournament.hasStarted,
+	);
 	const isRegularMemberOfATeam = teamMemberOf && !teamOwned;
 	const registrationClosedForNonParticipant =
 		!tournament.registrationOpen && !teamMemberOf;
@@ -378,14 +392,16 @@ function RegistrationProgress({
 								className="stack sm items-center text-center"
 							>
 								{step.name}
-								{step.status === "completed" ? (
-									<Check
-										className="color-success"
-										data-testid={`checkmark-icon-num-${i + 1}`}
-									/>
-								) : (
-									<X className="color-error" />
-								)}
+								<span className={styles.stepIcon} data-status={step.status}>
+									{step.status === "completed" ? (
+										<Check
+											size={20}
+											data-testid={`checkmark-icon-num-${i + 1}`}
+										/>
+									) : (
+										<X size={20} />
+									)}
+								</span>
 							</div>
 						);
 					})}
@@ -772,16 +788,14 @@ function FillRoster({
 						})}
 					</div>
 				) : null}
-				<ul className={styles.rosterRows}>
+				<AvailabilityMemberRows divided>
 					{ownTeamMembers.map((member, i) => (
 						<AvailabilityMemberRow
 							key={member.userId}
 							user={{
 								id: member.userId,
 								username: member.username,
-								discordId: member.discordId,
-								discordAvatar: member.discordAvatar,
-								customAvatarUrl: member.customAvatarUrl,
+								avatar: member.avatar,
 							}}
 							entry={entryByUserId?.get(member.userId)}
 							showAvailability={Boolean(entryByUserId)}
@@ -827,7 +841,7 @@ function FillRoster({
 							{t("tournament:pre.roster.emptySlot.optional")}
 						</li>
 					))}
-				</ul>
+				</AvailabilityMemberRows>
 				{entryByUserId ? (
 					<AvailabilitySummary
 						statuses={ownTeamMembers.map((member) =>

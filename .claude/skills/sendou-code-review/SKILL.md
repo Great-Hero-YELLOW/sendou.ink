@@ -30,7 +30,7 @@ Then gather the small context you do read:
 - `wc -l $M/review.patch $M/copy.patch` → sizes for sharding decisions.
 - `cat .nvmrc` → Node version.
 
-Do NOT paste CLAUDE.md/AGENTS.md into any prompt — the agent that needs them reads them from the repo itself.
+Do NOT paste AGENTS.md into any prompt — the agent that needs it reads it from the repo itself.
 
 If `review.patch` is empty (no diff, no untracked files) and `copy.patch` is empty, tell the user: "Nothing to review. Either check out a feature branch or make some changes." and stop.
 
@@ -43,6 +43,7 @@ Greppable rules — run them yourself against `$M/review.patch` (added lines sta
 3. **Undefined CSS variables**: extract `var(--...)` names from added lines (`grep -oE` on the patch), check each is defined in `app/styles/vars.css` or locally in a changed file (grep, don't read). Undefined → finding.
 4. **Unregistered routes**: for each new file under a `routes/` directory, grep `app/routes.ts` for its path. Not referenced → finding.
 5. **Missing CSS module pairing**: a new `.tsx` file with non-trivial styling but no matching `.module.css`. Use judgement — files with no styling needs are fine.
+6. **Mutation run on rule modules**: `pnpm mutate --list` prints the modules kept under mutation testing (a directory covers every source file in it). Skip this check when the changed-file list touches none of them. For each changed file among them, take the new-file line ranges of its hunks (`git diff BASE -U0 -- <file> | grep '^@@'`, the `+c,d` part — do not read the diff) and run `pnpm mutate <file> --lines <from-to>,<from-to>` (drop `--lines` when most of the file changed). It runs the unit tests against small deliberate breakages of those lines and lists the ones no test noticed; a few minutes at most per file. A survivor on an added or changed line is a finding only when you can state in one sentence what a player or organizer would see go wrong if that breakage shipped — that sentence is the claim (category "test-coverage", severity "warning", suggestion = the behaviour a test should assert through the module's public functions). Not findings: survivors in tuning constants and heuristic weights, loop bounds, defensive guards that cannot trigger, or lines the diff did not touch. Which survivors count is spelled out in `docs/site/src/content/docs/dev/mutation-testing.mdx`. Do not add tests or `mutation-ignore` comments yourself.
 
 ## Step 3: Collect the spec
 
@@ -91,12 +92,12 @@ Check whether the implementation actually does what the spec describes:
 Only flag real gaps. Do not flag things the spec doesn't mention. category: "spec"; in detail state what the spec expected vs what the code does.
 ```
 
-### Agent 2: Conventions (CLAUDE.md rules + modernization)
+### Agent 2: Conventions (AGENTS.md rules + modernization)
 
 ```
 You are reviewing code changes for project-rule compliance and modern-practice opportunities.
 
-First read CLAUDE.md and AGENTS.md at the repo root for the project rules.
+First read AGENTS.md at the repo root for the project rules.
 
 A) Rule violations — only flag CLEAR violations; where a rule says "prefer"/"avoid", use judgement (a minor deviation in context is not a violation). category: "claude-md", severity: "warning", claim quotes the rule.
 
@@ -179,7 +180,7 @@ Only real, exploitable vulnerabilities in the new code. Do not flag generic best
 ```
 You are reviewing code changes for database query performance (SQLite via Kysely).
 
-IMPORTANT: run all analysis against `db-prod.sqlite3` — a safe-to-experiment copy of production (~2GB). Do NOT use the tiny dev `db.sqlite3` if `db-prod.sqlite3` exists; its query plans and table sizes are meaningless.
+IMPORTANT: run all analysis against `db-sandbox.sqlite3` — a local, disposable copy of production data (~2GB). Do NOT use the tiny dev `db.sqlite3` if `db-sandbox.sqlite3` exists; its query plans and table sizes are meaningless.
 
 1. **Identify new/changed DB queries** in the diff (`*Repository.server.ts`, Kysely). Read the full changed Repository files.
 
@@ -189,10 +190,10 @@ IMPORTANT: run all analysis against `db-prod.sqlite3` — a safe-to-experiment c
    const compiled = db.selectFrom(/* rebuild from Repository code */).compile();
    console.log(compiled.sql, compiled.parameters);
 
-   Run: `DB_PATH=db-prod.sqlite3 VITE_PROD_MODE=true pnpm vite-node scripts/tmp-review-compile.ts`. Substitute realistic parameter values.
+   Run: `DB_PATH=db-sandbox.sqlite3 VITE_PROD_MODE=true pnpm vite-node scripts/tmp-review-compile.ts`. Substitute realistic parameter values.
 
 3. **For each query**:
-   a. `sqlite3 db-prod.sqlite3 "EXPLAIN QUERY PLAN <compiled SQL with params substituted>"`
+   a. `sqlite3 db-sandbox.sqlite3 "EXPLAIN QUERY PLAN <compiled SQL with params substituted>"`
    b. Measure, don't guess: `SELECT COUNT(*)` for every table touched.
    c. Missing indexes: "SCAN <table>" vs "SEARCH ... USING INDEX". A SCAN on a large table in a hot path is a red flag. Inspect with `.indexes <table>` and `PRAGMA index_info(<index>)`.
    d. Call frequency: hot path (loader on every page view, frequent API) vs cold (admin action, rare routine)? Check the caller. Also check N+1 patterns — queries in loops that could be batched.
@@ -276,7 +277,7 @@ From the surviving findings (verified + pre-checked + measured + copy):
 
 1. **Deduplicate**: merge findings multiple agents flagged from different angles, keeping the best explanation.
 2. **Filter**: drop nitpicks that wouldn't matter in practice or would make the code worse/more complex — including weak copy suggestions.
-3. **Prioritize**: Typecheck failures > Security > Bugs > DB Performance (critical/warning) > Spec Violations > Test Coverage > Abstraction > CLAUDE.md Violations > Copy (warning) > Modernization > Copy (info) > DB Performance (info).
+3. **Prioritize**: Typecheck failures > Security > Bugs > DB Performance (critical/warning) > Spec Violations > Test Coverage > Abstraction > AGENTS.md Violations > Copy (warning) > Modernization > Copy (info) > DB Performance (info).
 
 ## Step 7: Write the report file
 

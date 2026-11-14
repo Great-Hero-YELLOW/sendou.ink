@@ -1,12 +1,10 @@
-import { describe, expect, test } from "vitest";
-import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import { afterEach, describe, expect, test } from "vitest";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import {
 	formatFlexTimeDisplay,
 	generateTimeOptions,
 	parseLutiDivFromName,
 	parseLutiSeasonFromName,
-	parseMapPoolInput,
 	postSpan,
 	requestStarts,
 } from "./scrims-utils";
@@ -165,13 +163,39 @@ describe("generateTimeOptions", () => {
 
 		expect(result.length).toBe(7);
 	});
+
+	describe("across timezones", () => {
+		const originalTimezone = process.env.TZ;
+
+		afterEach(() => {
+			if (originalTimezone === undefined) {
+				delete process.env.TZ;
+			} else {
+				process.env.TZ = originalTimezone;
+			}
+		});
+
+		// the request dialog generates the options in the browser, the action re-generates them on the server to validate the pick
+		test("offers the same start times in a browser at a :45 UTC offset as the server accepts", () => {
+			const start = new Date("2026-10-30T19:00:00Z");
+			const end = new Date("2026-10-30T20:00:00Z");
+
+			process.env.TZ = "Asia/Kathmandu";
+			const offeredInBrowser = generateTimeOptions(start, end);
+
+			process.env.TZ = "UTC";
+			const acceptedOnServer = generateTimeOptions(start, end);
+
+			expect(offeredInBrowser.map((t) => new Date(t).toISOString())).toEqual(
+				acceptedOnServer.map((t) => new Date(t).toISOString()),
+			);
+		});
+	});
 });
 
 describe("formatFlexTimeDisplay", () => {
 	test("returns null when totalMinutes is 0", () => {
-		const timestamp = Math.floor(
-			new Date("2025-01-15T14:00:00").getTime() / 1000,
-		);
+		const timestamp = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
 
 		const result = formatFlexTimeDisplay(timestamp, timestamp);
 
@@ -179,8 +203,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("returns null when endTimestamp is before startTimestamp", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T13:00:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T13:00:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -188,8 +212,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("returns formatted minutes when only minutes (no hours)", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T14:45:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T14:45:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -197,8 +221,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("returns formatted hours when exactly on the hour", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T16:00:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T16:00:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -206,8 +230,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("returns formatted hours and minutes when both present", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T15:30:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T15:30:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -215,8 +239,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles 1 minute difference", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T14:01:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T14:01:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -224,8 +248,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles 1 hour difference", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T15:00:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T15:00:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -233,8 +257,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles multiple hours and minutes", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T17:25:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T17:25:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -242,8 +266,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles 59 minutes", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T14:59:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T14:59:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -251,8 +275,8 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles exactly 60 minutes as 1 hour", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T15:00:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T15:00:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
@@ -260,83 +284,12 @@ describe("formatFlexTimeDisplay", () => {
 	});
 
 	test("handles 61 minutes as 1 hour 1 minute", () => {
-		const start = Math.floor(new Date("2025-01-15T14:00:00").getTime() / 1000);
-		const end = Math.floor(new Date("2025-01-15T15:01:00").getTime() / 1000);
+		const start = dateToDatabaseTimestamp(new Date("2025-01-15T14:00:00"));
+		const end = dateToDatabaseTimestamp(new Date("2025-01-15T15:01:00"));
 
 		const result = formatFlexTimeDisplay(start, end);
 
 		expect(result).toBe("+1h 1m");
-	});
-});
-
-describe("parseMapPoolInput", () => {
-	const VALID_POOL = "tw:3330000;sz:3a14000;tc:2c98000;rm:2bc0000;cb:39c0000";
-
-	test("returns null for empty string", () => {
-		expect(parseMapPoolInput("")).toBeNull();
-	});
-
-	test("returns null for whitespace-only string", () => {
-		expect(parseMapPoolInput("   \t\n  ")).toBeNull();
-	});
-
-	test("returns null when the parsed pool is empty", () => {
-		expect(parseMapPoolInput("not-a-valid-pool")).toBeNull();
-	});
-
-	test("returns a MapPool for a bare serialized pool", () => {
-		const result = parseMapPoolInput(VALID_POOL);
-
-		expect(result).toBeInstanceOf(MapPool);
-		expect(result?.serialized).toBe(VALID_POOL);
-	});
-
-	test("trims whitespace around a bare serialized pool", () => {
-		const result = parseMapPoolInput(`  ${VALID_POOL}  `);
-
-		expect(result?.serialized).toBe(VALID_POOL);
-	});
-
-	test("extracts the pool param from a full URL", () => {
-		const result = parseMapPoolInput(
-			`https://sendou.ink/maps?pool=${VALID_POOL}`,
-		);
-
-		expect(result?.serialized).toBe(VALID_POOL);
-	});
-
-	test("returns null for a URL without a pool param", () => {
-		expect(parseMapPoolInput("https://sendou.ink/maps?other=1")).toBeNull();
-	});
-
-	test("ignores other URL params when extracting pool", () => {
-		const result = parseMapPoolInput(
-			`https://sendou.ink/maps?foo=bar&pool=${VALID_POOL}&baz=qux`,
-		);
-
-		expect(result?.serialized).toBe(VALID_POOL);
-	});
-
-	test("returns null for a malformed URL with ://", () => {
-		expect(parseMapPoolInput("not a url://")).toBeNull();
-	});
-
-	test("parses the pool value from a query-string fragment", () => {
-		expect(parseMapPoolInput(`pool=${VALID_POOL}`)?.serialized).toBe(
-			VALID_POOL,
-		);
-	});
-
-	test("stops at the next & in a query-string fragment", () => {
-		expect(parseMapPoolInput(`pool=${VALID_POOL}&other=1`)?.serialized).toBe(
-			VALID_POOL,
-		);
-	});
-
-	test("preserves leading params before pool= in a query-string fragment", () => {
-		expect(parseMapPoolInput(`foo=bar&pool=${VALID_POOL}`)?.serialized).toBe(
-			VALID_POOL,
-		);
 	});
 });
 
@@ -370,8 +323,13 @@ describe("requestStarts", () => {
 		).toEqual([at("19:00")]);
 	});
 
-	test("offers now once the whole flexibility has passed", () => {
-		expect(requestStarts({ post, now: at("21:00") })).toEqual([at("21:00")]);
+	test("keeps offering every start once the whole flexibility has passed", () => {
+		expect(requestStarts({ post, now: at("21:00") })).toEqual([
+			at("19:00"),
+			at("19:30"),
+			at("20:00"),
+			at("20:30"),
+		]);
 	});
 });
 

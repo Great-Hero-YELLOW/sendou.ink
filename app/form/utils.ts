@@ -3,6 +3,9 @@ import type { AnySyncSchema } from "~/utils/schema";
 import { getFormFieldMetadata } from "./fields";
 import type { FormField, FormObjectSchema } from "./types";
 
+/** Body key a submitter sets when it renders `fieldErrors`; without it an invalid body fails with an error toast. */
+export const RENDERS_FIELD_ERRORS_KEY = "_rendersFieldErrors";
+
 export function infoMessageId(fieldId: string) {
 	return `${fieldId}-info`;
 }
@@ -205,9 +208,7 @@ export function validateField(
 	name: string,
 	value: unknown,
 ): string | undefined {
-	const fieldSchema = name.includes(".")
-		? getNestedSchema(schema, name)
-		: (schema.entries[name] as AnySyncSchema | undefined);
+	const fieldSchema = getNestedSchema(schema, name);
 	if (!fieldSchema) return undefined;
 
 	const result = v.safeParse(fieldSchema, value);

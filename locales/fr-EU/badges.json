@@ -3,12 +3,11 @@
 	"patreon+": "Supporter+ sur le patreon de sendou.ink",
 	"xp": "Attribué pour avoir atteint {{xpText}}",
 	"tournament_one": "Attribué pour avoir gagné {{tournament}}",
-	"tournament_many": "",
 	"tournament_other": "Attribué pour avoir gagné {{tournament}} (×{{count}})",
 	"forYourEvent": "Un badge pour votre événement ?",
 	"managedBy": "Géré par <0></0>",
-	"madeBy": "Fait par <0></0>",
+	"madeBy": "Créé par <0></0>",
 	"own.divider": "Badges gérés",
 	"other.divider": "Autres badges",
-	"noBadgesFound": "Aucun badge correspondant à votre recherche"
+	"noBadgesFound": "Aucun badge ne correspond à votre recherche"
 }

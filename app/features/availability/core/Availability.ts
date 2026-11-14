@@ -28,20 +28,26 @@ import type {
 const MINUTE_IN_SECONDS = 60;
 const DAY_MINUTES = 24 * 60;
 
-/** Database timestamp of the Monday 00:00 starting the week `date` falls in, as seen in `timezone`. */
-export function weekStartsAt(date: Date, timezone: string) {
-	const zoned = new TZDate(date.getTime(), timezone);
-
-	return dateToDatabaseTimestamp(startOfWeek(zoned, { weekStartsOn: 1 }));
+/**
+ * Database timestamp of the Monday 00:00 starting the week `date` falls in, as seen in `timezone`,
+ * or of the week `weekOffset` weeks away from it.
+ */
+export function weekStartsAt(date: Date, timezone: string, weekOffset = 0) {
+	return weekRange(date, timezone, weekOffset).startsAt;
 }
 
 /**
- * The week `date` falls in, `endsAt` being the next Monday 00:00. Not always 7×24h:
- * a week with a DST transition is an hour shorter or longer.
+ * The week `date` falls in, or the week `weekOffset` weeks away from it, `endsAt` being the next
+ * Monday 00:00. Not always 7×24h: a week with a DST transition is an hour shorter or longer, which
+ * is why the offset is counted in calendar weeks of `timezone` and not added to `date` beforehand.
  */
-export function weekRange(date: Date, timezone: string): TimeRange {
+export function weekRange(
+	date: Date,
+	timezone: string,
+	weekOffset = 0,
+): TimeRange {
 	const zoned = new TZDate(date.getTime(), timezone);
-	const start = startOfWeek(zoned, { weekStartsOn: 1 });
+	const start = addWeeks(startOfWeek(zoned, { weekStartsOn: 1 }), weekOffset);
 
 	return {
 		startsAt: dateToDatabaseTimestamp(start),
@@ -154,7 +160,10 @@ export function dateInTimezone(timestamp: number, timezone: string) {
 	return format(inTimezone(timestamp, timezone), "yyyy-MM-dd");
 }
 
-/** `HH:mm` of the timestamp in `timezone`. */
+/**
+ * `HH:mm` of the timestamp in `timezone`.
+ * @internal
+ */
 export function timeInTimezone(timestamp: number, timezone: string) {
 	return format(inTimezone(timestamp, timezone), "HH:mm");
 }
@@ -350,7 +359,10 @@ export function playableWindows({
 	];
 }
 
-/** Rounds minutes counted from the start of a day track to the nearest step. */
+/**
+ * Rounds minutes counted from the start of a day track to the nearest step.
+ * @internal
+ */
 export function snapMinutes(
 	minutes: number,
 	step: number = AVAILABILITY.SLOT_STEP_MINUTES,
@@ -438,7 +450,10 @@ function inTimezone(timestamp: number, timezone: string) {
 	);
 }
 
-/** Minutes from midnight of a `HH:mm` time string. */
+/**
+ * Minutes from midnight of a `HH:mm` time string.
+ * @internal
+ */
 export function timeToMinutes(time: string) {
 	const [hours, minutes] = time.split(":").map(Number);
 

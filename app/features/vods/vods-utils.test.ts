@@ -57,8 +57,31 @@ describe("extractYoutubeIdFromVideoUrl", () => {
 		expect(result).toBe("dQw4w9WgXcQ");
 	});
 
+	test.each([
+		{ why: "mobile host", url: "https://m.youtube.com/watch?v=dQw4w9WgXcQ" },
+		{
+			why: "v not the first param",
+			url: "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ",
+		},
+		{
+			why: "mobile host with v not first",
+			url: "https://m.youtube.com/watch?app=desktop&v=dQw4w9WgXcQ&t=5s",
+		},
+		{ why: "no protocol", url: "youtube.com/watch?v=dQw4w9WgXcQ" },
+		{ why: "surrounding whitespace", url: "  https://youtu.be/dQw4w9WgXcQ " },
+		{ why: "embed", url: "https://www.youtube.com/embed/dQw4w9WgXcQ" },
+	])("extracts YouTube ID ($why)", ({ url }) => {
+		expect(extractYoutubeIdFromVideoUrl(url)).toBe("dQw4w9WgXcQ");
+	});
+
 	test("returns null for an invalid YouTube URL", () => {
 		const url = "https://www.example.com/watch?v=dQw4w9WgXcQ";
+		const result = extractYoutubeIdFromVideoUrl(url);
+		expect(result).toBeNull();
+	});
+
+	test("returns null for a YouTube Shorts URL", () => {
+		const url = "https://www.youtube.com/shorts/dQw4w9WgXcQ";
 		const result = extractYoutubeIdFromVideoUrl(url);
 		expect(result).toBeNull();
 	});
@@ -248,6 +271,36 @@ describe("vodToVideoBeingAdded", () => {
 		const result = vodToVideoBeingAdded(vod);
 
 		expect(result.date).toEqual(date);
+	});
+
+	test.each([
+		{ why: "1v1", weapons: [0, 10], teamSize: 1 },
+		{ why: "2v2", weapons: [0, 10, 20, 30], teamSize: 2 },
+		{ why: "3v3", weapons: [0, 10, 20, 30, 40, 50], teamSize: 3 },
+	])("restores the team size of a $why cast", ({ weapons, teamSize }) => {
+		const vod: Vod = {
+			id: 1,
+			title: "Test cast",
+			type: "CAST",
+			youtubeId: "dQw4w9WgXcQ",
+			youtubePublishedAt: dayMonthYearToDatabaseTimestamp({
+				day: 5,
+				month: 0,
+				year: 2024,
+			}),
+			submitterUserId: 1,
+			matches: [
+				{
+					id: 1,
+					startsAt: 0,
+					mode: "SZ",
+					stageId: 1,
+					weapons: weapons as MainWeaponId[],
+				},
+			],
+		};
+
+		expect(vodToVideoBeingAdded(vod).teamSize).toBe(teamSize);
 	});
 });
 

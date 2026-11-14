@@ -7,10 +7,21 @@ export type ChatRoomType =
 	| "SQ_MATCH"
 	| "TOURNAMENT_MATCH"
 	| "TOURNAMENT_TEAM"
-	| "SCRIM";
+	| "SCRIM"
+	/** A lobby's common room: everyone signed up */
+	| "LOBBY"
+	/** One side of a lobby room's current set */
+	| "LOBBY_TEAM";
 
 export type SystemMessageType =
+	| "USER_JOINED"
 	| "USER_LEFT"
+	| "USER_LEFT_LOBBY"
+	| "LEAVING_AFTER_SET"
+	| "STAYING_AFTER_SET"
+	| "HOST_CHANGED"
+	| "SET_FORFEITED"
+	| "SET_CALLED_OFF"
 	| "MATCH_STARTED"
 	| "READY_CHECK_STARTED"
 	| "LIKE_RECEIVED"
@@ -38,7 +49,14 @@ export type PersistedSystemMessageType = Extract<
 	| "CANCEL_REPORTED"
 	| "CANCEL_CONFIRMED"
 	| "CANCEL_REFUSED"
+	| "USER_JOINED"
 	| "USER_LEFT"
+	| "USER_LEFT_LOBBY"
+	| "LEAVING_AFTER_SET"
+	| "STAYING_AFTER_SET"
+	| "HOST_CHANGED"
+	| "SET_FORFEITED"
+	| "SET_CALLED_OFF"
 	| "MAP_REPLAYED"
 	| "MAP_PICKED"
 	| "MAP_BANNED"
@@ -72,9 +90,15 @@ export interface ChatMessageWithAuthor {
 	author: ChatMessageAuthor | null;
 }
 
+export interface UnreadDivider {
+	unreadCount: number;
+	upToMessageId: number;
+}
+
 /** A message as held client-side: a persisted row, or an optimistic send awaiting its echo. */
 export interface ClientChatMessage extends ChatMessageWithAuthor {
 	pending?: boolean;
+	failed?: boolean;
 }
 
 /** One room of the user's room list as served by `GET /api/chat/rooms`. */
@@ -86,6 +110,8 @@ export interface ChatRoomListItem {
 	url: string;
 	imageUrl: string | null;
 	participantUserIds: number[];
+	/** The participants as users, for mentioning them and naming them in mentions. */
+	participants: CommonUser[];
 	/** Role labels (e.g. "TO", "Stream") shown next to non-participant authors, keyed by user id. */
 	labelByUserId: Record<number, string>;
 	/** databaseTimestamp */

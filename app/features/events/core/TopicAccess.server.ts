@@ -1,14 +1,21 @@
 import * as R from "remeda";
 import * as ChatRoomResolver from "~/features/chat/ChatRoomResolver.server";
+import { LOBBIES_CHANNEL } from "~/features/lobbies/lobbies-constants";
+import { SCRIMS_CHANNEL } from "~/features/scrims/scrims-constants";
 import { SENDOUQ_LOOKING_CHANNEL } from "~/features/sendouq/q-constants";
 import { hasPermission } from "~/modules/permissions/utils";
 import { CHANNEL_PREFIX } from "../events-types";
 
-const PUBLIC_TOPICS = new Set<string>([SENDOUQ_LOOKING_CHANNEL]);
+const PUBLIC_TOPICS = new Set<string>([
+	SENDOUQ_LOOKING_CHANNEL,
+	SCRIMS_CHANNEL,
+	LOBBIES_CHANNEL,
+]);
 const PUBLIC_TOPIC_PREFIXES = [
 	CHANNEL_PREFIX.tournament,
 	CHANNEL_PREFIX.tournamentMatch,
 	CHANNEL_PREFIX.sqGroup,
+	CHANNEL_PREFIX.lobby,
 ];
 
 /** Whether the user may subscribe their SSE connection to every one of the topics. The `user__` channel is never client-controllable. */
@@ -21,7 +28,7 @@ export async function canSubscribeToAll(
 	for (const topic of topics) {
 		if (isPublicTopic(topic)) continue;
 
-		const roomId = chatRoomTopicToRoomId(topic);
+		const roomId = topicToId(topic, CHANNEL_PREFIX.chatRoom);
 		if (roomId === null) return false;
 
 		roomIds.push(roomId);
@@ -46,12 +53,12 @@ function isPublicTopic(topic: string) {
 	);
 }
 
-/** Room id of a `chatRoom__` topic, null for any other or malformed topic. */
-function chatRoomTopicToRoomId(topic: string) {
-	if (!topic.startsWith(CHANNEL_PREFIX.chatRoom)) return null;
+/** Entity id of a topic with the prefix (e.g. a `chat-room__` topic's room id), null for any other or malformed topic. */
+function topicToId(topic: string, prefix: string) {
+	if (!topic.startsWith(prefix)) return null;
 
-	const roomId = Number(topic.slice(CHANNEL_PREFIX.chatRoom.length));
-	if (!Number.isInteger(roomId) || roomId <= 0) return null;
+	const id = Number(topic.slice(prefix.length));
+	if (!Number.isInteger(id) || id <= 0) return null;
 
-	return roomId;
+	return id;
 }

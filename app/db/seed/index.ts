@@ -1,4 +1,5 @@
 import { deleteAllRows } from "~/db/wipe";
+import * as FeedIndexer from "~/features/feed/core/FeedIndexer.server";
 import { clearAllTournamentDataCache } from "~/features/tournament-bracket/core/Tournament.server";
 import { withoutInfoLogs } from "~/utils/logger";
 import { resetFactories } from "./core/defineFactory";
@@ -8,6 +9,7 @@ import { seedBadges } from "./dev/badges";
 import { seedBuilds } from "./dev/builds";
 import { seedCalendarEvents } from "./dev/calendar";
 import { seedResultHighlights } from "./dev/highlights";
+import { seedLobbies } from "./dev/lobbies";
 import { seedMisc } from "./dev/misc";
 import { seedOrganizations } from "./dev/organizations";
 import { seedPlus } from "./dev/plus";
@@ -43,12 +45,14 @@ export async function seed() {
 	await runModule(() => seedPlus(users));
 	await runModule(() => seedBuilds(users));
 	const scrims = await runModule(() => seedScrimsAndLFG(users, teams));
+	await runModule(() => seedLobbies(users));
 	await runModule(() => seedVods(users));
 	const misc = await runModule(() => seedMisc({ users, sendouq, tournaments }));
 	await runModule(() => seedSpecialTrophies());
 	await runModule(() =>
 		seedAvailability({ users, teams, tournaments, scrims, misc }),
 	);
+	await runModule(() => FeedIndexer.run());
 
 	clearAllTournamentDataCache();
 }

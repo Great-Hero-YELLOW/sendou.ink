@@ -60,7 +60,7 @@ export const RR_TOP_4_TO_SE: BracketProgression = [
 		type: "single_elimination",
 		name: "Final stage",
 		requiresCheckIn: false,
-		settings: { thirdPlaceMatch: false },
+		settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 		sources: [{ bracketIdx: 0, placements: [1, 2, 3, 4] }],
 	},
 ];
@@ -73,6 +73,51 @@ export const RR_TO_SE_WITH_UNDERGROUND: BracketProgression = [
 		requiresCheckIn: true,
 		settings: {},
 		sources: [{ bracketIdx: 0, placements: [3, 4] }],
+	},
+];
+
+/** With 16 teams: double elimination pools of 8 ending once each has 1 unbeaten and 3 one loss teams.
+ * The unbeaten teams make the top cut, the one loss teams play a double elimination redemption of two groups
+ * of 3 without grand finals, whose unbeaten teams make the top cut too. */
+export const DE_GROUPS_TO_REDEMPTION_AND_TOP_CUT: BracketProgression = [
+	{
+		type: "double_elimination",
+		name: "Main",
+		requiresCheckIn: false,
+		settings: {
+			groupCount: 2,
+			skippedRounds: ["LB_SEMIS", "LB_FINALS", "GRAND_FINALS", "BRACKET_RESET"],
+		},
+	},
+	{
+		type: "double_elimination",
+		name: "Redemption",
+		requiresCheckIn: false,
+		settings: {
+			groupCount: 2,
+			skippedRounds: ["GRAND_FINALS", "BRACKET_RESET"],
+		},
+		sources: [{ bracketIdx: 0, placements: [2, 3] }],
+	},
+	{
+		type: "double_elimination",
+		name: "Top Cut",
+		requiresCheckIn: false,
+		settings: {},
+		sources: [
+			{ bracketIdx: 0, placements: [1] },
+			{ bracketIdx: 1, placements: [1] },
+		],
+	},
+];
+
+/** Single elimination without its finals: both semifinal winners share 1st place. */
+export const SE_WITHOUT_FINALS: BracketProgression = [
+	{
+		type: "single_elimination",
+		name: "Main bracket",
+		requiresCheckIn: false,
+		settings: { skippedRounds: ["FINALS", "THIRD_PLACE_MATCH"] },
 	},
 ];
 
@@ -113,6 +158,22 @@ export const SOS_BRACKETS: BracketProgression = [
 	},
 ];
 
+/** Two independent single elimination brackets, teams split between them on the seeds page. */
+export const TWO_STARTING_BRACKETS: BracketProgression = [
+	{
+		type: "single_elimination",
+		name: "Division 1",
+		requiresCheckIn: false,
+		settings: {},
+	},
+	{
+		type: "single_elimination",
+		name: "Division 2",
+		requiresCheckIn: false,
+		settings: {},
+	},
+];
+
 export const SWISS_TO_TOP_CUT: BracketProgression = [
 	{
 		type: "swiss",
@@ -124,7 +185,7 @@ export const SWISS_TO_TOP_CUT: BracketProgression = [
 		type: "single_elimination",
 		name: "Top Cut",
 		requiresCheckIn: false,
-		settings: { thirdPlaceMatch: false },
+		settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 		sources: [{ bracketIdx: 0, placements: [1, 2, 3, 4] }],
 	},
 ];
@@ -141,7 +202,7 @@ export const SWISS_EARLY_ADVANCE_TO_TOP_CUT: BracketProgression = [
 		type: "single_elimination",
 		name: "Top Cut",
 		requiresCheckIn: false,
-		settings: { thirdPlaceMatch: false },
+		settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 		sources: [{ bracketIdx: 0, placements: [] }],
 	},
 ];
@@ -159,6 +220,7 @@ export type TeamSeed = {
 	members?: number[];
 	rosterSize?: number;
 	isCheckedIn?: boolean;
+	startingBracketIdx?: number;
 };
 
 /** `count` checked in teams with full rosters of fresh users. */
@@ -195,7 +257,10 @@ export async function createTeams(
 						...fillerUsers.map((user) => user.id),
 					],
 				},
-				{ isCheckedIn: seed.isCheckedIn ?? true },
+				{
+					isCheckedIn: seed.isCheckedIn ?? true,
+					startingBracketIdx: seed.startingBracketIdx,
+				},
 			),
 		);
 	}

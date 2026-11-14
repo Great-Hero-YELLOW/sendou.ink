@@ -35,6 +35,7 @@ const PAGE_COLORS: Record<
 	"tier-list-maker": { accent: "pink", second: "cyan" },
 	links: { accent: "green", second: "pink" },
 	maps: { accent: "green", second: "pink" },
+	lobbies: { accent: "pink", second: "cyan" },
 };
 
 export default function OgImages() {
@@ -62,7 +63,7 @@ export default function OgImages() {
 			<div className={styles.grid}>
 				{OG_IMAGE_PAGES.map((page) => (
 					<PreviewCard key={page} label={`${page}.png`}>
-						<PageOg page={page} title={t(`common:pages.${page}` as any)} />
+						<PageOg page={page} title={t(`common:pages.${page}`)} />
 					</PreviewCard>
 				))}
 			</div>

@@ -39,10 +39,13 @@ import {
 	userSeasonsStatsPage,
 } from "~/features/user-page/user-page-urls";
 import { useFormatDistanceToNow } from "~/hooks/intl/useFormatDistanceToNow";
+import { useHasRole } from "~/modules/permissions/hooks";
+import { useSearchParamsTyped } from "~/modules/search-params/hooks";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import {
-	resolveAvatarUrl,
+	avatarUrl,
 	sendouQMatchPage,
+	smallImageUrl,
 	tierImageUrl,
 	userPage,
 } from "~/utils/urls";
@@ -129,7 +132,7 @@ export default function UserSeasonsPage() {
 								activeDays={data.activeDays}
 								today={new Date()}
 								monthNames="short"
-								className={clsx(styles.activityCalendar, "scrollbar")}
+								className={styles.activityCalendar}
 							/>
 						</SendouSection>
 						<StatsPeek
@@ -143,9 +146,10 @@ export default function UserSeasonsPage() {
 			) : (
 				<EmptyState navItem="sendouq">{t("user:seasons.noQ")}</EmptyState>
 			)}
-			{data.canceled ? (
-				<CanceledMatchesDialog canceledMatches={data.canceled} />
-			) : null}
+			<StaffDialogs
+				canceledMatches={data.canceled}
+				publicNotes={data.publicNotes}
+			/>
 		</div>
 	);
 }
@@ -189,10 +193,7 @@ function SeasonPicker({
 	const { t } = useTranslation(["user"]);
 
 	return (
-		<nav
-			className={clsx(styles.seasonPicker, "scrollbar")}
-			aria-label={t("user:seasons.season")}
-		>
+		<nav className={styles.seasonPicker} aria-label={t("user:seasons.season")}>
 			{seasonPickerItems(seasonOverviews).map((item) => {
 				if (item.type === "CUTOFF") {
 					return <SeasonCutoff key={item.key} />;
@@ -321,14 +322,14 @@ function TeamRank({
 						<span className={styles.teamRankTeam}>
 							{teamEntry.team.avatarUrl ? (
 								<img
-									src={teamEntry.team.avatarUrl}
+									src={smallImageUrl(teamEntry.team.avatarUrl)}
 									width={16}
 									height={16}
 									alt=""
 									className="rounded-full"
 								/>
 							) : null}
-							<span className={styles.statsPeekValue}>
+							<span className={clsx(styles.statsPeekValue, "truncate")}>
 								{teamEntry.team.name}
 							</span>
 						</span>
@@ -340,7 +341,9 @@ function TeamRank({
 					<li key={member.id}>
 						<Link to={userPage(member)} className={styles.teamRankMember}>
 							<Avatar user={member} size="xxs" />
-							<span className={styles.statsPeekValue}>{member.username}</span>
+							<span className={clsx(styles.statsPeekValue, "truncate")}>
+								{member.username}
+							</span>
 						</Link>
 					</li>
 				))}
@@ -370,7 +373,7 @@ function StatsPeek({
 							width={40}
 							className="rounded"
 						/>
-						<span className={styles.statsPeekValue}>
+						<span className={clsx(styles.statsPeekValue, "truncate")}>
 							{t(`game-misc:STAGE_${peek.bestStage.stageId}`)}
 						</span>
 						<span className="text-lighter">
@@ -385,7 +388,7 @@ function StatsPeek({
 							variant="badge"
 							size={24}
 						/>
-						<span className={styles.statsPeekValue}>
+						<span className={clsx(styles.statsPeekValue, "truncate")}>
 							{t(`weapons:MAIN_${peek.topWeapon.weaponSplId}`)}
 						</span>
 						<span className="text-lighter">
@@ -395,7 +398,7 @@ function StatsPeek({
 				) : peek.topMode ? (
 					<StatsPeekItem label={t("user:seasons.stats.mostPlayedMode")}>
 						<ModeImage mode={peek.topMode.mode} size={24} />
-						<span className={styles.statsPeekValue}>
+						<span className={clsx(styles.statsPeekValue, "truncate")}>
 							{t(`game-misc:MODE_LONG_${peek.topMode.mode}`)}
 						</span>
 						<span className="text-lighter">
@@ -406,7 +409,7 @@ function StatsPeek({
 				{peek.topMate ? (
 					<StatsPeekItem label={t("user:seasons.stats.topTeammate")}>
 						<Avatar user={peek.topMate.user} size="xxs" />
-						<span className={styles.statsPeekValue}>
+						<span className={clsx(styles.statsPeekValue, "truncate")}>
 							{peek.topMate.user.username}
 						</span>
 						<span className="text-lighter">
@@ -538,16 +541,13 @@ function SeasonSummaryExportDialog({
 			{data ? (
 				<SeasonSummaryGraphic
 					user={{
+						id: profileUser.id,
 						name: profileUser.username,
-						discordId: profileUser.discordId,
 						customUrl: profileUser.customUrl ?? undefined,
 						countryCode: profileUser.country ?? undefined,
-						avatarUrl: resolveAvatarUrl({
-							customAvatarUrl: profileUser.customAvatarUrl,
-							discordId: profileUser.discordId,
-							discordAvatar: profileUser.discordAvatar,
-							size: "lg",
-						}),
+						avatarUrl: profileUser.avatar
+							? avatarUrl(profileUser.avatar, "lg")
+							: undefined,
 					}}
 					season={data.season}
 					seasonDateRange={Seasons.nthToDateRange(data.season)}
@@ -558,26 +558,64 @@ function SeasonSummaryExportDialog({
 	);
 }
 
-/** Dialog for staff view all season's canceled matches per user */
+/** Staff views of the user's season, each loaded only once its dialog is opened */
+function StaffDialogs({
+	canceledMatches,
+	publicNotes,
+}: {
+	canceledMatches: UserSeasonsPageLoaderData["canceled"];
+	publicNotes: UserSeasonsPageLoaderData["publicNotes"];
+}) {
+	const isStaff = useHasRole("STAFF");
+	const [, setParams] = useSearchParamsTyped(userSeasonsSearchParams);
+
+	if (!isStaff) return null;
+
+	const closeDialog = () => setParams({ staffDialog: null });
+
+	return (
+		<div className="stack horizontal md justify-center">
+			<SendouButton
+				variant="minimal"
+				onClick={() => setParams({ staffDialog: "canceled-matches" })}
+			>
+				Canceled Matches
+			</SendouButton>
+			<SendouButton
+				variant="minimal"
+				onClick={() => setParams({ staffDialog: "public-notes" })}
+			>
+				Public Notes
+			</SendouButton>
+			{canceledMatches ? (
+				<CanceledMatchesDialog
+					canceledMatches={canceledMatches}
+					onClose={closeDialog}
+				/>
+			) : null}
+			{publicNotes ? (
+				<PublicNotesDialog publicNotes={publicNotes} onClose={closeDialog} />
+			) : null}
+		</div>
+	);
+}
+
 function CanceledMatchesDialog({
 	canceledMatches,
+	onClose,
 }: {
 	canceledMatches: NonNullable<UserSeasonsPageLoaderData["canceled"]>;
+	onClose: () => void;
 }) {
 	return (
 		<SendouDialog
-			trigger={
-				<SendouButton
-					variant="minimal"
-					isDisabled={canceledMatches.length === 0}
-					className="mx-auto"
-				>
-					Canceled Matches ({canceledMatches.length})
-				</SendouButton>
-			}
-			heading="Season's canceled matches for this user"
+			heading={`Season's canceled matches for this user (${canceledMatches.length})`}
+			onClose={onClose}
 		>
 			<div className="stack lg">
+				{canceledMatches.length === 0 ? (
+					<div className="text-lighter text-sm">No canceled matches</div>
+				) : null}
 				{canceledMatches.map((match) => (
 					<div key={match.id} className="stack sm">
 						<div>
@@ -594,6 +632,43 @@ function CanceledMatchesDialog({
 							/>
 						</div>
 						<CanceledMatchReports cancelReports={match.cancelReports} />
+					</div>
+				))}
+			</div>
+		</SendouDialog>
+	);
+}
+
+function PublicNotesDialog({
+	publicNotes,
+	onClose,
+}: {
+	publicNotes: NonNullable<UserSeasonsPageLoaderData["publicNotes"]>;
+	onClose: () => void;
+}) {
+	return (
+		<SendouDialog
+			heading={`Season's SendouQ public notes by this user (${publicNotes.length})`}
+			onClose={onClose}
+		>
+			<div className="stack md">
+				{publicNotes.length === 0 ? (
+					<div className="text-lighter text-sm">No public notes</div>
+				) : null}
+				{publicNotes.map((note) => (
+					<div key={note.id} className="stack xs">
+						<LocaleTime
+							date={note.createdAt}
+							className="text-lighter text-xs"
+							options={{
+								year: "numeric",
+								month: "numeric",
+								day: "numeric",
+								hour: "numeric",
+								minute: "numeric",
+							}}
+						/>
+						<div className="text-sm">{note.text}</div>
 					</div>
 				))}
 			</div>

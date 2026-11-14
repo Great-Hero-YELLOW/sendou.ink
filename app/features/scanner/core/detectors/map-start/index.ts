@@ -12,15 +12,16 @@ import { getCV, type Mat, minMaxLoc } from "../../cv";
 import {
 	type GlyphSet,
 	type RecognizedText,
-	recognizeText,
+	recognizeTextSteps,
 	scaleGlyphSet,
 } from "../../glyphs";
-import { copyRoi, meanBrightness, minChannel } from "../../image";
+import { copyRoi, frameGray, meanBrightness, minChannel } from "../../image";
 import {
 	ALL_MODE_ENTRIES,
 	ALL_MODE_LABELS,
 	ALL_STAGE_ENTRIES,
 } from "../../localized";
+import { all, done, type MatchSteps, runSync } from "../../match-steps";
 import { closestBy } from "../../text";
 import type { ScoreboardResources } from "../scoreboard/index";
 import type { DetectedEvent, Detector, GateResult } from "../types";
@@ -62,6 +63,13 @@ export const MAP_START_EVENT_TYPE = "MapStart";
 const LABEL_MIN_SCORE = 0.5;
 /** Accept a closed-set match only above this score (1 = exact). */
 const MIN_MATCH_SCORE = 0.62;
+/**
+ * A snapped mode with the stage unread (a streamer's overlay over the stage
+ * line) scores in this range by its mode score: every snapped mode clears the
+ * timeline floor (0.6), so the intro still opens its game, and a frame that
+ * reads the stage too outranks it.
+ */
+const MODE_ONLY_CONFIDENCE = { min: 0.6, max: 0.7 };
 
 interface LineBand {
 	y0: number;
@@ -175,8 +183,7 @@ export function createMapStartDetector(
 			if (meanBrightness(frame, roi) < GATE_DARK_MAX_MEAN) darkOk++;
 		}
 
-		const gray = new cv.Mat();
-		cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+		const gray = frameGray(frame);
 
 		const label = copyRoi(gray, MODE_LABEL_ROI);
 		const { maxVal } = minMaxLoc(label);
@@ -206,7 +213,6 @@ export function createMapStartDetector(
 		const inkOk =
 			brightFraction <= GATE_INK_BAND_MAX_BRIGHT &&
 			darkFraction >= GATE_INK_BAND_MIN_DARK;
-		gray.delete();
 
 		const score =
 			(darkOk / GATE_DARK_PROBES.length + (textOk ? 1 : 0) + (inkOk ? 1 : 0)) /
@@ -217,63 +223,137 @@ export function createMapStartDetector(
 		};
 	}
 
-	function parse(frame: Mat, t: number): DetectedEvent<MapStartData>[] {
-		const gray = new cv.Mat();
-		cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+	/** 2. mode title: find the 1-2 text lines, OCR each (in lockstep), snap the joined text. */
+	function* readModeLines(
+		gray: Mat,
+		glyphs: GlyphSet,
+		speculative: boolean,
+	): MatchSteps<string[]> {
+		const block = copyRoi(gray, MODE_BLOCK_ROI);
+		// find bands on the masked block (bright background merges/invents bands)
+		// but OCR the raw crop (masking clips strokes)
+		const masked = maskNearDark(block, BLOCK_MASK_RADIUS);
+		const binary = new cv.Mat();
+		cv.threshold(masked, binary, TEXT_BIN_THRESHOLD, 255, cv.THRESH_BINARY);
+		masked.delete();
+		const lineCrops: Mat[] = [];
+		for (const band of findLineBands(binary)) {
+			const extent = bandExtent(binary, band);
+			if (!extent) continue;
+			const pad = 3;
+			const y0 = Math.max(0, band.y0 - pad);
+			const x0 = Math.max(0, extent.x0 - pad);
+			lineCrops.push(
+				copyRoi(block, {
+					x: x0,
+					y: y0,
+					w: Math.min(block.cols, extent.x1 + 1 + pad) - x0,
+					h: Math.min(block.rows, band.y1 + pad) - y0,
+				}),
+			);
+		}
+		binary.delete();
+		block.delete();
+		const reads = yield* all(
+			lineCrops.map((line) =>
+				recognizeTextSteps(
+					line,
+					glyphs,
+					{ binThreshold: TEXT_BIN_THRESHOLD, minCharScore: 0.3 },
+					speculative,
+				),
+			),
+		);
+		for (const line of lineCrops) line.delete();
+		return reads.map((read) => read.text.trim()).filter((text) => text);
+	}
+
+	/**
+	 * 3. stage name over live gameplay: no single binarization works everywhere,
+	 * so try the masked crop plus raw crop at rising thresholds (in lockstep), keep
+	 * the best snap.
+	 */
+	function* readStage(
+		frame: Mat,
+		glyphs: GlyphSet,
+		speculative: boolean,
+	): MatchSteps<{
+		stage: StageId | null;
+		stageScore: number;
+		stageReading: string;
+	}> {
+		const rgbaCrop = copyRoi(frame, STAGE_ROI);
+		const bright = minChannel(rgbaCrop);
+		rgbaCrop.delete();
+		const masked = maskNearDark(bright, STAGE_MASK_RADIUS);
+		const attempts: [Mat, number][] = [
+			[masked, STAGE_BIN_THRESHOLD],
+			...STAGE_RAW_BIN_THRESHOLDS.map((thr): [Mat, number] => [bright, thr]),
+		];
+		const reads = yield* all(
+			attempts.map(([input, binThreshold]) =>
+				recognizeTextSteps(
+					input,
+					glyphs,
+					{ binThreshold, minCharScore: 0.3 },
+					speculative,
+				),
+			),
+		);
+		let stage: StageId | null = null;
+		let stageScore = 0;
+		let stageReading = "";
+		for (const read of reads) {
+			const match = read.text
+				? closestBy(read.text, ALL_STAGE_ENTRIES, (e) => e.text)
+				: null;
+			if (match && match.score > stageScore) {
+				stageScore = match.score;
+				stageReading = read.text;
+				if (match.score >= MIN_MATCH_SCORE) stage = match.entry.stageId;
+			}
+		}
+		masked.delete();
+		bright.delete();
+		return { stage, stageScore, stageReading };
+	}
+
+	function* parseSteps(
+		frame: Mat,
+		t: number,
+		_gate: GateResult | undefined,
+		speculative: boolean,
+	): MatchSteps<DetectedEvent<MapStartData>[]> {
+		const gray = frameGray(frame);
 
 		// 1. confirm the constant label — a gate hit without it is a lookalike
 		let label: RecognizedText | null = null;
 		let labelScore = 0;
 		if (labelGlyphs) {
 			const crop = copyRoi(gray, MODE_LABEL_ROI);
-			label = recognizeText(crop, labelGlyphs, {
-				binThreshold: TEXT_BIN_THRESHOLD,
-				minCharScore: 0.3,
-			});
+			label = yield* recognizeTextSteps(
+				crop,
+				labelGlyphs,
+				{ binThreshold: TEXT_BIN_THRESHOLD, minCharScore: 0.3 },
+				speculative,
+			);
 			crop.delete();
 			labelScore = closestBy(label.text, ALL_MODE_LABELS, (l) => l)?.score ?? 0;
 			if (labelScore < LABEL_MIN_SCORE) {
-				gray.delete();
 				return [];
 			}
 		}
 
-		// 2. mode title: find the 1-2 text lines, OCR each, snap the joined text
+		const [modeLines, stageRead] = yield* all([
+			modeGlyphs ? readModeLines(gray, modeGlyphs, speculative) : done(null),
+			stageGlyphs ? readStage(frame, stageGlyphs, speculative) : done(null),
+		]);
+
 		let mode: ModeShort | null = null;
 		let modeScore = 0;
 		let modeReading = "";
-		if (modeGlyphs) {
-			const block = copyRoi(gray, MODE_BLOCK_ROI);
-			// find bands on the masked block (bright background merges/invents bands)
-			// but OCR the raw crop (masking clips strokes)
-			const masked = maskNearDark(block, BLOCK_MASK_RADIUS);
-			const binary = new cv.Mat();
-			cv.threshold(masked, binary, TEXT_BIN_THRESHOLD, 255, cv.THRESH_BINARY);
-			masked.delete();
-			const bands = findLineBands(binary);
-			const lines: string[] = [];
-			for (const band of bands) {
-				const extent = bandExtent(binary, band);
-				if (!extent) continue;
-				const pad = 3;
-				const y0 = Math.max(0, band.y0 - pad);
-				const x0 = Math.max(0, extent.x0 - pad);
-				const line = copyRoi(block, {
-					x: x0,
-					y: y0,
-					w: Math.min(block.cols, extent.x1 + 1 + pad) - x0,
-					h: Math.min(block.rows, band.y1 + pad) - y0,
-				});
-				const read = recognizeText(line, modeGlyphs, {
-					binThreshold: TEXT_BIN_THRESHOLD,
-					minCharScore: 0.3,
-				});
-				line.delete();
-				if (read.text.trim()) lines.push(read.text.trim());
-			}
-			binary.delete();
-			block.delete();
-			modeReading = lines.join(" ");
+		if (modeLines) {
+			modeReading = modeLines.join(" ");
 			const match = modeReading
 				? closestBy(modeReading, ALL_MODE_ENTRIES, (e) => e.text)
 				: null;
@@ -282,48 +362,16 @@ export function createMapStartDetector(
 				if (match.score >= MIN_MATCH_SCORE) mode = match.entry.mode;
 			}
 		}
-
-		// 3. stage name over live gameplay: no single binarization works everywhere,
-		// so try the masked crop plus raw crop at rising thresholds, keep the best snap
-		let stage: StageId | null = null;
-		let stageScore = 0;
-		let stageReading = "";
-		if (stageGlyphs) {
-			const rgbaCrop = copyRoi(frame, STAGE_ROI);
-			const bright = minChannel(rgbaCrop);
-			rgbaCrop.delete();
-			const masked = maskNearDark(bright, STAGE_MASK_RADIUS);
-			const attempts: [Mat, number][] = [
-				[masked, STAGE_BIN_THRESHOLD],
-				...STAGE_RAW_BIN_THRESHOLDS.map((thr): [Mat, number] => [bright, thr]),
-			];
-			for (const [input, binThreshold] of attempts) {
-				const read = recognizeText(input, stageGlyphs, {
-					binThreshold,
-					minCharScore: 0.3,
-				});
-				const match = read.text
-					? closestBy(read.text, ALL_STAGE_ENTRIES, (e) => e.text)
-					: null;
-				if (match && match.score > stageScore) {
-					stageScore = match.score;
-					stageReading = read.text;
-					if (match.score >= MIN_MATCH_SCORE) stage = match.entry.stageId;
-				}
-			}
-			masked.delete();
-			bright.delete();
-		}
-
-		gray.delete();
+		const { stage = null, stageScore = 0, stageReading = "" } = stageRead ?? {};
 
 		return [
 			{
 				type: MAP_START_EVENT_TYPE,
 				t,
-				// mean, so a clean mode read survives an unreadable stage (map-start is
-				// the only mode source for VoD matches)
-				confidence: (modeScore + stageScore) / 2,
+				confidence:
+					stage === null && mode !== null
+						? modeOnlyConfidence(modeScore)
+						: (modeScore + stageScore) / 2,
 				data: { mode, stage },
 				debug: {
 					label: label?.text,
@@ -342,6 +390,15 @@ export function createMapStartDetector(
 		id: "map-start",
 		sufficientConfidence: 0.79,
 		gate,
-		parse,
+		parse: (frame, t, gateResult) =>
+			runSync(parseSteps(frame, t, gateResult, false)),
+		parseSteps,
 	};
+}
+
+function modeOnlyConfidence(modeScore: number): number {
+	const { min, max } = MODE_ONLY_CONFIDENCE;
+	return (
+		min + ((max - min) * (modeScore - MIN_MATCH_SCORE)) / (1 - MIN_MATCH_SCORE)
+	);
 }

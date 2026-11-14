@@ -6,7 +6,6 @@ import { useUser } from "~/features/auth/core/user";
 import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
 import { lfgNewPostPage } from "~/features/lfg/lfg-urls";
 import { plusSuggestionsNewPage } from "~/features/plus-suggestions/plus-suggestions-urls";
-import { canAccessTrophies } from "~/features/trophies/trophies-utils";
 import { userNewBuildPage } from "~/features/user-page/user-page-urls";
 import { newVodPage } from "~/features/vods/vods-urls";
 import {
@@ -15,6 +14,7 @@ import {
 	NEW_TROPHY_PAGE,
 	navIconUrl,
 	newAssociationsPage,
+	newLobbyPage,
 	newScrimPostPage,
 	ORGANIZATION_NEW_PAGE,
 	TOURNAMENT_NEW_PAGE,
@@ -74,6 +74,12 @@ export function AnythingAdder() {
 			href: newScrimPostPage(),
 		},
 		{
+			id: "lobby",
+			children: t("header.adder.lobby"),
+			imagePath: navIconUrl("lobbies"),
+			href: newLobbyPage(),
+		},
+		{
 			id: "association",
 			children: t("header.adder.association"),
 			imagePath: navIconUrl("associations"),
@@ -103,20 +109,17 @@ export function AnythingAdder() {
 			imagePath: navIconUrl("plus"),
 			href: plusSuggestionsNewPage(),
 		},
-		canAccessTrophies(user)
-			? {
-					id: "trophy",
-					children: t("header.adder.trophy"),
-					imagePath: navIconUrl("trophies"),
-					href: NEW_TROPHY_PAGE,
-				}
-			: null,
-	].filter((item) => item !== null);
+		{
+			id: "trophy",
+			children: t("header.adder.trophy"),
+			imagePath: navIconUrl("trophies"),
+			href: NEW_TROPHY_PAGE,
+		},
+	];
 
 	return (
 		<SendouMenu
 			placement="bottom right"
-			eager
 			trigger={
 				<SendouButton
 					size="small"

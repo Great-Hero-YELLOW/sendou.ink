@@ -1,4 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
+import * as ModAuditLogRepository from "~/features/admin/ModAuditLogRepository.server";
 import { requireUser } from "~/features/auth/core/user.server";
 import * as SeasonSummary from "~/features/img-export/core/SeasonSummary";
 import { cachedTeamLeaderboard } from "~/features/leaderboards/core/leaderboards.server";
@@ -19,7 +20,8 @@ export type UserSeasonsPageLoaderData = NonNullable<
 
 export const loader = async ({ url }: LoaderFunctionArgs) => {
 	const loggedInUser = requireUser();
-	const { season: seasonParam } = userSeasonsSearchParams.parse(url);
+	const { season: seasonParam, staffDialog } =
+		userSeasonsSearchParams.parse(url);
 
 	const userId = userPageUserId();
 	const seasonsParticipatedIn =
@@ -30,6 +32,7 @@ export const loader = async ({ url }: LoaderFunctionArgs) => {
 	}
 
 	const season = seasonParam ?? seasonsParticipatedIn[0];
+	const isStaff = loggedInUser.roles.includes("STAFF");
 
 	const seasonOverviews = await Promise.all(
 		seasonsParticipatedIn.map(async (nth) => {
@@ -56,24 +59,32 @@ export const loader = async ({ url }: LoaderFunctionArgs) => {
 		}),
 		statsPeek: await statsPeek({ season, userId }),
 		teamEntry: await teamEntry({ season, userId }),
-		canceled: loggedInUser.roles.includes("STAFF")
-			? await SQMatchRepository.findSeasonCanceledMatchesByUserId({
-					season,
-					userId,
-				})
-			: null,
+		canceled:
+			isStaff && staffDialog === "canceled-matches"
+				? await SQMatchRepository.findSeasonCanceledMatchesByUserId({
+						season,
+						userId,
+					})
+				: null,
+		publicNotes:
+			isStaff && staffDialog === "public-notes"
+				? await ModAuditLogRepository.findSeasonByUserId({
+						season,
+						userId,
+						type: "SENDOUQ_PUBLIC_NOTE",
+					})
+				: null,
 	};
 };
 
 async function statsPeek(args: { season: number; userId: number }) {
-	const [stages, weapons, mates] = await Promise.all([
-		PlayerStatRepository.findSeasonStagesByUserId(args),
-		ReportedWeaponRepository.findSeasonReportedWeaponsByUserId(args),
-		PlayerStatRepository.findSeasonMatesEnemiesByUserId({
-			...args,
-			type: "MATE",
-		}),
-	]);
+	const stages = await PlayerStatRepository.findSeasonStagesByUserId(args);
+	const weapons =
+		await ReportedWeaponRepository.findSeasonReportedWeaponsByUserId(args);
+	const mates = await PlayerStatRepository.findSeasonMatesEnemiesByUserId({
+		...args,
+		type: "MATE",
+	});
 
 	const topMate = mates.at(0);
 	const topWeapon = SeasonSummary.topWeaponUsages(weapons).at(0) ?? null;

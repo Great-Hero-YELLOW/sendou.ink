@@ -1,9 +1,12 @@
 import cachified from "@epic-web/cachified";
+import { hoursToMilliseconds } from "date-fns";
 import type { LoaderFunctionArgs } from "react-router";
 import type { WindowSchedule } from "~/features/availability/availability-types";
 import * as Availability from "~/features/availability/core/Availability";
 import * as VisibleSchedules from "~/features/availability/core/VisibleSchedules.server";
+import type { RouteChatRoomInput } from "~/features/chat/chat-types";
 import * as RouteChatRooms from "~/features/chat/RouteChatRooms.server";
+import * as MatchProfileRepository from "~/features/match-profile/MatchProfileRepository.server";
 import { resolveNotifications } from "~/features/notifications/core/resolve.server";
 import * as ScannerIngestRepository from "~/features/scanner-ingest/ScannerIngestRepository.server";
 import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeaponRepository.server";
@@ -14,21 +17,24 @@ import { matchEndedEarly } from "~/features/tournament-bracket/core/engine";
 import * as PickBan from "~/features/tournament-bracket/core/PickBan";
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import {
+	canSeeTournamentFriendCodes,
 	tournamentFromParams,
 	tournamentTeamsFullCached,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { matchPageParamsSchema } from "~/features/tournament-bracket/tournament-bracket-schemas";
+import { showsOneGroupAtATime } from "~/features/tournament-bracket/tournament-bracket-utils";
 import * as UserCardRepository from "~/features/user-card/UserCardRepository.server";
 import * as UserRepository from "~/features/user-page/UserRepository.server";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
+import { cache, ttl } from "~/utils/cache.server";
 import { databaseTimestampNow } from "~/utils/dates";
 import { IS_E2E_TEST_RUN } from "~/utils/e2e";
 import { logger } from "~/utils/logger";
 import type { SerializeFrom } from "~/utils/remix";
-import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
+import { notFound, notFoundIfNullish, parseParams } from "~/utils/remix.server";
 import { executeRoll } from "../core/executeRoll.server";
 import * as LeagueScheduling from "../core/LeagueScheduling";
 import { mapListFromResults, resolveMapList } from "../core/mapList.server";
+import type { FindMatchById } from "../TournamentMatchRepository.server";
 import * as TournamentMatchRepository from "../TournamentMatchRepository.server";
 
 export type TournamentMatchLoaderData = SerializeFrom<typeof loader>;
@@ -52,12 +58,12 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	);
 
 	if (match.tournamentId !== tournamentId) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	const isBye = !match.opponentOne || !match.opponentTwo;
 	if (isBye) {
-		throw new Response(null, { status: 404 });
+		notFound();
 	}
 
 	let pickBanEvents = match.roundMaps?.pickBan
@@ -115,7 +121,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 					key: `no-screen-mid-${matchId}-${match.opponentOne.id}-${match.opponentTwo.id}`,
 					cache,
 					// avoid preferences from other test runs leaking in
-					ttl: IS_E2E_TEST_RUN ? -1 : ttl(IN_MILLISECONDS.TWO_DAYS),
+					ttl: IS_E2E_TEST_RUN ? -1 : ttl(hoursToMilliseconds(48)),
 					async getFreshValue() {
 						return UserRepository.anyUserPrefersNoScreen(
 							match.players.map((p) => p.id),
@@ -145,9 +151,11 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 										excludeMatchId: matchId,
 									}).catch((error) => {
 										logger.error("Failed to fetch recently played maps", error);
-										return [];
+										return undefined;
 									})
 								: undefined,
+						isWaitingForPreviousRound:
+							tournament.matchStatusById(matchId) === "PENDING",
 					})
 			: null;
 
@@ -178,7 +186,6 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		bracket,
 		user,
 		isParticipant,
-		matchIsOver,
 	});
 
 	const canJoin =
@@ -192,7 +199,10 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		...(await UserCardRepository.findAllByUserIdsCached({
 			userIds: match.players.map((p) => p.id),
 			include: {
-				friendCode: isParticipant || isSiteStaff || isTournamentStaff,
+				friendCode:
+					isParticipant ||
+					isSiteStaff ||
+					canSeeTournamentFriendCodes({ ctx: tournament.ctx, user }),
 			},
 		})),
 		match: {
@@ -202,6 +212,12 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		},
 		results,
 		reportedWeapons,
+		viewerWeaponPoolIds:
+			user && isParticipant
+				? (await MatchProfileRepository.findWeaponPoolByUserId(user.id)).map(
+						(weapon) => weapon.weaponSplId,
+					)
+				: null,
 		ingestedScoreboards,
 		mapList,
 		teams: [match.opponentOne?.id, match.opponentTwo?.id].flatMap(
@@ -213,13 +229,18 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		matchIsOver,
 		endedEarly,
 		noScreen,
-		// observers (TO/streamer/site staff) chat alongside the participants
 		chatRooms: await RouteChatRooms.resolve(
 			user,
-			match.chatRoomId &&
-				(isParticipant || isSiteStaff || tournament.isOrganizerOrStreamer(user))
-				? [{ roomId: match.chatRoomId, autoOpen: true }]
-				: [],
+			await chatRoomInputs({
+				match,
+				userId: user?.id,
+				canChatInMatch:
+					isParticipant ||
+					isSiteStaff ||
+					tournament.isOrganizerOrStreamer(user),
+				canReadTeamChats: isSiteStaff || isTournamentStaff,
+				teamName: (tournamentTeamId) => teamFullById(tournamentTeamId)?.name,
+			}),
 		),
 		canJoin,
 		schedule,
@@ -231,6 +252,8 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 			groupNumber:
 				bracket?.data.group.find((group) => group.id === match.groupId)
 					?.number ?? null,
+			bracketsPageGroupId:
+				bracket && showsOneGroupAtATime(bracket) ? match.groupId : null,
 			hasRoundRobin: tournament.bracketsMeta.some(
 				(meta) => meta.type === "round_robin",
 			),
@@ -259,32 +282,23 @@ async function resolveLeagueSchedule({
 	bracket,
 	user,
 	isParticipant,
-	matchIsOver,
 }: {
 	tournament: Tournament;
 	match: NonNullable<TournamentMatchRepository.FindMatchById>;
 	bracket: Bracket | null;
 	user: { id: number } | undefined;
 	isParticipant: boolean;
-	matchIsOver: boolean;
 }) {
 	const now = databaseTimestampNow();
 	const hasScheduling = bracket?.hasScheduling ?? false;
 	const isPlayableAt = hasScheduling ? match.roundIsPlayableAt : null;
-	const phase = LeagueScheduling.phase({
-		hasScheduling,
-		isOver: matchIsOver,
-		hasBothTeams: Boolean(match.opponentOne?.id && match.opponentTwo?.id),
-		isPlayableAt,
-		scheduledAt: match.scheduledAt,
-		now,
-	});
+	const phase = LeagueScheduling.phaseOfMatch({ match, hasScheduling, now });
 	const ownTeamId =
 		match.players.find((player) => player.id === user?.id)?.tournamentTeamId ??
 		null;
 	const canSeeBoard =
 		hasScheduling && (isParticipant || tournament.isOrganizerOrStreamer(user));
-	const boardOpen = phase !== "CLOSED" && phase !== "NOT_OPEN";
+	const boardOpen = LeagueScheduling.isBoardOpen(phase);
 
 	if (hasScheduling && user) {
 		for (const type of [
@@ -398,4 +412,55 @@ async function ownTeamAvailability({
 			};
 		}),
 	};
+}
+
+/** Team rooms are pickups only. A participant's opens with the match chat as tabs or split view, organizers read both. */
+async function chatRoomInputs({
+	match,
+	userId,
+	canChatInMatch,
+	canReadTeamChats,
+	teamName,
+}: {
+	match: Pick<
+		FindMatchById,
+		"chatRoomId" | "players" | "opponentOne" | "opponentTwo"
+	>;
+	userId: number | undefined;
+	canChatInMatch: boolean;
+	canReadTeamChats: boolean;
+	teamName: (tournamentTeamId: number) => string | undefined;
+}): Promise<RouteChatRoomInput[]> {
+	if (!match.chatRoomId || !canChatInMatch) return [];
+
+	const ownTeamId = match.players.find(
+		(player) => player.id === userId,
+	)?.tournamentTeamId;
+	const teamIds = ownTeamId
+		? [ownTeamId]
+		: canReadTeamChats
+			? [match.opponentOne?.id, match.opponentTwo?.id].filter(
+					(id): id is number => typeof id === "number",
+				)
+			: [];
+	const teamRooms =
+		await TournamentTeamRepository.findAllChatRoomIdsByIds(teamIds);
+
+	return [
+		{ roomId: match.chatRoomId, autoOpen: true },
+		...teamIds.flatMap((teamId) => {
+			const teamRoom = teamRooms.find((room) => room.id === teamId);
+			if (!teamRoom) return [];
+
+			return ownTeamId
+				? [{ roomId: teamRoom.chatRoomId, autoOpen: true }]
+				: [
+						{
+							roomId: teamRoom.chatRoomId,
+							autoOpen: false,
+							label: teamName(teamId),
+						},
+					];
+		}),
+	];
 }

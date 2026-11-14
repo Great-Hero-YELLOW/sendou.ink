@@ -15,10 +15,9 @@ import { applySpecialEffects, SPECIAL_EFFECTS } from "./core/specialEffects";
 import { buildStats } from "./core/stats";
 import { buildIsEmpty } from "./core/utils";
 
-export function useAnalyzeBuild() {
+export function useAnalyzeBuild(mainWeaponId: MainWeaponId) {
 	const [params, setParams] = useSearchParamsTyped(analyzerSearchParams);
 
-	const mainWeaponId = params.weapon;
 	const build = params.build;
 	const build2 = buildIsEmpty(build) ? EMPTY_BUILD : params.build2;
 	const ldeIntensity = params.lde;
@@ -27,17 +26,16 @@ export function useAnalyzeBuild() {
 		effects: params.effect,
 		build: build2,
 	});
+	const allEffects = Array.from(new Set([...effects, ...effects2]));
 	const focused = params.focused;
 
 	const handleChange = ({
-		newMainWeaponId = mainWeaponId,
 		newBuild = build,
 		newBuild2 = build2,
 		newLdeIntensity = ldeIntensity,
-		newEffects = effects,
+		newEffects = allEffects,
 		newFocused = focused,
 	}: {
-		newMainWeaponId?: MainWeaponId;
 		newBuild?: BuildAbilitiesTupleWithUnknown;
 		newBuild2?: BuildAbilitiesTupleWithUnknown;
 		newLdeIntensity?: number;
@@ -45,7 +43,6 @@ export function useAnalyzeBuild() {
 		newFocused?: 1 | 2 | 3;
 	}) => {
 		setParams({
-			weapon: newMainWeaponId,
 			build: newBuild,
 			build2: newBuild2,
 			lde: newLdeIntensity,
@@ -96,7 +93,7 @@ export function useAnalyzeBuild() {
 		analyzed2,
 		abilityPoints,
 		abilityPoints2,
-		allEffects: Array.from(new Set([...effects, ...effects2])),
+		allEffects,
 		ldeIntensity,
 	};
 }

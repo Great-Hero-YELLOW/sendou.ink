@@ -25,7 +25,8 @@ import type {
 	SubWeaponId,
 } from "~/modules/in-game-lists/types";
 import { useSearchParam } from "~/modules/search-params/hooks";
-import { mySlugify, weaponParamsPage } from "~/utils/urls";
+import { weaponSlug } from "~/utils/english-weapon-names";
+import { weaponParamsPage } from "~/utils/urls";
 import { getParamExplanation } from "../core/param-explanations";
 import * as WeaponParams from "../core/WeaponParams";
 import { weaponParamsSearchParams } from "../params-search-params";
@@ -38,7 +39,7 @@ import type {
 	WeaponParamKind,
 	WeaponParamsTableProps,
 } from "../weapon-params-types";
-import { weaponTranslationKey } from "../weapon-params-types";
+import { weaponOfKind, weaponTranslationKey } from "../weapon-params-types";
 import { ParamComparisonDialog } from "./ParamComparisonDialog";
 import styles from "./WeaponParamsTable.module.css";
 
@@ -72,8 +73,7 @@ function useWeaponParamNaming(kind: WeaponParamKind) {
 	const name = (id: number): string =>
 		t(weaponTranslationKey(kind, id) as never);
 
-	const slug = (id: number) =>
-		mySlugify(t(weaponTranslationKey(kind, id) as never, { lng: "en" }));
+	const slug = (id: number) => weaponSlug(weaponOfKind(kind, id));
 
 	return { name, slug };
 }
@@ -189,7 +189,9 @@ export function WeaponParamsTable({
 											className={styles.weaponHeaderContent}
 										>
 											<WeaponParamImage kind={kind} id={weaponId} size={32} />
-											<span className={styles.weaponName}>{weaponName}</span>
+											<span className={clsx(styles.weaponName, "truncate")}>
+												{weaponName}
+											</span>
 										</Link>
 										{weaponId !== currentWeaponId ? (
 											<SendouButton
@@ -502,7 +504,7 @@ function HiddenWeaponsBar({
 					testId={`restore-weapon-${weaponId}`}
 				>
 					<WeaponParamImage kind={kind} id={weaponId} size={20} />
-					<span className={styles.hiddenBadgeName}>
+					<span className={clsx(styles.hiddenBadgeName, "truncate")}>
 						{naming.name(weaponId)}
 					</span>
 					<X size={12} />

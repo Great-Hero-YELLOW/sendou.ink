@@ -1,5 +1,12 @@
 import clsx from "clsx";
-import { Braces, CircleHelp, Hand, Heart, HeartHandshake } from "lucide-react";
+import {
+	BookOpen,
+	Braces,
+	CircleHelp,
+	Hand,
+	Heart,
+	HeartHandshake,
+} from "lucide-react";
 import {
 	type ReactNode,
 	type RefObject,
@@ -8,7 +15,7 @@ import {
 	useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import * as R from "remeda";
 import { Config } from "~/config";
 import { leaderboardsPage } from "~/features/leaderboards/leaderboards-urls";
@@ -25,11 +32,13 @@ import {
 	CALENDAR_PAGE,
 	COMP_ANALYZER_URL,
 	CONTRIBUTIONS_PAGE,
+	DOCS_SITE_URL,
 	EVENTS_PAGE,
 	FAQ_PAGE,
 	LFG_PAGE,
 	LINKS_PAGE,
 	LUTI_PAGE,
+	lobbiesPage,
 	MAPS_URL,
 	NINTENDO_COMMUNITY_TOURNAMENTS_GUIDELINES_URL,
 	navIconUrl,
@@ -37,6 +46,7 @@ import {
 	PLANNER_URL,
 	PLUS_SUGGESTIONS_PAGE,
 	PLUS_VOTING_RESULTS_PAGE,
+	SCANNER_PAGE,
 	SENDOU_INK_DISCORD_URL,
 	SENDOU_INK_GITHUB_URL,
 	SENDOU_LOVE_EMOJI_PATH,
@@ -72,6 +82,7 @@ const SITEMAP_COLUMNS = [
 			{ name: "sendouq", url: SENDOUQ_RULES_PAGE, label: "footer.link.qRules" },
 			{ name: "sendouq", url: TIERS_PAGE, label: "footer.link.tiers" },
 			{ name: "scrims", url: scrimsPage() },
+			{ name: "lobbies", url: lobbiesPage() },
 			{ name: "lfg", url: LFG_PAGE },
 			{ name: "calendar", url: CALENDAR_PAGE },
 			{ name: "calendar", url: EVENTS_PAGE, label: "footer.link.events" },
@@ -110,6 +121,7 @@ const SITEMAP_COLUMNS = [
 			{ name: "maps", url: MAPS_URL },
 			{ name: "tier-list-maker", url: TIER_LIST_MAKER_URL },
 			{ name: "xsearch", url: XSEARCH_PAGE },
+			{ name: "scanner", url: SCANNER_PAGE },
 			{ name: "settings", url: SETTINGS_PAGE },
 		],
 	},
@@ -153,16 +165,40 @@ export function Footer() {
 		<footer className={styles.footer}>
 			<div className={styles.cards}>
 				<FooterCard
-					icon={<GitHubIcon className={styles.cardIcon} />}
-					title="GitHub"
-					subtitle={t("common:footer.github.subtitle")}
-					href={SENDOU_INK_GITHUB_URL}
+					icon={<Hand className={styles.cardIcon} />}
+					title={t("common:pages.welcome")}
+					subtitle={t("common:footer.welcome.subtitle")}
+					to={WELCOME_PAGE}
+				/>
+				<FooterCard
+					icon={<CircleHelp className={styles.cardIcon} />}
+					title={t("common:pages.faq")}
+					subtitle={t("common:footer.faq.subtitle")}
+					to={FAQ_PAGE}
+				/>
+				<FooterCard
+					icon={<BookOpen className={styles.cardIcon} />}
+					title={t("common:pages.docs")}
+					subtitle={t("common:footer.docs.subtitle")}
+					href={DOCS_SITE_URL}
+				/>
+				<FooterCard
+					icon={<Braces className={styles.cardIcon} />}
+					title={t("common:pages.api")}
+					subtitle={t("common:footer.api.subtitle")}
+					to={API_PAGE}
 				/>
 				<FooterCard
 					icon={<DiscordIcon className={styles.cardIcon} />}
 					title="Discord"
 					subtitle={t("common:footer.discord.subtitle")}
 					href={SENDOU_INK_DISCORD_URL}
+				/>
+				<FooterCard
+					icon={<GitHubIcon className={styles.cardIcon} />}
+					title="GitHub"
+					subtitle={t("common:footer.github.subtitle")}
+					href={SENDOU_INK_GITHUB_URL}
 				/>
 				<FooterCard
 					icon={<PatreonIcon className={styles.cardIcon} />}
@@ -175,24 +211,6 @@ export function Footer() {
 					title={t("common:pages.contributors")}
 					subtitle={t("common:footer.contributors.subtitle")}
 					to={CONTRIBUTIONS_PAGE}
-				/>
-				<FooterCard
-					icon={<CircleHelp className={styles.cardIcon} />}
-					title={t("common:pages.faq")}
-					subtitle={t("common:footer.faq.subtitle")}
-					to={FAQ_PAGE}
-				/>
-				<FooterCard
-					icon={<Hand className={styles.cardIcon} />}
-					title={t("common:pages.welcome")}
-					subtitle={t("common:footer.welcome.subtitle")}
-					to={WELCOME_PAGE}
-				/>
-				<FooterCard
-					icon={<Braces className={styles.cardIcon} />}
-					title={t("common:pages.api")}
-					subtitle={t("common:footer.api.subtitle")}
-					to={API_PAGE}
 				/>
 			</div>
 			<div className={styles.thanks}>
@@ -285,6 +303,7 @@ type Patron = NonNullable<ReturnType<typeof usePatrons>["patrons"]>[number];
 function PatronMarquee() {
 	const ref = useRef<HTMLDivElement>(null);
 	const hasScrolledIntoView = useHasScrolledIntoView(ref);
+	useClientSideAnchorNavigation(ref);
 
 	return (
 		<div
@@ -324,15 +343,15 @@ function PatronChips({
 		<ul className={styles.marqueeGroup} aria-hidden={ariaHidden}>
 			{patrons.map((patron) => (
 				<li key={patron.id}>
-					<Link
-						to={userPage(patron)}
-						className={styles.chip}
+					<a
+						href={userPage(patron)}
+						className={clsx(styles.chip, "truncate")}
 						data-custom-theme={patron.customTheme ? true : undefined}
 						style={customThemeChipStyle(patron.customTheme)}
 						tabIndex={ariaHidden ? -1 : undefined}
 					>
 						{patron.username}
-					</Link>
+					</a>
 				</li>
 			))}
 		</ul>
@@ -399,6 +418,39 @@ function useHasScrolledIntoView(ref: RefObject<HTMLElement | null>) {
 	}, [ref]);
 
 	return hasScrolledIntoView;
+}
+
+/** Navigates client side on clicks of the plain anchors inside, instead of hundreds of `<Link>`s re-rendering on every navigation. */
+function useClientSideAnchorNavigation(ref: RefObject<HTMLElement | null>) {
+	const navigate = useNavigate();
+
+	useEffect(() => {
+		const element = ref.current;
+		if (!element) return;
+
+		const onClick = (event: MouseEvent) => {
+			if (
+				event.defaultPrevented ||
+				event.button !== 0 ||
+				event.metaKey ||
+				event.ctrlKey ||
+				event.shiftKey ||
+				event.altKey
+			) {
+				return;
+			}
+
+			const anchor = (event.target as Element).closest("a");
+			const href = anchor?.getAttribute("href");
+			if (!href) return;
+
+			event.preventDefault();
+			navigate(href);
+		};
+
+		element.addEventListener("click", onClick);
+		return () => element.removeEventListener("click", onClick);
+	}, [ref, navigate]);
 }
 
 function customThemeChipStyle(

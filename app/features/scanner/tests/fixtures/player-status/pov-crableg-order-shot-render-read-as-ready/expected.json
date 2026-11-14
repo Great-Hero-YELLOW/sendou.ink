@@ -1,0 +1,18 @@
+{
+	"event": "PlayerStatus",
+	"data": {
+		"cast": null,
+		"time": 219,
+		"special": [
+			[false, false, false, false],
+			[false, false, false, true]
+		],
+		"dead": [
+			[true, false, true, false],
+			[false, true, false, false]
+		]
+	},
+	"options": {
+		"notes": "Sendou POV, Crableg Capital SZ Anarchy Series at 3:39 (2026-10-07 VoD, t=1003). Narrow-left geometry (the leading purple side drawn wide). Left (yellow) slots 0 and 2 splatted, right slot 1 splatted, right slot 3 holds special (lavender wash). Right slot 0 is an alive Order Shot Replica: under the old body/shoulder probes its big cream render read like an inky wash and the slot charted special-ready for nearly the whole game. The fitted strip reads the kite apex, which the render does not cover. special.1.3 was skipped under the old probes (its wash sits over a blue sky that read as body ink); the apex reads it pale (2026-10-10)."
+	}
+}

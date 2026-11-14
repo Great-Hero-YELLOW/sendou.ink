@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import type {
 	AbilityPoints,
 	AnalyzedBuild,
-	DamageType,
 } from "~/features/build-analyzer/analyzer-types";
 import { buildStats } from "~/features/build-analyzer/core/stats";
 import type {
@@ -15,7 +14,8 @@ import {
 	mainWeaponIds,
 	specialWeaponIds,
 } from "~/modules/in-game-lists/weapon-ids";
-import { calculateDamage } from "./objectDamage";
+import type { CalculatorDamageType, DamageReceiver } from "../calculator-types";
+import { calculateDamage, resolveAllUniqueDamageTypes } from "./objectDamage";
 
 function calculate({
 	mainWeaponId = 10,
@@ -29,7 +29,7 @@ function calculate({
 	subWeaponId?: SubWeaponId;
 	specialWeaponId?: SpecialWeaponId;
 	abilityPoints?: AbilityPoints;
-	damageType?: DamageType;
+	damageType?: CalculatorDamageType;
 	preAnalyzed?: AnalyzedBuild;
 }) {
 	const analyzed =
@@ -62,9 +62,11 @@ describe("calculateDamage()", () => {
 				hasTacticooler: false,
 			});
 
-			for (const damage of analyzed.stats.damages) {
-				if (damage.type === "COMBO") continue;
-				calculate({ mainWeaponId, damageType: damage.type });
+			for (const damageType of resolveAllUniqueDamageTypes({
+				analyzed,
+				anyWeapon: { type: "MAIN", id: mainWeaponId },
+			})) {
+				calculate({ mainWeaponId, damageType });
 			}
 		}
 
@@ -138,7 +140,7 @@ describe("calculateDamage()", () => {
 	const shotsToPopRM: Array<
 		[
 			weaponId: MainWeaponId,
-			damageType: DamageType,
+			damageType: CalculatorDamageType,
 			shotsToPop: number,
 			shotsToPopOS: number,
 		]
@@ -164,7 +166,7 @@ describe("calculateDamage()", () => {
 		// Tenta Brella
 		[6010, "NORMAL_MAX", 4, 4],
 		// Tri-Stringer
-		[7010, "NORMAL_MAX", 3, 3],
+		[7010, "COMBINED", 3, 3],
 		// REEF-LUX
 		[7020, "NORMAL_MIN", 8, 7],
 		// Splatana Wiper
@@ -221,4 +223,165 @@ describe("calculateDamage()", () => {
 		expect(min).toBeGreaterThan(max);
 		expect(max).toBeGreaterThan(maxFullyCharged);
 	});
+
+	const REEFSLIDER_ID = 13;
+	test("Reefslider bump destroys a brella canopy in one hit but can't damage the Rainmaker shield", () => {
+		const damages = calculate({
+			specialWeaponId: REEFSLIDER_ID,
+			damageType: "SPECIAL_BUMP",
+			preAnalyzed: buildStats({
+				weaponSplId: exampleMainWeaponIdWithSpecialWeaponId(REEFSLIDER_ID),
+				hasTacticooler: false,
+			}),
+		});
+		const hitsToDestroy = (receiver: string) =>
+			damages
+				.find((d) => d.receiver === receiver)!
+				.damages.find((d) => !d.objectShredder)!.hitsToDestroy;
+
+		expect(hitsToDestroy("BulletUmbrellaCanopyWide")).toBe(1);
+		expect(hitsToDestroy("Gachihoko_Barrier")).toBe(Number.POSITIVE_INFINITY);
+	});
+});
+
+const EXPLOSHER_ID = 3040;
+const TRI_STRINGER_ID = 7010;
+
+describe("calculateDamage() direct hit and explosion", () => {
+	const damageTo = ({
+		mainWeaponId,
+		damageType,
+		receiver,
+	}: {
+		mainWeaponId: MainWeaponId;
+		damageType: CalculatorDamageType;
+		receiver: DamageReceiver;
+	}) => {
+		const { value, multipliers } = calculate({ mainWeaponId, damageType })
+			.find((d) => d.receiver === receiver)!
+			.damages.find((d) => !d.objectShredder)!;
+
+		return { value, multipliers };
+	};
+
+	test.each([
+		{
+			why: "direct alone vs Big Bubbler shield",
+			damageType: "DIRECT",
+			receiver: "GreatBarrier_Barrier",
+			expected: { value: 176, multipliers: [3.2] },
+		},
+		{
+			why: "direct with the explosion vs Big Bubbler shield",
+			damageType: "COMBINED",
+			receiver: "GreatBarrier_Barrier",
+			expected: { value: 302, multipliers: [3.2, 3.6] },
+		},
+		{
+			why: "direct alone vs Big Bubbler weak point",
+			damageType: "DIRECT",
+			receiver: "GreatBarrier_WeakPoint",
+			expected: { value: 44, multipliers: [0.8] },
+		},
+		{
+			why: "direct with the explosion vs Big Bubbler weak point",
+			damageType: "COMBINED",
+			receiver: "GreatBarrier_WeakPoint",
+			expected: { value: 75.5, multipliers: [0.8, 0.9] },
+		},
+	] as const)("Explosher $why", ({ damageType, receiver, expected }) => {
+		expect(
+			damageTo({ mainWeaponId: EXPLOSHER_ID, damageType, receiver }),
+		).toEqual(expected);
+	});
+
+	test("Tri-Stringer combined damage vs Booyah Bomb armor counts only the arrows", () => {
+		expect(
+			damageTo({
+				mainWeaponId: TRI_STRINGER_ID,
+				damageType: "COMBINED",
+				receiver: "NiceBall_Armor",
+			}).value,
+		).toBe(
+			damageTo({
+				mainWeaponId: TRI_STRINGER_ID,
+				damageType: "NORMAL_MAX",
+				receiver: "NiceBall_Armor",
+			}).value,
+		);
+	});
+});
+
+const SQUEEZER_ID = 400;
+const BALLPOINT_SPLATLING_ID = 4030;
+
+describe("resolveAllUniqueDamageTypes()", () => {
+	test.each([
+		["Squeezer", SQUEEZER_ID],
+		["Ballpoint Splatling", BALLPOINT_SPLATLING_ID],
+	] as const)("%s includes its secondary mode damage", (_, mainWeaponId) => {
+		const damageTypes = resolveAllUniqueDamageTypes({
+			analyzed: buildStats({
+				weaponSplId: mainWeaponId,
+				hasTacticooler: false,
+			}),
+			anyWeapon: { type: "MAIN", id: mainWeaponId },
+		});
+
+		expect(damageTypes).toContain("SECONDARY_MODE_MAX");
+	});
+
+	test.each([
+		["Explosher", EXPLOSHER_ID],
+		["Tri-Stringer", TRI_STRINGER_ID],
+	] as const)("%s lists the combined damage first", (_, mainWeaponId) => {
+		const damageTypes = resolveAllUniqueDamageTypes({
+			analyzed: buildStats({
+				weaponSplId: mainWeaponId,
+				hasTacticooler: false,
+			}),
+			anyWeapon: { type: "MAIN", id: mainWeaponId },
+		});
+
+		expect(damageTypes[0]).toBe("COMBINED");
+	});
+});
+
+const WAVE_BREAKER_ID = 7;
+const CRAB_TANK_ID = 12;
+
+describe("calculateDamage() special weapon damage rates", () => {
+	// only the cannon (ExtraBombCore) and the wave use their own damage rate row, everything else is Default
+	test.each([
+		{
+			why: "Crab Tank bullets",
+			specialWeaponId: CRAB_TANK_ID,
+			damageType: "SPECIAL_BULLET_MAX",
+			receiver: "BulletUmbrellaCanopyNormal",
+		},
+		{
+			why: "Wave Breaker device hits",
+			specialWeaponId: WAVE_BREAKER_ID,
+			damageType: "BOMB_DIRECT",
+			receiver: "GreatBarrier_Barrier",
+		},
+	] as const)(
+		"$why use the default damage rate",
+		({ specialWeaponId, damageType, receiver }) => {
+			const damages = calculate({
+				specialWeaponId,
+				damageType,
+				preAnalyzed: buildStats({
+					weaponSplId: exampleMainWeaponIdWithSpecialWeaponId(specialWeaponId),
+					hasTacticooler: false,
+				}),
+			});
+
+			const multiplier = damages
+				.find((d) => d.receiver === receiver)!
+				.damages.find((d) => !d.objectShredder)!.multipliers;
+
+			expect(multiplier).toEqual([1]);
+		},
+	);
 });

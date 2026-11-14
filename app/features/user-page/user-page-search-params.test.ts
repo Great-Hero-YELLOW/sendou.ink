@@ -14,6 +14,7 @@ import {
 	RESULTS_FIRST_YEAR,
 	SEASON_RESULT_SOURCES,
 	SEASON_STATS_TABS,
+	SEASONS_STAFF_DIALOGS,
 } from "./user-page-constants";
 import {
 	userArtSearchParams,
@@ -94,6 +95,7 @@ describe("userSeasonsSearchParams", () => {
 	test("round-trips", () => {
 		assertRoundTrips(userSeasonsSearchParams, {
 			season: [null, newestSeason, oldestSeason],
+			staffDialog: [null, ...SEASONS_STAFF_DIALOGS],
 		});
 	});
 
@@ -101,6 +103,10 @@ describe("userSeasonsSearchParams", () => {
 		assertDecodesToDefault(userSeasonsSearchParams, "season", [
 			[String(notStartedSeason)],
 			["-1"],
+			["abc"],
+		]);
+		assertDecodesToDefault(userSeasonsSearchParams, "staffDialog", [
+			["CANCELED_MATCHES"],
 			["abc"],
 		]);
 	});
@@ -180,7 +186,19 @@ describe("userSeasonSummaryGraphicSearchParams", () => {
 describe("userBuildsSearchParams", () => {
 	test("round-trips", () => {
 		assertRoundTrips(userBuildsSearchParams, {
-			weapon: ["ALL", "PUBLIC", "PRIVATE", 0, 40, 8010],
+			page: [1, 2, 10],
+			weapon: [null, 0, 40, 8010],
+			visibility: [null, "PUBLIC", "PRIVATE"],
+			abilities: [
+				[],
+				[{ type: "HAS", ability: "ISM" }],
+				[
+					{ type: "AT_LEAST", ability: "SSU", ap: 12 },
+					{ type: "HAS_NOT", ability: "QR" },
+				],
+			],
+			mode: [null, "SZ", "TW"],
+			date: [null, "2026-01-28"],
 			sorting: [false, true],
 		});
 	});
@@ -189,8 +207,9 @@ describe("userBuildsSearchParams", () => {
 		assertDecodesToDefault(userBuildsSearchParams, "weapon", [
 			["999999"],
 			["foo"],
-			[""],
+			["ALL"],
 		]);
+		assertDecodesToDefault(userBuildsSearchParams, "visibility", [["ALL"]]);
 		assertDecodesToDefault(userBuildsSearchParams, "sorting", [["1"], ["yes"]]);
 	});
 });

@@ -5,10 +5,14 @@ import * as BadgeRepository from "~/features/badges/BadgeRepository.server";
 import * as Seasons from "~/features/mmr/core/Seasons";
 import { userSkills as _userSkills } from "~/features/mmr/tiered.server";
 import { getFixedTForLanguage } from "~/modules/i18n/i18next.server";
-import { jsonArrayFrom, peakXpOverallSql } from "~/utils/kysely.server";
-import { safeNumberParse } from "~/utils/number";
+import {
+	jsonArrayFrom,
+	peakXpOverallSql,
+	userAvatar,
+	userByIdentifierQuery,
+} from "~/utils/kysely.server";
 import { notFoundIfNullish, parseParams } from "~/utils/remix.server";
-import { badgeUrl } from "~/utils/urls";
+import { avatarUrl, badgeUrl } from "~/utils/urls";
 import type { GetUserResponse } from "../schema";
 
 const paramsSchema = v.object({
@@ -29,10 +33,11 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 				"User.country",
 				"User.discordName",
 				"User.twitch",
+				"User.youtubeId",
 				"User.bsky",
 				"User.customUrl",
 				"User.discordId",
-				"User.discordAvatar",
+				userAvatar(eb).as("avatar"),
 				"User.inGameName",
 				"User.pronouns",
 				"PlusTier.tier",
@@ -54,16 +59,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 						.orderBy("TeamMemberWithSecondary.createdAt", "asc"),
 				).as("teams"),
 			])
-			.where((eb) => {
-				// we don't want to parse discord id's as numbers (length = 18)
-				const parsedId =
-					identifier.length < 10 ? safeNumberParse(identifier) : null;
-				if (parsedId) {
-					return eb("User.id", "=", parsedId);
-				}
-
-				return eb("User.discordId", "=", identifier);
-			})
+			.where("User.id", "=", userByIdentifierQuery(identifier))
 			.executeTakeFirst(),
 	);
 
@@ -78,9 +74,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		id: user.id,
 		name: user.discordName,
 		discordId: user.discordId,
-		avatarUrl: user.discordAvatar
-			? `https://cdn.discordapp.com/avatars/${user.discordId}/${user.discordAvatar}.png`
-			: null,
+		avatarUrl: user.avatar ? avatarUrl(user.avatar, "lg") : null,
 		url: `https://sendou.ink/u/${user.customUrl ?? user.discordId}`,
 		country: user.country,
 		inGameName: user.inGameName,
@@ -88,6 +82,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		plusServerTier: user.tier as GetUserResponse["plusServerTier"],
 		socials: {
 			twitch: user.twitch,
+			youtube: user.youtubeId,
 			bsky: user.bsky,
 			twitter: null, // deprecated field
 		},

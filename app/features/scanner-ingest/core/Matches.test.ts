@@ -21,7 +21,7 @@ describe("canonicalMatch", () => {
 						time: 215,
 						score: [95, 53],
 						penalty: [4, null],
-						control: [true, false],
+						control: 0,
 					},
 				],
 			},
@@ -92,6 +92,48 @@ describe("isSameMatch", () => {
 		expect(Matches.isSameMatch(a, b)).toBe(true);
 	});
 
+	test("close play times do not identify back-to-back games against different opponents", () => {
+		const playedAt = 1_700_000_000_000;
+		const nextSet = scannerMatch({ playedAt: playedAt + 5 * 60 * 1000 });
+		nextSet.teams[1] = {
+			players: ["o1", "o2", "o3", "o4"].map((name, i) =>
+				scannerMatchPlayer(name, (100 + 10 * i) as MainWeaponId),
+			),
+		};
+		expect(Matches.isSameMatch(scannerMatch({ playedAt }), nextSet)).toBe(
+			false,
+		);
+	});
+
+	test("close play times still identify a match with a couple of misread names per team", () => {
+		const playedAt = 1_700_000_000_000;
+		const b = scannerMatch({ playedAt: playedAt + 60 * 1000 });
+		b.teams[0].players[0] = scannerMatchPlayer("misread1", WEAPONS[0]!);
+		b.teams[0].players[1] = scannerMatchPlayer("misread2", WEAPONS[1]!);
+		b.teams[1].players[2] = scannerMatchPlayer("misread3", WEAPONS[6]!);
+		expect(Matches.isSameMatch(scannerMatch({ playedAt }), b)).toBe(true);
+	});
+
+	test("contradicting weapons rule out close play times when names are unread", () => {
+		const playedAt = 1_700_000_000_000;
+		const minimap = scannerMatch({
+			playedAt: playedAt + 5 * 60 * 1000,
+			teams: [
+				{
+					players: WEAPONS.slice(0, 4).map((w) => scannerMatchPlayer(null, w)),
+				},
+				{
+					players: [100, 110, 120, 130].map((w) =>
+						scannerMatchPlayer(null, w as MainWeaponId),
+					),
+				},
+			],
+		});
+		expect(Matches.isSameMatch(scannerMatch({ playedAt }), minimap)).toBe(
+			false,
+		);
+	});
+
 	test("far-apart play times contradict identity even with equal rosters", () => {
 		const a = scannerMatch({ playedAt: 1_700_000_000_000 });
 		const b = scannerMatch({ playedAt: 1_700_000_000_000 + 60 * 60 * 1000 });
@@ -109,6 +151,15 @@ describe("isSameMatch", () => {
 			Matches.isSameMatch(
 				scannerMatch({ stage: 0 }),
 				scannerMatch({ stage: 1 }),
+			),
+		).toBe(false);
+	});
+
+	test("differing lobbies contradict identity", () => {
+		expect(
+			Matches.isSameMatch(
+				scannerMatch({ lobby: "PRIVATE" }),
+				scannerMatch({ lobby: "X" }),
 			),
 		).toBe(false);
 	});
@@ -197,6 +248,34 @@ describe("mergeMatches", () => {
 		expect(merged.teams[0].players[0]!.name).toBe("w1");
 	});
 
+	test("flips a side-swapped track position back with its sides", () => {
+		const existing = scannerMatch({ objective: null });
+		const incoming = sideSwapped(
+			scannerMatch({
+				objective: {
+					mode: "TC",
+					samples: [
+						{
+							t: 120,
+							time: 215,
+							score: [100, 60],
+							penalty: [null, null],
+							control: 1,
+							position: -30,
+						},
+					],
+				},
+			}),
+		);
+
+		const { merged } = Matches.mergeMatches(existing, incoming);
+		expect(merged.objective!.samples[0]).toMatchObject({
+			score: [100, 60],
+			control: 1,
+			position: -30,
+		});
+	});
+
 	test("aligns a side-swapped incoming match before merging", () => {
 		const existing = scannerMatch({ winner: null, matchScores: null });
 		const incoming = sideSwapped(
@@ -245,6 +324,71 @@ describe("mergeMatches", () => {
 			NAMES.slice(0, 4),
 		);
 		expect(merged.matchScores).toEqual([100, 52]);
+	});
+});
+
+describe("Matches.normalizeSiteInGameName", () => {
+	test.each([
+		{ why: "plain name", siteName: "Sendou#2955", read: "Sendou" },
+		{
+			why: "# inside the name",
+			siteName: "Kiter#2772#1382",
+			read: "Kiter#2772",
+		},
+		{
+			why: "name starting with #",
+			siteName: "# Sowoul ##1013",
+			read: "# Sowoul #",
+		},
+	])("matches the scoreboard read of a $why", ({ siteName, read }) => {
+		expect(Matches.normalizeSiteInGameName(siteName)).toBe(
+			Matches.normalizeInGameName(read),
+		);
+	});
+});
+
+describe("Matches.gameStartedAt", () => {
+	const PLAYED_AT = Date.UTC(2026, 7, 1, 18, 0, 0);
+
+	test.each([
+		{
+			why: "a start shortly before results",
+			startOffsetMs: -3 * 60_000,
+			expected: PLAYED_AT - 3 * 60_000,
+		},
+		{
+			why: "a start exactly 15 min before results",
+			startOffsetMs: -15 * 60_000,
+			expected: PLAYED_AT - 15 * 60_000,
+		},
+		{
+			why: "a start over 15 min before results",
+			startOffsetMs: -15 * 60_000 - 1000,
+			expected: null,
+		},
+		{ why: "a start after results", startOffsetMs: 1000, expected: null },
+		{ why: "a start at results", startOffsetMs: 0, expected: PLAYED_AT },
+	])("$why", ({ startOffsetMs, expected }) => {
+		const match = scannerMatch({
+			playedAt: PLAYED_AT,
+			startsAt: (PLAYED_AT + startOffsetMs) / 1000,
+		});
+
+		expect(Matches.gameStartedAt(match)).toBe(expected);
+	});
+
+	test.each([
+		{ why: "no start", partial: { playedAt: PLAYED_AT, startsAt: null } },
+		{
+			why: "no results time",
+			partial: { playedAt: null, startsAt: PLAYED_AT / 1000 },
+		},
+		{
+			why: "a video-relative start",
+			partial: { playedAt: PLAYED_AT, startsAt: 100 },
+		},
+	])("returns null for $why", ({ partial }) => {
+		expect(Matches.gameStartedAt(scannerMatch(partial))).toBeNull();
 	});
 });
 

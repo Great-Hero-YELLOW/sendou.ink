@@ -1,6 +1,7 @@
 import { invariant } from "~/utils/invariant";
 import { isSetOverByScore, matchEndedEarly } from "../status";
 import type { BracketData, EngineResult, MatchData, Side } from "../types";
+import { matchHasResultDownstream } from "./downstream-result";
 import { reportResult } from "./report-result";
 import { resetMatchResults } from "./reset-result";
 
@@ -71,16 +72,18 @@ export function endSet(
 }
 
 /**
- * Reopens a completed match, clearing the set result. A force-ended set keeps its scores, otherwise
- * the deciding game's score is removed and the caller deletes its game result row (see `endedEarly`).
+ * Reopens a completed match, clearing the set result. Throws when a match its teams moved on to has a result. A force-ended set keeps its scores, otherwise
+ * the last game's score is removed and the caller deletes its game result row (see `endedEarly`).
  */
 export function reopenMatch(
 	data: BracketData,
-	matchId: number,
+	input: { matchId: number; lastGameWinnerTeamId: number | null },
 ): EngineResult & { endedEarly: boolean } {
-	const { match, maps } = findMatchWithMaps(data, matchId);
+	const { match, maps } = findMatchWithMaps(data, input.matchId);
 
 	invariant(match.winnerSide, "Match has no result to reopen");
+	if (matchHasResultDownstream(data, input.matchId))
+		throw new Error("The match is locked.");
 
 	const endedEarly = matchEndedEarly({
 		opponentOne: match.opponent1,
@@ -92,11 +95,18 @@ export function reopenMatch(
 
 	const scores = currentScores(match);
 	if (!endedEarly) {
-		invariant(scores[0] !== scores[1], "Scores are equal");
-		scores[SIDES.indexOf(match.winnerSide)]--;
+		invariant(input.lastGameWinnerTeamId, "Last game winner is missing");
+		const side = sideOfTeam(match, input.lastGameWinnerTeamId);
+		invariant(scores[side] > 0, "No game to remove for the given team");
+		scores[side]--;
 	}
 
-	const reported = reportResult(data, { matchId, scores });
+	// no games left: not started, the same as after undoing the only game
+	const noGamesLeft = scores[0] === 0 && scores[1] === 0;
+	const reported = reportResult(data, {
+		matchId: input.matchId,
+		scores: noGamesLeft ? null : scores,
+	});
 
 	return { ...reported, endedEarly };
 }

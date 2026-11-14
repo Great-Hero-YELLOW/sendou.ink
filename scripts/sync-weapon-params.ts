@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as R from "remeda";
 import {
 	mainWeaponIds,
 	specialWeaponIds,
@@ -12,7 +13,9 @@ import {
 	loadWeaponInfoSpecial,
 	loadWeaponInfoSub,
 	MUSH_DIR,
+	mainWeaponShouldBeSkipped,
 	PARAMETER_DIR,
+	weaponRowIdToFileName,
 } from "./utils";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -37,15 +40,6 @@ const SPECIAL_OUTPUT_FILE = path.join(
 	"all-version-special-params.json",
 );
 
-const WEAPON_TYPES_TO_IGNORE = [
-	"Mission",
-	"Coop",
-	"Hero",
-	"Rival",
-	"SalmonBuddy",
-	"Sdodr",
-];
-
 type MainWeapon = (typeof weapons)[number];
 
 function parseVersionToDisplay(version: string): string {
@@ -60,17 +54,6 @@ function sortVersions(versions: string[]): string[] {
 	return versions.sort(
 		(a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10),
 	);
-}
-
-function mainWeaponShouldBeSkipped(mainWeapon: MainWeapon): boolean {
-	return WEAPON_TYPES_TO_IGNORE.includes(mainWeapon.Type);
-}
-
-function weaponRowIdToFileName(rowId: string): string {
-	const parts = rowId.split("_");
-	const category = parts[0];
-	const codeName = parts[1];
-	return `Weapon${category}${codeName ?? ""}.game__GameParameterTable.json`;
 }
 
 function buildWeaponFileNameToIdMap(): Map<string, number> {
@@ -131,10 +114,6 @@ function stripTypeFields(obj: unknown): unknown {
 		result[key] = stripTypeFields(value);
 	}
 	return result;
-}
-
-function deepEqual(a: unknown, b: unknown): boolean {
-	return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function getLeafPaths(
@@ -226,7 +205,7 @@ function mergeWithHistory(
 				? getNestedValue(nextParams, paramPath)
 				: latestValue;
 
-			if (!deepEqual(versionValue, nextValue)) {
+			if (!R.isDeepEqual(versionValue, nextValue)) {
 				setNestedValueWithVersionedKey(
 					result,
 					paramPath,

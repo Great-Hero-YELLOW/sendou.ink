@@ -1,4 +1,3 @@
-import { addDays } from "date-fns";
 import type { MapPool } from "~/features/map-list-generator/core/map-pool";
 import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import * as TournamentLFGRepository from "~/features/tournament-lfg/TournamentLFGRepository.server";
@@ -26,8 +25,12 @@ type InsertArgs = Omit<
 type Options = {
 	/** Has the team checked in to the tournament? */
 	isCheckedIn?: boolean;
+	/** Follow-up brackets (by index) the team has checked in to. */
+	checkedInToBracketIdxs?: number[];
 	/** Is the team looking for more players on the tournament's LFG page? */
 	isLooking?: boolean;
+	/** Teams this team has liked in the LFG matchmaking view. */
+	likedTeamIds?: number[];
 	/** The division (starting bracket) the organizer placed the team in, as the seeds page does. */
 	startingBracketIdx?: number;
 };
@@ -72,6 +75,7 @@ export const { create } = defineFactory({
 				additionalMemberUserIds,
 			}),
 		);
+		invariant(team, "Owner is already in a team of the tournament");
 
 		if (mapPool) {
 			await TournamentTeamRepository.upsertCounterpickMaps({
@@ -88,7 +92,13 @@ export const { create } = defineFactory({
 	},
 	applyOptions: async (
 		team,
-		{ isCheckedIn, isLooking, startingBracketIdx }: Options,
+		{
+			isCheckedIn,
+			checkedInToBracketIdxs,
+			isLooking,
+			likedTeamIds,
+			startingBracketIdx,
+		}: Options,
 	) => {
 		if (typeof startingBracketIdx === "number") {
 			await TournamentTeamRepository.updateStartingBrackets([
@@ -102,10 +112,20 @@ export const { create } = defineFactory({
 			);
 		}
 
+		for (const bracketIdx of checkedInToBracketIdxs ?? []) {
+			await actAs(team.ownerUserId, () =>
+				TournamentTeamRepository.checkIn(team.id, { bracketIdx }),
+			);
+		}
+
 		if (isLooking) {
-			await TournamentLFGRepository.startLooking({
-				teamId: team.id,
-				chatRoomExpiresAt: addDays(new Date(), 7),
+			await TournamentLFGRepository.startLooking({ teamId: team.id });
+		}
+
+		for (const targetTeamId of likedTeamIds ?? []) {
+			await TournamentLFGRepository.insertLike({
+				likerTeamId: team.id,
+				targetTeamId,
 			});
 		}
 	},

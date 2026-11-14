@@ -1,0 +1,1128 @@
+diff --git a/dist/development/lib/dom-export/hydrated-router.js b/dist/development/lib/dom-export/hydrated-router.js
+index df767ab6665e9a90344275d717bc31de81ff7228..5140b826243bcc00794aad943290bf49b6f30a66 100644
+--- a/dist/development/lib/dom-export/hydrated-router.js
++++ b/dist/development/lib/dom-export/hydrated-router.js
+@@ -149,7 +149,8 @@ function HydratedRouter(props) {
+ 	let discoveryState;
+ 	if (discoveryRuntime) discoveryState = UNSAFE_useCustomRouteDiscovery(discoveryRuntime, props.onError);
+ 	else UNSAFE_useFogOFWarDiscovery(router, ssrInfo.manifest, ssrInfo.routeModules, ssr, ssrInfo.context.routeDiscovery, ssrInfo.context.isSpaMode, fetchImplementation, ssrInfo.context.unstable_apiServerOrigin, ssrInfo.context.unstable_apiOnly === true);
+-	return /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, /* @__PURE__ */ React$1.createElement(UNSAFE_FrameworkContext.Provider, { value: {
++	// patched: a stable value so every <Link> doesn't re-render whenever the location changes
++	let frameworkContext = React$1.useMemo(() => ({
+ 		routeDiscoveryRuntime: discoveryRuntime,
+ 		routeDiscoveryState: discoveryState,
+ 		manifest: ssrInfo.manifest,
+@@ -161,7 +162,15 @@ function HydratedRouter(props) {
+ 		unstable_apiOnly: ssrInfo.context.unstable_apiOnly,
+ 		routeDiscovery: ssrInfo.context.routeDiscovery,
+ 		unstable_apiServerOrigin: ssrInfo.context.unstable_apiServerOrigin
+-	} }, /* @__PURE__ */ React$1.createElement(UNSAFE_RemixErrorBoundary, { location }, /* @__PURE__ */ React$1.createElement(RouterProvider$1, {
++	}), [
++		discoveryRuntime,
++		discoveryState,
++		ssrInfo.manifest,
++		ssrInfo.routeModules,
++		ssrInfo.context,
++		criticalCss
++	]);
++	return /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, /* @__PURE__ */ React$1.createElement(UNSAFE_FrameworkContext.Provider, { value: frameworkContext }, /* @__PURE__ */ React$1.createElement(UNSAFE_RemixErrorBoundary, { location }, /* @__PURE__ */ React$1.createElement(RouterProvider$1, {
+ 		router,
+ 		useTransitions: props.useTransitions,
+ 		onError: props.onError
+diff --git a/dist/development/lib/dom/lib.js b/dist/development/lib/dom/lib.js
+index c64372fc278f3f0e154ce1b47c01a5fbaa2b2e04..f74c78434022bc03d703561379a565fbb8131d6f 100644
+--- a/dist/development/lib/dom/lib.js
++++ b/dist/development/lib/dom/lib.js
+@@ -12,7 +12,7 @@ import { ABSOLUTE_URL_REGEX } from "../router/url.js";
+ import { createBrowserHistory, createHashHistory, createPath, invariant, warning } from "../router/history.js";
+ import { ErrorResponseImpl, SUPPORTED_ERROR_TYPES, defaultMapRouteProperties, joinPaths, matchPath, parseToInfo, resolveTo, stripBasename } from "../router/utils.js";
+ import { IDLE_FETCHER, createRouter } from "../router/router.js";
+-import { DataRouterNavigationContext, NavigationContext, RouteContext, ViewTransitionContext } from "../context.js";
++import { DataRouterContext, DataRouterNavigationContext, NavigationContext, RouteContext, ViewTransitionContext } from "../context.js";
+ import { useBlocker, useCurrentRouteId, useDataRouterContext, useDataRouterFetchers, useDataRouterState, useHref, useLocation, useMatches, useNavigate, useNavigation, useResolvedPath } from "../hooks.js";
+ import { escapeHtml } from "./ssr/markup.js";
+ import { FrameworkContext, PrefetchPageLinks, mergeRefs, usePrefetchBehavior } from "./ssr/components.js";
+@@ -284,7 +284,7 @@ HistoryRouter.displayName = "unstable_HistoryRouter";
+ * @param {LinkProps.defaultShouldRevalidate} props.defaultShouldRevalidate n/a
+ * @param {LinkProps.mask} props.mask [modes: framework, data] n/a
+ */
+-const Link = React$1.forwardRef(function LinkWithRef({ onClick, discover = "render", prefetch = "none", relative, reloadDocument, replace, mask, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }, forwardedRef) {
++function ResolvedLink({ ref: forwardedRef, onClick, discover = "render", prefetch = "none", relative, reloadDocument, replace, mask, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }) {
+ 	let { basename, navigator, useTransitions } = React$1.useContext(NavigationContext);
+ 	let isAbsolute = typeof to === "string" && ABSOLUTE_URL_REGEX.test(to);
+ 	let parsed = parseToInfo(to, basename);
+@@ -324,8 +324,54 @@ const Link = React$1.forwardRef(function LinkWithRef({ onClick, discover = "rend
+ 		"data-discover": !isAbsolute && discover === "render" ? "true" : void 0
+ 	});
+ 	return shouldPrefetch && !isAbsolute ? /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, link, /* @__PURE__ */ React$1.createElement(PrefetchPageLinks, { page: href })) : link;
+-});
++}
++// patched: a link to an absolute path ("/foo") doesn't depend on the current location, so it reads it
++// only when clicked instead of subscribing to it and re-rendering whenever the location changes
++function Link(props) {
++	let isDataRouter = React$1.useContext(DataRouterContext) != null;
++	return React$1.createElement(linkComponent(props, isDataRouter), props);
++}
+ Link.displayName = "Link";
++function linkComponent({ to, relative, mask }, isDataRouter) {
++	let isAbsolutePath = typeof to === "string" && to.startsWith("/") && !to.startsWith("//");
++	return isDataRouter && isAbsolutePath && !relative && !mask ? StaticLink : ResolvedLink;
++}
++function StaticLink({ ref: forwardedRef, onClick, discover = "render", prefetch = "none", reloadDocument, replace: replaceProp, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }) {
++	let { basename, navigator, useTransitions } = React$1.useContext(NavigationContext);
++	let { router } = React$1.useContext(DataRouterContext);
++	let navigate = useNavigate();
++	let path = React$1.useMemo(() => resolveTo(to, [], "/", false), [to]);
++	let href = navigator.createHref({
++		...path,
++		pathname: basename !== "/" ? path.pathname === "/" ? basename : joinPaths([basename, path.pathname]) : path.pathname
++	});
++	let [shouldPrefetch, prefetchRef, prefetchHandlers] = usePrefetchBehavior(prefetch, rest);
++	function handleClick(event) {
++		if (onClick) onClick(event);
++		if (event.defaultPrevented || !shouldProcessLinkClick(event, target)) return;
++		event.preventDefault();
++		let replace = replaceProp !== void 0 ? replaceProp : createPath(router.state.location) === createPath(path);
++		let doNavigate = () => navigate(to, {
++			replace,
++			state,
++			preventScrollReset,
++			viewTransition,
++			defaultShouldRevalidate
++		});
++		if (useTransitions) React$1.startTransition(() => doNavigate());
++		else doNavigate();
++	}
++	let link = /* @__PURE__ */ React$1.createElement("a", {
++		...rest,
++		...prefetchHandlers,
++		href,
++		onClick: reloadDocument ? onClick : handleClick,
++		ref: mergeRefs(forwardedRef, prefetchRef),
++		target,
++		"data-discover": discover === "render" ? "true" : void 0
++	});
++	return shouldPrefetch ? /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, link, /* @__PURE__ */ React$1.createElement(PrefetchPageLinks, { page: href })) : link;
++}
+ /**
+ * Wraps {@link Link | `<Link>`} with additional props for styling active and
+ * pending states.
+@@ -402,7 +448,8 @@ const NavLink = React$1.forwardRef(function NavLinkWithRef({ "aria-current": ari
+ 		isTransitioning ? "transitioning" : null
+ 	].filter(Boolean).join(" ");
+ 	let style = typeof styleProp === "function" ? styleProp(renderProps) : styleProp;
+-	return /* @__PURE__ */ React$1.createElement(Link, {
++	// patched: renders the link directly, skipping <Link>'s extra component layer on these frequent re-renders
++	return /* @__PURE__ */ React$1.createElement(linkComponent({ to, ...rest }, routerNavigation != null), {
+ 		...rest,
+ 		"aria-current": ariaCurrent,
+ 		className,
+diff --git a/dist/development/lib/dom/ssr/server.js b/dist/development/lib/dom/ssr/server.js
+index 414c796010e78f585f53180c83add0931e766d2b..82815e4a273f401da85315a1f2b8390d9b1c77a0 100644
+--- a/dist/development/lib/dom/ssr/server.js
++++ b/dist/development/lib/dom/ssr/server.js
+@@ -32,7 +32,7 @@ import * as React$1 from "react";
+ function ServerRouter({ context, url, nonce }) {
+ 	if (typeof url === "string") url = new URL(url);
+ 	let { manifest, routeModules, criticalCss, serverHandoffString } = context;
+-	let routes = createServerRoutes(manifest.routes, routeModules, context.future, context.isSpaMode);
++	let routes = cachedServerRoutes(manifest.routes, routeModules, context.future, context.isSpaMode);
+ 	context.staticHandlerContext.loaderData = { ...context.staticHandlerContext.loaderData };
+ 	for (let match of context.staticHandlerContext.matches) {
+ 		let routeId = match.route.id;
+@@ -67,5 +67,14 @@ function ServerRouter({ context, url, nonce }) {
+ 		nonce
+ 	})) : null);
+ }
++// patched: the routes only depend on the build, so they are created once instead of on every document request
++const serverRoutesCache = /* @__PURE__ */ new WeakMap();
++function cachedServerRoutes(manifestRoutes, routeModules, future, isSpaMode) {
++	let cached = serverRoutesCache.get(manifestRoutes);
++	if (cached && cached.routeModules === routeModules && cached.future === future && cached.isSpaMode === isSpaMode) return cached.routes;
++	let routes = createServerRoutes(manifestRoutes, routeModules, future, isSpaMode);
++	serverRoutesCache.set(manifestRoutes, { routeModules, future, isSpaMode, routes });
++	return routes;
++}
+ //#endregion
+ export { ServerRouter };
+diff --git a/dist/development/lib/dom/ssr/single-fetch.js b/dist/development/lib/dom/ssr/single-fetch.js
+index 49b10047d7f77a8c91a5eb70226b113b6c2b2ed2..2aeb742475ce678ceed83ba80f4ea1f0729555e0 100644
+--- a/dist/development/lib/dom/ssr/single-fetch.js
++++ b/dist/development/lib/dom/ssr/single-fetch.js
+@@ -12,11 +12,11 @@ import { ErrorResponseImpl, SUPPORTED_ERROR_TYPES, data, isRouteErrorResponse, r
+ import { isDataWithResponseInit, isResponse } from "../../router/router.js";
+ import invariant from "./invariant.js";
+ import { escapeHtml } from "./markup.js";
+-import { decode } from "../../../vendor/turbo-stream-v2/turbo-stream.js";
+ import { createRequestInit } from "./data.js";
+ import * as React$1 from "react";
+ //#region lib/dom/ssr/single-fetch.tsx
+ const SingleFetchRedirectSymbol = Symbol("SingleFetchRedirect");
++const JSON_TYPE_KEY = "__rrJsonType";
+ var SingleFetchNoResultError = class extends Error {};
+ const NO_BODY_STATUS_CODES = new Set([
+ 	100,
+@@ -290,24 +290,31 @@ function fetchAndDecodeViaTurboStream(fetchImplementation, serverOrigin) {
+ 		}
+ 	};
+ }
+-function decodeViaTurboStream(body, global) {
+-	return decode(body, { plugins: [(type, ...rest) => {
+-		if (type === "SanitizedError") {
+-			let [name, message, stack] = rest;
++// patched: counterpart of the plain JSON encoding in server-runtime/single-fetch.js
++async function decodeViaTurboStream(body, global) {
++	let text = await new Response(body).text();
++	return {
++		done: Promise.resolve(),
++		value: fromJsonEnvelope(JSON.parse(text), 2, global)
++	};
++}
++function fromJsonEnvelope(value, depth, global) {
++	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
++	switch (value[JSON_TYPE_KEY]) {
++		case "Undefined": return void 0;
++		case "SanitizedError": {
++			let { name, message, stack } = value;
+ 			let Constructor = Error;
+ 			if (name && SUPPORTED_ERROR_TYPES.includes(name) && name in global && typeof global[name] === "function") Constructor = global[name];
+ 			let error = new Constructor(message);
+ 			error.stack = stack;
+-			return { value: error };
++			return error;
+ 		}
+-		if (type === "ErrorResponse") {
+-			let [data, status, statusText] = rest;
+-			return { value: new ErrorResponseImpl(status, statusText, data) };
+-		}
+-		if (type === "SingleFetchRedirect") return { value: { [SingleFetchRedirectSymbol]: rest[0] } };
+-		if (type === "SingleFetchClassInstance") return { value: rest[0] };
+-		if (type === "SingleFetchFallback") return { value: void 0 };
+-	}] });
++		case "ErrorResponse": return new ErrorResponseImpl(value.status, value.statusText, fromJsonEnvelope(value.data, 0, global));
++		case "SingleFetchRedirect": return { [SingleFetchRedirectSymbol]: value.redirect };
++	}
++	if (depth > 0) for (let key of Object.keys(value)) value[key] = fromJsonEnvelope(value[key], depth - 1, global);
++	return value;
+ }
+ function unwrapSingleFetchResult(result, routeId) {
+ 	if ("redirect" in result) {
+@@ -351,4 +358,4 @@ function createDeferred() {
+ 	};
+ }
+ //#endregion
+-export { NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol, StreamTransfer, decodeViaTurboStream, getSingleFetchDataStrategyImpl, getTurboStreamSingleFetchDataStrategy, singleFetchUrl, stripIndexParam };
++export { JSON_TYPE_KEY, NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol, StreamTransfer, decodeViaTurboStream, getSingleFetchDataStrategyImpl, getTurboStreamSingleFetchDataStrategy, singleFetchUrl, stripIndexParam };
+diff --git a/dist/development/lib/hooks.js b/dist/development/lib/hooks.js
+index 3a9d1d0abe4dcb90b1e8162db28fff27db78898c..5fa998f1568c944932b7db80b5b156823a5c0a77 100644
+--- a/dist/development/lib/hooks.js
++++ b/dist/development/lib/hooks.js
+@@ -527,10 +527,11 @@ function useParams() {
+ *                         Set to `"path"` to make relative routing operate against path segments.
+ * @returns The resolved {@link Path} object with `pathname`, `search`, and `hash`
+ */
++// patched: the resolved-path inputs as a string, so links don't re-render when a router state change recreates the route context
++const RoutePathnamesContext = /* @__PURE__ */ React$1.createContext("[]");
+ function useResolvedPath(to, { relative } = {}) {
+-	let { matches } = React$1.useContext(RouteContext);
++	let routePathnamesJson = React$1.useContext(RoutePathnamesContext);
+ 	let { pathname: locationPathname } = useLocation();
+-	let routePathnamesJson = JSON.stringify(getResolveToMatches(matches));
+ 	return React$1.useMemo(() => resolveTo(to, JSON.parse(routePathnamesJson), locationPathname, relative === "path"), [
+ 		to,
+ 		routePathnamesJson,
+@@ -681,10 +682,10 @@ var RenderErrorBoundary = class extends React$1.Component {
+ 			const decoded = decodeRouteErrorResponseDigest(error.digest);
+ 			if (decoded) error = decoded;
+ 		}
+-		let result = error !== void 0 ? /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: this.props.routeContext }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: this.props.routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: this.props.routeContext.matches[this.props.routeContext.matches.length - 1]?.route.id }, /* @__PURE__ */ React$1.createElement(RouteErrorContext.Provider, {
++		let result = error !== void 0 ? /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: this.props.routeContext }, /* @__PURE__ */ React$1.createElement(RoutePathnamesContext.Provider, { value: JSON.stringify(getResolveToMatches(this.props.routeContext.matches)) }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: this.props.routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: this.props.routeContext.matches[this.props.routeContext.matches.length - 1]?.route.id }, /* @__PURE__ */ React$1.createElement(RouteErrorContext.Provider, {
+ 			value: error,
+ 			children: this.props.component
+-		})))) : this.props.children;
++		}))))) : this.props.children;
+ 		if (this.context) return /* @__PURE__ */ React$1.createElement(RSCErrorHandler, { error }, result);
+ 		return result;
+ 	}
+@@ -718,7 +719,7 @@ function RSCErrorHandler({ children, error }) {
+ function RenderedRoute({ routeContext, match, children }) {
+ 	let dataRouterContext = React$1.useContext(DataRouterContext);
+ 	if (dataRouterContext && dataRouterContext.static && dataRouterContext.staticContext && (match.route.errorElement || match.route.ErrorBoundary)) dataRouterContext.staticContext._deepestRenderedBoundaryId = match.route.id;
+-	return /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: routeContext }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: match.route.id }, children)));
++	return /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: routeContext }, /* @__PURE__ */ React$1.createElement(RoutePathnamesContext.Provider, { value: JSON.stringify(getResolveToMatches(routeContext.matches)) }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: match.route.id }, children))));
+ }
+ function _renderMatches(matches, parentMatches = [], dataRouterOpts) {
+ 	let dataRouterState = dataRouterOpts?.state;
+diff --git a/dist/development/lib/router/matcher.js b/dist/development/lib/router/matcher.js
+index 865fabf95800603edec9f8ef546886fb049e7a57..bdbaee27652607050a25f4546780b1a4f0cf2bc9 100644
+--- a/dist/development/lib/router/matcher.js
++++ b/dist/development/lib/router/matcher.js
+@@ -8,11 +8,14 @@
+  *
+  * @license MIT
+  */
+-import { flattenAndRankRoutes, matchRoutesImpl } from "./utils.js";
++import { parsePath } from "./history.js";
++import { flattenAndRankRoutes, matchRoutesImpl, stripBasename } from "./utils.js";
+ //#region lib/router/matcher.ts
+ var V6RegExMatcher = class {
+ 	#routes = [];
+ 	#branches = [];
++	#branchesByFirstSegment = /* @__PURE__ */ new Map();
++	#dynamicFirstSegmentBranches = [];
+ 	#basename;
+ 	constructor(basename) {
+ 		this.#basename = basename;
+@@ -20,10 +23,31 @@ var V6RegExMatcher = class {
+ 	update(routes) {
+ 		this.#routes = routes;
+ 		this.#branches = flattenAndRankRoutes(routes);
++		// patched: index branches by their static first segment so a match only scans the branches that can match
++		let firstSegments = this.#branches.map(staticFirstSegment);
++		this.#dynamicFirstSegmentBranches = this.#branches.filter((_, i) => firstSegments[i] === null);
++		this.#branchesByFirstSegment = /* @__PURE__ */ new Map();
++		for (let segment of new Set(firstSegments)) if (segment !== null) this.#branchesByFirstSegment.set(segment, this.#branches.filter((_, i) => firstSegments[i] === null || firstSegments[i] === segment));
+ 	}
+ 	match(locationArg, allowPartial = false) {
+-		return matchRoutesImpl(this.#routes, locationArg, this.#basename, allowPartial, this.#branches);
++		return matchRoutesImpl(this.#routes, locationArg, this.#basename, allowPartial, this.#candidateBranches(locationArg));
++	}
++	#candidateBranches(locationArg) {
++		let pathname = stripBasename((typeof locationArg === "string" ? parsePath(locationArg) : locationArg).pathname || "/", this.#basename);
++		if (pathname == null) return this.#branches;
++		let firstSegment;
++		try {
++			firstSegment = decodeURIComponent(pathname.split("/", 2)[1] ?? "").toLowerCase();
++		} catch {
++			return this.#branches;
++		}
++		return this.#branchesByFirstSegment.get(firstSegment) ?? this.#dynamicFirstSegmentBranches;
+ 	}
+ };
++const STATIC_SEGMENT_RE = /^[A-Za-z0-9_.~-]+$/;
++function staticFirstSegment(branch) {
++	let segment = branch.path.split("/").find((s) => s !== "");
++	return segment !== void 0 && STATIC_SEGMENT_RE.test(segment) ? segment.toLowerCase() : null;
++}
+ //#endregion
+ export { V6RegExMatcher };
+diff --git a/dist/development/lib/router/router.js b/dist/development/lib/router/router.js
+index 96a9def58aa7936a638cb8b2bbc8befbb1022866..a13a417e876dcd042356474445b495f79e650d0e 100644
+--- a/dist/development/lib/router/router.js
++++ b/dist/development/lib/router/router.js
+@@ -2817,7 +2817,7 @@ function processLoaderData(state, matches, results, pendingActionResult, revalid
+ }
+ function mergeLoaderData(loaderData, newLoaderData, matches, errors) {
+ 	let mergedLoaderData = Object.entries(newLoaderData).filter(([, v]) => v !== ResetLoaderDataSymbol).reduce((merged, [k, v]) => {
+-		merged[k] = v;
++		merged[k] = loaderData.hasOwnProperty(k) ? replaceEqualDeep(loaderData[k], v) : v;
+ 		return merged;
+ 	}, {});
+ 	let preservedCount = 0;
+@@ -2831,6 +2831,30 @@ function mergeLoaderData(loaderData, newLoaderData, matches, errors) {
+ 	}
+ 	return Object.keys(newLoaderData).length === 0 && preservedCount === Object.keys(loaderData).length ? loaderData : mergedLoaderData;
+ }
++// patched: a revalidation returning equal data keeps the previous data's identity (per unchanged subtree), so the UI reading it doesn't re-render
++function replaceEqualDeep(prev, next) {
++	if (prev === next) return prev;
++	if (prev instanceof Date && next instanceof Date) return prev.getTime() === next.getTime() ? prev : next;
++	let prevIsArray = Array.isArray(prev);
++	if (prevIsArray !== Array.isArray(next)) return next;
++	if (!prevIsArray && !(isPlainObject(prev) && isPlainObject(next))) return next;
++	let nextKeys = prevIsArray ? null : Object.keys(next);
++	let length = prevIsArray ? next.length : nextKeys.length;
++	let equal = length === (prevIsArray ? prev.length : Object.keys(prev).length);
++	let result = prevIsArray ? new Array(length) : {};
++	for (let i = 0; i < length; i++) {
++		let key = prevIsArray ? i : nextKeys[i];
++		let hasPrev = prevIsArray ? i < prev.length : Object.prototype.hasOwnProperty.call(prev, key);
++		result[key] = hasPrev ? replaceEqualDeep(prev[key], next[key]) : next[key];
++		if (!hasPrev || result[key] !== prev[key]) equal = false;
++	}
++	return equal ? prev : result;
++}
++function isPlainObject(value) {
++	if (value === null || typeof value !== "object") return false;
++	let proto = Object.getPrototypeOf(value);
++	return proto === Object.prototype || proto === null;
++}
+ function getActionDataForCommit(pendingActionResult) {
+ 	if (!pendingActionResult) return {};
+ 	return isErrorResult(pendingActionResult[1]) ? { actionData: {} } : { actionData: { [pendingActionResult[0]]: pendingActionResult[1].data } };
+diff --git a/dist/development/lib/server-runtime/crypto.js b/dist/development/lib/server-runtime/crypto.js
+index ba03b7e99e0d126a06b41c3fa50273418a3d073e..9b64f19f9c2cf2e06dc65a4b20bfcd0e5d8b3c7c 100644
+--- a/dist/development/lib/server-runtime/crypto.js
++++ b/dist/development/lib/server-runtime/crypto.js
+@@ -10,7 +10,10 @@
+  */
+ //#region lib/server-runtime/crypto.ts
+ const encoder = /* @__PURE__ */ new TextEncoder();
++// patched: node:crypto HMAC is synchronous and ~10x faster than WebCrypto's importKey + sign/verify per cookie
++const nodeCrypto = typeof process !== "undefined" ? process.getBuiltinModule?.("node:crypto") : void 0;
+ const sign = async (value, secret) => {
++	if (nodeCrypto) return value + "." + nodeCrypto.createHmac("sha256", secret).update(value).digest("base64").replace(/=+$/, "");
+ 	let data = encoder.encode(value);
+ 	let key = await createKey(secret, ["sign"]);
+ 	let signature = await crypto.subtle.sign("HMAC", key, data);
+@@ -21,6 +24,13 @@ const unsign = async (cookie, secret) => {
+ 	let index = cookie.lastIndexOf(".");
+ 	let value = cookie.slice(0, index);
+ 	let hash = cookie.slice(index + 1);
++	if (nodeCrypto) try {
++		let signature = byteStringToUint8Array(atob(hash));
++		let expected = nodeCrypto.createHmac("sha256", secret).update(value).digest();
++		return signature.length === expected.length && nodeCrypto.timingSafeEqual(signature, expected) ? value : false;
++	} catch {
++		return false;
++	}
+ 	let data = encoder.encode(value);
+ 	let key = await createKey(secret, ["verify"]);
+ 	try {
+diff --git a/dist/development/lib/server-runtime/entry.js b/dist/development/lib/server-runtime/entry.js
+index 979f27086e6ce619702a137887e6eae85a07b059..ff2ef6b207f4ac24a74c29962d4b709d3ab4d434 100644
+--- a/dist/development/lib/server-runtime/entry.js
++++ b/dist/development/lib/server-runtime/entry.js
+@@ -9,7 +9,14 @@
+  * @license MIT
+  */
+ //#region lib/server-runtime/entry.ts
++// patched: memoized per build so the document render can reuse the server routes built from it
++const entryRouteModulesCache = /* @__PURE__ */ new WeakMap();
+ function createEntryRouteModules(manifest) {
++	let cached = entryRouteModulesCache.get(manifest);
++	if (!cached) entryRouteModulesCache.set(manifest, cached = createEntryRouteModulesUncached(manifest));
++	return cached;
++}
++function createEntryRouteModulesUncached(manifest) {
+ 	return Object.keys(manifest).reduce((memo, routeId) => {
+ 		let route = manifest[routeId];
+ 		if (route) memo[routeId] = route.module;
+diff --git a/dist/development/lib/server-runtime/single-fetch.js b/dist/development/lib/server-runtime/single-fetch.js
+index 87bf19e2b18307702e293369c5d0a86a39b1f0e0..2ea2c5b59809c87a1a3b97a0b22cc3e43a1c3abd 100644
+--- a/dist/development/lib/server-runtime/single-fetch.js
++++ b/dist/development/lib/server-runtime/single-fetch.js
+@@ -10,8 +10,7 @@
+  */
+ import { ErrorResponseImpl, isRouteErrorResponse, stripBasename } from "../router/utils.js";
+ import { isRedirectStatusCode, isResponse } from "../router/router.js";
+-import { encode } from "../../vendor/turbo-stream-v2/turbo-stream.js";
+-import { NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol } from "../dom/ssr/single-fetch.js";
++import { JSON_TYPE_KEY, NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol } from "../dom/ssr/single-fetch.js";
+ import "./mode.js";
+ import { sanitizeError, sanitizeErrors } from "./errors.js";
+ import { getDocumentHeaders } from "./headers.js";
+@@ -138,7 +137,7 @@ function generateSingleFetchResponse(request, build, serverMode, { result, heade
+ 	});
+ 	resultHeaders.set("Content-Type", "text/x-script");
+ 	resultHeaders.delete("Content-Length");
+-	return new Response(encodeViaTurboStream(result, request.signal, build.entry.module.streamTimeout, serverMode), {
++	return new Response(encodeViaJson(result, serverMode), {
+ 		status: status || 200,
+ 		headers: resultHeaders
+ 	});
+@@ -165,51 +164,59 @@ function getSingleFetchRedirect(status, headers, basename) {
+ 		replace: headers.has("X-Remix-Replace")
+ 	};
+ }
+-function encodeViaTurboStream(data, requestSignal, streamTimeout, serverMode) {
+-	let controller = new AbortController();
+-	let timeoutId = setTimeout(() => {
+-		controller.abort(/* @__PURE__ */ new Error("Server Timeout"));
+-		cleanupCallbacks();
+-	}, typeof streamTimeout === "number" ? streamTimeout : 4950);
+-	let abortControllerOnRequestAbort = () => {
+-		controller.abort(requestSignal.reason);
+-		cleanupCallbacks();
++// patched: plain JSON instead of turbo-stream (loaders and actions return only JSON-safe data, no promises)
++// only the envelope (route maps, results, errors, redirects) is walked to keep undefined/errors/redirects intact
++const textEncoder = new TextEncoder();
++function encodeViaTurboStream(data, _requestSignal, _streamTimeout, serverMode) {
++	let bytes = textEncoder.encode(encodeViaJson(data, serverMode));
++	return new ReadableStream({ start(controller) {
++		controller.enqueue(bytes);
++		controller.close();
++	} });
++}
++function encodeViaJson(data, serverMode) {
++	if (serverMode === "development") warnAboutNonJsonValues(data, "");
++	return JSON.stringify(toJsonEnvelope(data, 2, serverMode));
++}
++function warnAboutNonJsonValues(value, path) {
++	if (value === null || typeof value !== "object") {
++		if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol" || typeof value === "number" && !Number.isFinite(value)) console.warn(`[react-router] ${path} (${String(value)}) can't be serialized to JSON`);
++		return;
++	}
++	if (value instanceof Error || value instanceof ErrorResponseImpl) return;
++	let proto = Object.getPrototypeOf(value);
++	if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
++		console.warn(`[react-router] ${path} is a ${value.constructor?.name ?? "class instance"}, it won't survive JSON serialization`);
++		return;
++	}
++	for (let key of Object.keys(value)) warnAboutNonJsonValues(value[key], `${path}.${key}`);
++}
++function toJsonEnvelope(value, depth, serverMode) {
++	if (value === void 0) return { [JSON_TYPE_KEY]: "Undefined" };
++	if (value instanceof Error) {
++		let { name, message, stack } = serverMode === "production" ? sanitizeError(value, serverMode) : value;
++		return {
++			[JSON_TYPE_KEY]: "SanitizedError",
++			name,
++			message,
++			stack
++		};
++	}
++	if (value instanceof ErrorResponseImpl) return {
++		[JSON_TYPE_KEY]: "ErrorResponse",
++		data: toJsonEnvelope(value.data, 0, serverMode),
++		status: value.status,
++		statusText: value.statusText
+ 	};
+-	requestSignal.addEventListener("abort", abortControllerOnRequestAbort);
+-	let cleanupCallbacks = () => {
+-		clearTimeout(timeoutId);
+-		requestSignal.removeEventListener("abort", abortControllerOnRequestAbort);
++	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
++	if (SingleFetchRedirectSymbol in value) return {
++		[JSON_TYPE_KEY]: "SingleFetchRedirect",
++		redirect: value[SingleFetchRedirectSymbol]
+ 	};
+-	return encode(data, {
+-		signal: controller.signal,
+-		onComplete: cleanupCallbacks,
+-		plugins: [(value) => {
+-			if (value instanceof Error) {
+-				let { name, message, stack } = serverMode === "production" ? sanitizeError(value, serverMode) : value;
+-				return [
+-					"SanitizedError",
+-					name,
+-					message,
+-					stack
+-				];
+-			}
+-			if (value instanceof ErrorResponseImpl) {
+-				let { data, status, statusText } = value;
+-				return [
+-					"ErrorResponse",
+-					data,
+-					status,
+-					statusText
+-				];
+-			}
+-			if (value && typeof value === "object" && SingleFetchRedirectSymbol in value) return ["SingleFetchRedirect", value[SingleFetchRedirectSymbol]];
+-		}],
+-		postPlugins: [(value) => {
+-			if (!value) return;
+-			if (typeof value !== "object") return;
+-			return ["SingleFetchClassInstance", Object.fromEntries(Object.entries(value))];
+-		}, () => ["SingleFetchFallback"]]
+-	});
++	if (depth === 0) return value;
++	let result = {};
++	for (let key of Object.keys(value)) result[key] = toJsonEnvelope(value[key], depth - 1, serverMode);
++	return result;
+ }
+ //#endregion
+ export { SERVER_NO_BODY_STATUS_CODES, encodeViaTurboStream, generateSingleFetchRedirectResponse, singleFetchAction, singleFetchLoaders };
+diff --git a/dist/development/lib/types/route-data.d.ts b/dist/development/lib/types/route-data.d.ts
+index aa9953fd326fcddd44c071ad627113f5d4c4590e..6a0b542087104a3618f2f0cfec9de5fb63cff7da 100644
+--- a/dist/development/lib/types/route-data.d.ts
++++ b/dist/development/lib/types/route-data.d.ts
+@@ -7,7 +7,8 @@ import { RouteModule } from "./route-module.js";
+ import { unstable_SerializesTo } from "./serializes-to.js";
+ 
+ //#region lib/types/route-data.d.ts
+-type Serialize<T> = T extends unstable_SerializesTo<infer To> ? To : T extends Serializable ? T : T extends ((...args: any[]) => unknown) ? undefined : T extends Promise<infer U> ? Promise<Serialize<U>> : T extends Map<infer K, infer V> ? Map<Serialize<K>, Serialize<V>> : T extends ReadonlyMap<infer K, infer V> ? ReadonlyMap<Serialize<K>, Serialize<V>> : T extends Set<infer U> ? Set<Serialize<U>> : T extends ReadonlySet<infer U> ? ReadonlySet<Serialize<U>> : T extends [] ? [] : T extends readonly [infer F, ...infer R] ? [Serialize<F>, ...Serialize<R>] : T extends Array<infer U> ? Array<Serialize<U>> : T extends readonly unknown[] ? readonly Serialize<T[number]>[] : T extends Record<any, any> ? { [K in keyof T]: Serialize<T[K]> } : undefined;
++// patched: loader data goes over plain JSON (see server-runtime/single-fetch.js), so types follow JSON.stringify
++type Serialize<T> = T extends unstable_SerializesTo<infer To> ? To : T extends string | number | boolean | null | undefined ? T : T extends Date | URL ? string : T extends ((...args: any[]) => unknown) | symbol ? undefined : T extends Promise<unknown> | bigint ? never : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | RegExp | Error ? Record<string, never> : T extends [] ? [] : T extends readonly [infer F, ...infer R] ? [Serialize<F>, ...Serialize<R>] : T extends Array<infer U> ? Array<Serialize<U>> : T extends readonly unknown[] ? readonly Serialize<T[number]>[] : T extends Record<any, any> ? { [K in keyof T]: Serialize<T[K]> } : undefined;
+ type VoidToUndefined<T> = Equal<T, void> extends true ? undefined : T;
+ type DataFrom<T> = IsAny<T> extends true ? undefined : T extends Func ? VoidToUndefined<Awaited<ReturnType<T>>> : undefined;
+ type ClientData<T> = T extends Response ? never : T extends DataWithResponseInit<infer U> ? U : T;
+diff --git a/dist/development/vendor/turbo-stream-v2/flatten.js b/dist/development/vendor/turbo-stream-v2/flatten.js
+index 3466186decd73dac3b1705b213594bb63548293d..56b8c9bdb147cc277e3363af93ca159cf5dd4088 100644
+--- a/dist/development/vendor/turbo-stream-v2/flatten.js
++++ b/dist/development/vendor/turbo-stream-v2/flatten.js
+@@ -46,15 +46,16 @@ async function stringify(stack) {
+ 		stack.push([value, index]);
+ 		return index;
+ 	};
++	// patched: built once instead of once per value
++	const partsForObj = (obj) => Object.keys(obj).map((k) => `"_${flattenValue(k)}":${flattenValue(obj[k])}`).join(",");
+ 	let i = 0;
+ 	while (stack.length > 0) {
+-		const now = getNow();
+-		if (++i % 6e3 === 0 && now - lastYieldTime >= TIME_LIMIT_MS) {
++		// patched: reads the clock only when a yield is due instead of once per value
++		if (++i % 6e3 === 0 && getNow() - lastYieldTime >= TIME_LIMIT_MS) {
+ 			await yieldToMain();
+ 			lastYieldTime = getNow();
+ 		}
+ 		const [input, index] = stack.pop();
+-		const partsForObj = (obj) => Object.keys(obj).map((k) => `"_${flattenValue(k)}":${flattenValue(obj[k])}`).join(",");
+ 		let error = null;
+ 		switch (typeof input) {
+ 			case "boolean":
+diff --git a/dist/production/lib/dom-export/hydrated-router.js b/dist/production/lib/dom-export/hydrated-router.js
+index df767ab6665e9a90344275d717bc31de81ff7228..5140b826243bcc00794aad943290bf49b6f30a66 100644
+--- a/dist/production/lib/dom-export/hydrated-router.js
++++ b/dist/production/lib/dom-export/hydrated-router.js
+@@ -149,7 +149,8 @@ function HydratedRouter(props) {
+ 	let discoveryState;
+ 	if (discoveryRuntime) discoveryState = UNSAFE_useCustomRouteDiscovery(discoveryRuntime, props.onError);
+ 	else UNSAFE_useFogOFWarDiscovery(router, ssrInfo.manifest, ssrInfo.routeModules, ssr, ssrInfo.context.routeDiscovery, ssrInfo.context.isSpaMode, fetchImplementation, ssrInfo.context.unstable_apiServerOrigin, ssrInfo.context.unstable_apiOnly === true);
+-	return /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, /* @__PURE__ */ React$1.createElement(UNSAFE_FrameworkContext.Provider, { value: {
++	// patched: a stable value so every <Link> doesn't re-render whenever the location changes
++	let frameworkContext = React$1.useMemo(() => ({
+ 		routeDiscoveryRuntime: discoveryRuntime,
+ 		routeDiscoveryState: discoveryState,
+ 		manifest: ssrInfo.manifest,
+@@ -161,7 +162,15 @@ function HydratedRouter(props) {
+ 		unstable_apiOnly: ssrInfo.context.unstable_apiOnly,
+ 		routeDiscovery: ssrInfo.context.routeDiscovery,
+ 		unstable_apiServerOrigin: ssrInfo.context.unstable_apiServerOrigin
+-	} }, /* @__PURE__ */ React$1.createElement(UNSAFE_RemixErrorBoundary, { location }, /* @__PURE__ */ React$1.createElement(RouterProvider$1, {
++	}), [
++		discoveryRuntime,
++		discoveryState,
++		ssrInfo.manifest,
++		ssrInfo.routeModules,
++		ssrInfo.context,
++		criticalCss
++	]);
++	return /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, /* @__PURE__ */ React$1.createElement(UNSAFE_FrameworkContext.Provider, { value: frameworkContext }, /* @__PURE__ */ React$1.createElement(UNSAFE_RemixErrorBoundary, { location }, /* @__PURE__ */ React$1.createElement(RouterProvider$1, {
+ 		router,
+ 		useTransitions: props.useTransitions,
+ 		onError: props.onError
+diff --git a/dist/production/lib/dom/lib.js b/dist/production/lib/dom/lib.js
+index c64372fc278f3f0e154ce1b47c01a5fbaa2b2e04..f74c78434022bc03d703561379a565fbb8131d6f 100644
+--- a/dist/production/lib/dom/lib.js
++++ b/dist/production/lib/dom/lib.js
+@@ -12,7 +12,7 @@ import { ABSOLUTE_URL_REGEX } from "../router/url.js";
+ import { createBrowserHistory, createHashHistory, createPath, invariant, warning } from "../router/history.js";
+ import { ErrorResponseImpl, SUPPORTED_ERROR_TYPES, defaultMapRouteProperties, joinPaths, matchPath, parseToInfo, resolveTo, stripBasename } from "../router/utils.js";
+ import { IDLE_FETCHER, createRouter } from "../router/router.js";
+-import { DataRouterNavigationContext, NavigationContext, RouteContext, ViewTransitionContext } from "../context.js";
++import { DataRouterContext, DataRouterNavigationContext, NavigationContext, RouteContext, ViewTransitionContext } from "../context.js";
+ import { useBlocker, useCurrentRouteId, useDataRouterContext, useDataRouterFetchers, useDataRouterState, useHref, useLocation, useMatches, useNavigate, useNavigation, useResolvedPath } from "../hooks.js";
+ import { escapeHtml } from "./ssr/markup.js";
+ import { FrameworkContext, PrefetchPageLinks, mergeRefs, usePrefetchBehavior } from "./ssr/components.js";
+@@ -284,7 +284,7 @@ HistoryRouter.displayName = "unstable_HistoryRouter";
+ * @param {LinkProps.defaultShouldRevalidate} props.defaultShouldRevalidate n/a
+ * @param {LinkProps.mask} props.mask [modes: framework, data] n/a
+ */
+-const Link = React$1.forwardRef(function LinkWithRef({ onClick, discover = "render", prefetch = "none", relative, reloadDocument, replace, mask, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }, forwardedRef) {
++function ResolvedLink({ ref: forwardedRef, onClick, discover = "render", prefetch = "none", relative, reloadDocument, replace, mask, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }) {
+ 	let { basename, navigator, useTransitions } = React$1.useContext(NavigationContext);
+ 	let isAbsolute = typeof to === "string" && ABSOLUTE_URL_REGEX.test(to);
+ 	let parsed = parseToInfo(to, basename);
+@@ -324,8 +324,54 @@ const Link = React$1.forwardRef(function LinkWithRef({ onClick, discover = "rend
+ 		"data-discover": !isAbsolute && discover === "render" ? "true" : void 0
+ 	});
+ 	return shouldPrefetch && !isAbsolute ? /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, link, /* @__PURE__ */ React$1.createElement(PrefetchPageLinks, { page: href })) : link;
+-});
++}
++// patched: a link to an absolute path ("/foo") doesn't depend on the current location, so it reads it
++// only when clicked instead of subscribing to it and re-rendering whenever the location changes
++function Link(props) {
++	let isDataRouter = React$1.useContext(DataRouterContext) != null;
++	return React$1.createElement(linkComponent(props, isDataRouter), props);
++}
+ Link.displayName = "Link";
++function linkComponent({ to, relative, mask }, isDataRouter) {
++	let isAbsolutePath = typeof to === "string" && to.startsWith("/") && !to.startsWith("//");
++	return isDataRouter && isAbsolutePath && !relative && !mask ? StaticLink : ResolvedLink;
++}
++function StaticLink({ ref: forwardedRef, onClick, discover = "render", prefetch = "none", reloadDocument, replace: replaceProp, state, target, to, preventScrollReset, viewTransition, defaultShouldRevalidate, ...rest }) {
++	let { basename, navigator, useTransitions } = React$1.useContext(NavigationContext);
++	let { router } = React$1.useContext(DataRouterContext);
++	let navigate = useNavigate();
++	let path = React$1.useMemo(() => resolveTo(to, [], "/", false), [to]);
++	let href = navigator.createHref({
++		...path,
++		pathname: basename !== "/" ? path.pathname === "/" ? basename : joinPaths([basename, path.pathname]) : path.pathname
++	});
++	let [shouldPrefetch, prefetchRef, prefetchHandlers] = usePrefetchBehavior(prefetch, rest);
++	function handleClick(event) {
++		if (onClick) onClick(event);
++		if (event.defaultPrevented || !shouldProcessLinkClick(event, target)) return;
++		event.preventDefault();
++		let replace = replaceProp !== void 0 ? replaceProp : createPath(router.state.location) === createPath(path);
++		let doNavigate = () => navigate(to, {
++			replace,
++			state,
++			preventScrollReset,
++			viewTransition,
++			defaultShouldRevalidate
++		});
++		if (useTransitions) React$1.startTransition(() => doNavigate());
++		else doNavigate();
++	}
++	let link = /* @__PURE__ */ React$1.createElement("a", {
++		...rest,
++		...prefetchHandlers,
++		href,
++		onClick: reloadDocument ? onClick : handleClick,
++		ref: mergeRefs(forwardedRef, prefetchRef),
++		target,
++		"data-discover": discover === "render" ? "true" : void 0
++	});
++	return shouldPrefetch ? /* @__PURE__ */ React$1.createElement(React$1.Fragment, null, link, /* @__PURE__ */ React$1.createElement(PrefetchPageLinks, { page: href })) : link;
++}
+ /**
+ * Wraps {@link Link | `<Link>`} with additional props for styling active and
+ * pending states.
+@@ -402,7 +448,8 @@ const NavLink = React$1.forwardRef(function NavLinkWithRef({ "aria-current": ari
+ 		isTransitioning ? "transitioning" : null
+ 	].filter(Boolean).join(" ");
+ 	let style = typeof styleProp === "function" ? styleProp(renderProps) : styleProp;
+-	return /* @__PURE__ */ React$1.createElement(Link, {
++	// patched: renders the link directly, skipping <Link>'s extra component layer on these frequent re-renders
++	return /* @__PURE__ */ React$1.createElement(linkComponent({ to, ...rest }, routerNavigation != null), {
+ 		...rest,
+ 		"aria-current": ariaCurrent,
+ 		className,
+diff --git a/dist/production/lib/dom/ssr/server.js b/dist/production/lib/dom/ssr/server.js
+index 414c796010e78f585f53180c83add0931e766d2b..82815e4a273f401da85315a1f2b8390d9b1c77a0 100644
+--- a/dist/production/lib/dom/ssr/server.js
++++ b/dist/production/lib/dom/ssr/server.js
+@@ -32,7 +32,7 @@ import * as React$1 from "react";
+ function ServerRouter({ context, url, nonce }) {
+ 	if (typeof url === "string") url = new URL(url);
+ 	let { manifest, routeModules, criticalCss, serverHandoffString } = context;
+-	let routes = createServerRoutes(manifest.routes, routeModules, context.future, context.isSpaMode);
++	let routes = cachedServerRoutes(manifest.routes, routeModules, context.future, context.isSpaMode);
+ 	context.staticHandlerContext.loaderData = { ...context.staticHandlerContext.loaderData };
+ 	for (let match of context.staticHandlerContext.matches) {
+ 		let routeId = match.route.id;
+@@ -67,5 +67,14 @@ function ServerRouter({ context, url, nonce }) {
+ 		nonce
+ 	})) : null);
+ }
++// patched: the routes only depend on the build, so they are created once instead of on every document request
++const serverRoutesCache = /* @__PURE__ */ new WeakMap();
++function cachedServerRoutes(manifestRoutes, routeModules, future, isSpaMode) {
++	let cached = serverRoutesCache.get(manifestRoutes);
++	if (cached && cached.routeModules === routeModules && cached.future === future && cached.isSpaMode === isSpaMode) return cached.routes;
++	let routes = createServerRoutes(manifestRoutes, routeModules, future, isSpaMode);
++	serverRoutesCache.set(manifestRoutes, { routeModules, future, isSpaMode, routes });
++	return routes;
++}
+ //#endregion
+ export { ServerRouter };
+diff --git a/dist/production/lib/dom/ssr/single-fetch.js b/dist/production/lib/dom/ssr/single-fetch.js
+index 49b10047d7f77a8c91a5eb70226b113b6c2b2ed2..2aeb742475ce678ceed83ba80f4ea1f0729555e0 100644
+--- a/dist/production/lib/dom/ssr/single-fetch.js
++++ b/dist/production/lib/dom/ssr/single-fetch.js
+@@ -12,11 +12,11 @@ import { ErrorResponseImpl, SUPPORTED_ERROR_TYPES, data, isRouteErrorResponse, r
+ import { isDataWithResponseInit, isResponse } from "../../router/router.js";
+ import invariant from "./invariant.js";
+ import { escapeHtml } from "./markup.js";
+-import { decode } from "../../../vendor/turbo-stream-v2/turbo-stream.js";
+ import { createRequestInit } from "./data.js";
+ import * as React$1 from "react";
+ //#region lib/dom/ssr/single-fetch.tsx
+ const SingleFetchRedirectSymbol = Symbol("SingleFetchRedirect");
++const JSON_TYPE_KEY = "__rrJsonType";
+ var SingleFetchNoResultError = class extends Error {};
+ const NO_BODY_STATUS_CODES = new Set([
+ 	100,
+@@ -290,24 +290,31 @@ function fetchAndDecodeViaTurboStream(fetchImplementation, serverOrigin) {
+ 		}
+ 	};
+ }
+-function decodeViaTurboStream(body, global) {
+-	return decode(body, { plugins: [(type, ...rest) => {
+-		if (type === "SanitizedError") {
+-			let [name, message, stack] = rest;
++// patched: counterpart of the plain JSON encoding in server-runtime/single-fetch.js
++async function decodeViaTurboStream(body, global) {
++	let text = await new Response(body).text();
++	return {
++		done: Promise.resolve(),
++		value: fromJsonEnvelope(JSON.parse(text), 2, global)
++	};
++}
++function fromJsonEnvelope(value, depth, global) {
++	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
++	switch (value[JSON_TYPE_KEY]) {
++		case "Undefined": return void 0;
++		case "SanitizedError": {
++			let { name, message, stack } = value;
+ 			let Constructor = Error;
+ 			if (name && SUPPORTED_ERROR_TYPES.includes(name) && name in global && typeof global[name] === "function") Constructor = global[name];
+ 			let error = new Constructor(message);
+ 			error.stack = stack;
+-			return { value: error };
++			return error;
+ 		}
+-		if (type === "ErrorResponse") {
+-			let [data, status, statusText] = rest;
+-			return { value: new ErrorResponseImpl(status, statusText, data) };
+-		}
+-		if (type === "SingleFetchRedirect") return { value: { [SingleFetchRedirectSymbol]: rest[0] } };
+-		if (type === "SingleFetchClassInstance") return { value: rest[0] };
+-		if (type === "SingleFetchFallback") return { value: void 0 };
+-	}] });
++		case "ErrorResponse": return new ErrorResponseImpl(value.status, value.statusText, fromJsonEnvelope(value.data, 0, global));
++		case "SingleFetchRedirect": return { [SingleFetchRedirectSymbol]: value.redirect };
++	}
++	if (depth > 0) for (let key of Object.keys(value)) value[key] = fromJsonEnvelope(value[key], depth - 1, global);
++	return value;
+ }
+ function unwrapSingleFetchResult(result, routeId) {
+ 	if ("redirect" in result) {
+@@ -351,4 +358,4 @@ function createDeferred() {
+ 	};
+ }
+ //#endregion
+-export { NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol, StreamTransfer, decodeViaTurboStream, getSingleFetchDataStrategyImpl, getTurboStreamSingleFetchDataStrategy, singleFetchUrl, stripIndexParam };
++export { JSON_TYPE_KEY, NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol, StreamTransfer, decodeViaTurboStream, getSingleFetchDataStrategyImpl, getTurboStreamSingleFetchDataStrategy, singleFetchUrl, stripIndexParam };
+diff --git a/dist/production/lib/hooks.js b/dist/production/lib/hooks.js
+index 53530d4909ce7df1529dbf52b65eeac5179e19d4..354c1933c06276edb0d453b9845db1304e354413 100644
+--- a/dist/production/lib/hooks.js
++++ b/dist/production/lib/hooks.js
+@@ -527,10 +527,11 @@ function useParams() {
+ *                         Set to `"path"` to make relative routing operate against path segments.
+ * @returns The resolved {@link Path} object with `pathname`, `search`, and `hash`
+ */
++// patched: the resolved-path inputs as a string, so links don't re-render when a router state change recreates the route context
++const RoutePathnamesContext = /* @__PURE__ */ React$1.createContext("[]");
+ function useResolvedPath(to, { relative } = {}) {
+-	let { matches } = React$1.useContext(RouteContext);
++	let routePathnamesJson = React$1.useContext(RoutePathnamesContext);
+ 	let { pathname: locationPathname } = useLocation();
+-	let routePathnamesJson = JSON.stringify(getResolveToMatches(matches));
+ 	return React$1.useMemo(() => resolveTo(to, JSON.parse(routePathnamesJson), locationPathname, relative === "path"), [
+ 		to,
+ 		routePathnamesJson,
+@@ -666,10 +667,10 @@ var RenderErrorBoundary = class extends React$1.Component {
+ 			const decoded = decodeRouteErrorResponseDigest(error.digest);
+ 			if (decoded) error = decoded;
+ 		}
+-		let result = error !== void 0 ? /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: this.props.routeContext }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: this.props.routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: this.props.routeContext.matches[this.props.routeContext.matches.length - 1]?.route.id }, /* @__PURE__ */ React$1.createElement(RouteErrorContext.Provider, {
++		let result = error !== void 0 ? /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: this.props.routeContext }, /* @__PURE__ */ React$1.createElement(RoutePathnamesContext.Provider, { value: JSON.stringify(getResolveToMatches(this.props.routeContext.matches)) }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: this.props.routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: this.props.routeContext.matches[this.props.routeContext.matches.length - 1]?.route.id }, /* @__PURE__ */ React$1.createElement(RouteErrorContext.Provider, {
+ 			value: error,
+ 			children: this.props.component
+-		})))) : this.props.children;
++		}))))) : this.props.children;
+ 		if (this.context) return /* @__PURE__ */ React$1.createElement(RSCErrorHandler, { error }, result);
+ 		return result;
+ 	}
+@@ -703,7 +704,7 @@ function RSCErrorHandler({ children, error }) {
+ function RenderedRoute({ routeContext, match, children }) {
+ 	let dataRouterContext = React$1.useContext(DataRouterContext);
+ 	if (dataRouterContext && dataRouterContext.static && dataRouterContext.staticContext && (match.route.errorElement || match.route.ErrorBoundary)) dataRouterContext.staticContext._deepestRenderedBoundaryId = match.route.id;
+-	return /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: routeContext }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: match.route.id }, children)));
++	return /* @__PURE__ */ React$1.createElement(RouteContext.Provider, { value: routeContext }, /* @__PURE__ */ React$1.createElement(RoutePathnamesContext.Provider, { value: JSON.stringify(getResolveToMatches(routeContext.matches)) }, /* @__PURE__ */ React$1.createElement(IsDataRouteContext.Provider, { value: routeContext.isDataRoute }, /* @__PURE__ */ React$1.createElement(RouteIdContext.Provider, { value: match.route.id }, children))));
+ }
+ function _renderMatches(matches, parentMatches = [], dataRouterOpts) {
+ 	let dataRouterState = dataRouterOpts?.state;
+diff --git a/dist/production/lib/router/matcher.js b/dist/production/lib/router/matcher.js
+index 865fabf95800603edec9f8ef546886fb049e7a57..bdbaee27652607050a25f4546780b1a4f0cf2bc9 100644
+--- a/dist/production/lib/router/matcher.js
++++ b/dist/production/lib/router/matcher.js
+@@ -8,11 +8,14 @@
+  *
+  * @license MIT
+  */
+-import { flattenAndRankRoutes, matchRoutesImpl } from "./utils.js";
++import { parsePath } from "./history.js";
++import { flattenAndRankRoutes, matchRoutesImpl, stripBasename } from "./utils.js";
+ //#region lib/router/matcher.ts
+ var V6RegExMatcher = class {
+ 	#routes = [];
+ 	#branches = [];
++	#branchesByFirstSegment = /* @__PURE__ */ new Map();
++	#dynamicFirstSegmentBranches = [];
+ 	#basename;
+ 	constructor(basename) {
+ 		this.#basename = basename;
+@@ -20,10 +23,31 @@ var V6RegExMatcher = class {
+ 	update(routes) {
+ 		this.#routes = routes;
+ 		this.#branches = flattenAndRankRoutes(routes);
++		// patched: index branches by their static first segment so a match only scans the branches that can match
++		let firstSegments = this.#branches.map(staticFirstSegment);
++		this.#dynamicFirstSegmentBranches = this.#branches.filter((_, i) => firstSegments[i] === null);
++		this.#branchesByFirstSegment = /* @__PURE__ */ new Map();
++		for (let segment of new Set(firstSegments)) if (segment !== null) this.#branchesByFirstSegment.set(segment, this.#branches.filter((_, i) => firstSegments[i] === null || firstSegments[i] === segment));
+ 	}
+ 	match(locationArg, allowPartial = false) {
+-		return matchRoutesImpl(this.#routes, locationArg, this.#basename, allowPartial, this.#branches);
++		return matchRoutesImpl(this.#routes, locationArg, this.#basename, allowPartial, this.#candidateBranches(locationArg));
++	}
++	#candidateBranches(locationArg) {
++		let pathname = stripBasename((typeof locationArg === "string" ? parsePath(locationArg) : locationArg).pathname || "/", this.#basename);
++		if (pathname == null) return this.#branches;
++		let firstSegment;
++		try {
++			firstSegment = decodeURIComponent(pathname.split("/", 2)[1] ?? "").toLowerCase();
++		} catch {
++			return this.#branches;
++		}
++		return this.#branchesByFirstSegment.get(firstSegment) ?? this.#dynamicFirstSegmentBranches;
+ 	}
+ };
++const STATIC_SEGMENT_RE = /^[A-Za-z0-9_.~-]+$/;
++function staticFirstSegment(branch) {
++	let segment = branch.path.split("/").find((s) => s !== "");
++	return segment !== void 0 && STATIC_SEGMENT_RE.test(segment) ? segment.toLowerCase() : null;
++}
+ //#endregion
+ export { V6RegExMatcher };
+diff --git a/dist/production/lib/router/router.js b/dist/production/lib/router/router.js
+index 96a9def58aa7936a638cb8b2bbc8befbb1022866..a13a417e876dcd042356474445b495f79e650d0e 100644
+--- a/dist/production/lib/router/router.js
++++ b/dist/production/lib/router/router.js
+@@ -2817,7 +2817,7 @@ function processLoaderData(state, matches, results, pendingActionResult, revalid
+ }
+ function mergeLoaderData(loaderData, newLoaderData, matches, errors) {
+ 	let mergedLoaderData = Object.entries(newLoaderData).filter(([, v]) => v !== ResetLoaderDataSymbol).reduce((merged, [k, v]) => {
+-		merged[k] = v;
++		merged[k] = loaderData.hasOwnProperty(k) ? replaceEqualDeep(loaderData[k], v) : v;
+ 		return merged;
+ 	}, {});
+ 	let preservedCount = 0;
+@@ -2831,6 +2831,30 @@ function mergeLoaderData(loaderData, newLoaderData, matches, errors) {
+ 	}
+ 	return Object.keys(newLoaderData).length === 0 && preservedCount === Object.keys(loaderData).length ? loaderData : mergedLoaderData;
+ }
++// patched: a revalidation returning equal data keeps the previous data's identity (per unchanged subtree), so the UI reading it doesn't re-render
++function replaceEqualDeep(prev, next) {
++	if (prev === next) return prev;
++	if (prev instanceof Date && next instanceof Date) return prev.getTime() === next.getTime() ? prev : next;
++	let prevIsArray = Array.isArray(prev);
++	if (prevIsArray !== Array.isArray(next)) return next;
++	if (!prevIsArray && !(isPlainObject(prev) && isPlainObject(next))) return next;
++	let nextKeys = prevIsArray ? null : Object.keys(next);
++	let length = prevIsArray ? next.length : nextKeys.length;
++	let equal = length === (prevIsArray ? prev.length : Object.keys(prev).length);
++	let result = prevIsArray ? new Array(length) : {};
++	for (let i = 0; i < length; i++) {
++		let key = prevIsArray ? i : nextKeys[i];
++		let hasPrev = prevIsArray ? i < prev.length : Object.prototype.hasOwnProperty.call(prev, key);
++		result[key] = hasPrev ? replaceEqualDeep(prev[key], next[key]) : next[key];
++		if (!hasPrev || result[key] !== prev[key]) equal = false;
++	}
++	return equal ? prev : result;
++}
++function isPlainObject(value) {
++	if (value === null || typeof value !== "object") return false;
++	let proto = Object.getPrototypeOf(value);
++	return proto === Object.prototype || proto === null;
++}
+ function getActionDataForCommit(pendingActionResult) {
+ 	if (!pendingActionResult) return {};
+ 	return isErrorResult(pendingActionResult[1]) ? { actionData: {} } : { actionData: { [pendingActionResult[0]]: pendingActionResult[1].data } };
+diff --git a/dist/production/lib/server-runtime/crypto.js b/dist/production/lib/server-runtime/crypto.js
+index ba03b7e99e0d126a06b41c3fa50273418a3d073e..9b64f19f9c2cf2e06dc65a4b20bfcd0e5d8b3c7c 100644
+--- a/dist/production/lib/server-runtime/crypto.js
++++ b/dist/production/lib/server-runtime/crypto.js
+@@ -10,7 +10,10 @@
+  */
+ //#region lib/server-runtime/crypto.ts
+ const encoder = /* @__PURE__ */ new TextEncoder();
++// patched: node:crypto HMAC is synchronous and ~10x faster than WebCrypto's importKey + sign/verify per cookie
++const nodeCrypto = typeof process !== "undefined" ? process.getBuiltinModule?.("node:crypto") : void 0;
+ const sign = async (value, secret) => {
++	if (nodeCrypto) return value + "." + nodeCrypto.createHmac("sha256", secret).update(value).digest("base64").replace(/=+$/, "");
+ 	let data = encoder.encode(value);
+ 	let key = await createKey(secret, ["sign"]);
+ 	let signature = await crypto.subtle.sign("HMAC", key, data);
+@@ -21,6 +24,13 @@ const unsign = async (cookie, secret) => {
+ 	let index = cookie.lastIndexOf(".");
+ 	let value = cookie.slice(0, index);
+ 	let hash = cookie.slice(index + 1);
++	if (nodeCrypto) try {
++		let signature = byteStringToUint8Array(atob(hash));
++		let expected = nodeCrypto.createHmac("sha256", secret).update(value).digest();
++		return signature.length === expected.length && nodeCrypto.timingSafeEqual(signature, expected) ? value : false;
++	} catch {
++		return false;
++	}
+ 	let data = encoder.encode(value);
+ 	let key = await createKey(secret, ["verify"]);
+ 	try {
+diff --git a/dist/production/lib/server-runtime/entry.js b/dist/production/lib/server-runtime/entry.js
+index 979f27086e6ce619702a137887e6eae85a07b059..ff2ef6b207f4ac24a74c29962d4b709d3ab4d434 100644
+--- a/dist/production/lib/server-runtime/entry.js
++++ b/dist/production/lib/server-runtime/entry.js
+@@ -9,7 +9,14 @@
+  * @license MIT
+  */
+ //#region lib/server-runtime/entry.ts
++// patched: memoized per build so the document render can reuse the server routes built from it
++const entryRouteModulesCache = /* @__PURE__ */ new WeakMap();
+ function createEntryRouteModules(manifest) {
++	let cached = entryRouteModulesCache.get(manifest);
++	if (!cached) entryRouteModulesCache.set(manifest, cached = createEntryRouteModulesUncached(manifest));
++	return cached;
++}
++function createEntryRouteModulesUncached(manifest) {
+ 	return Object.keys(manifest).reduce((memo, routeId) => {
+ 		let route = manifest[routeId];
+ 		if (route) memo[routeId] = route.module;
+diff --git a/dist/production/lib/server-runtime/single-fetch.js b/dist/production/lib/server-runtime/single-fetch.js
+index 87bf19e2b18307702e293369c5d0a86a39b1f0e0..2ea2c5b59809c87a1a3b97a0b22cc3e43a1c3abd 100644
+--- a/dist/production/lib/server-runtime/single-fetch.js
++++ b/dist/production/lib/server-runtime/single-fetch.js
+@@ -10,8 +10,7 @@
+  */
+ import { ErrorResponseImpl, isRouteErrorResponse, stripBasename } from "../router/utils.js";
+ import { isRedirectStatusCode, isResponse } from "../router/router.js";
+-import { encode } from "../../vendor/turbo-stream-v2/turbo-stream.js";
+-import { NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol } from "../dom/ssr/single-fetch.js";
++import { JSON_TYPE_KEY, NO_BODY_STATUS_CODES, SingleFetchRedirectSymbol } from "../dom/ssr/single-fetch.js";
+ import "./mode.js";
+ import { sanitizeError, sanitizeErrors } from "./errors.js";
+ import { getDocumentHeaders } from "./headers.js";
+@@ -138,7 +137,7 @@ function generateSingleFetchResponse(request, build, serverMode, { result, heade
+ 	});
+ 	resultHeaders.set("Content-Type", "text/x-script");
+ 	resultHeaders.delete("Content-Length");
+-	return new Response(encodeViaTurboStream(result, request.signal, build.entry.module.streamTimeout, serverMode), {
++	return new Response(encodeViaJson(result, serverMode), {
+ 		status: status || 200,
+ 		headers: resultHeaders
+ 	});
+@@ -165,51 +164,59 @@ function getSingleFetchRedirect(status, headers, basename) {
+ 		replace: headers.has("X-Remix-Replace")
+ 	};
+ }
+-function encodeViaTurboStream(data, requestSignal, streamTimeout, serverMode) {
+-	let controller = new AbortController();
+-	let timeoutId = setTimeout(() => {
+-		controller.abort(/* @__PURE__ */ new Error("Server Timeout"));
+-		cleanupCallbacks();
+-	}, typeof streamTimeout === "number" ? streamTimeout : 4950);
+-	let abortControllerOnRequestAbort = () => {
+-		controller.abort(requestSignal.reason);
+-		cleanupCallbacks();
++// patched: plain JSON instead of turbo-stream (loaders and actions return only JSON-safe data, no promises)
++// only the envelope (route maps, results, errors, redirects) is walked to keep undefined/errors/redirects intact
++const textEncoder = new TextEncoder();
++function encodeViaTurboStream(data, _requestSignal, _streamTimeout, serverMode) {
++	let bytes = textEncoder.encode(encodeViaJson(data, serverMode));
++	return new ReadableStream({ start(controller) {
++		controller.enqueue(bytes);
++		controller.close();
++	} });
++}
++function encodeViaJson(data, serverMode) {
++	if (serverMode === "development") warnAboutNonJsonValues(data, "");
++	return JSON.stringify(toJsonEnvelope(data, 2, serverMode));
++}
++function warnAboutNonJsonValues(value, path) {
++	if (value === null || typeof value !== "object") {
++		if (typeof value === "bigint" || typeof value === "function" || typeof value === "symbol" || typeof value === "number" && !Number.isFinite(value)) console.warn(`[react-router] ${path} (${String(value)}) can't be serialized to JSON`);
++		return;
++	}
++	if (value instanceof Error || value instanceof ErrorResponseImpl) return;
++	let proto = Object.getPrototypeOf(value);
++	if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
++		console.warn(`[react-router] ${path} is a ${value.constructor?.name ?? "class instance"}, it won't survive JSON serialization`);
++		return;
++	}
++	for (let key of Object.keys(value)) warnAboutNonJsonValues(value[key], `${path}.${key}`);
++}
++function toJsonEnvelope(value, depth, serverMode) {
++	if (value === void 0) return { [JSON_TYPE_KEY]: "Undefined" };
++	if (value instanceof Error) {
++		let { name, message, stack } = serverMode === "production" ? sanitizeError(value, serverMode) : value;
++		return {
++			[JSON_TYPE_KEY]: "SanitizedError",
++			name,
++			message,
++			stack
++		};
++	}
++	if (value instanceof ErrorResponseImpl) return {
++		[JSON_TYPE_KEY]: "ErrorResponse",
++		data: toJsonEnvelope(value.data, 0, serverMode),
++		status: value.status,
++		statusText: value.statusText
+ 	};
+-	requestSignal.addEventListener("abort", abortControllerOnRequestAbort);
+-	let cleanupCallbacks = () => {
+-		clearTimeout(timeoutId);
+-		requestSignal.removeEventListener("abort", abortControllerOnRequestAbort);
++	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
++	if (SingleFetchRedirectSymbol in value) return {
++		[JSON_TYPE_KEY]: "SingleFetchRedirect",
++		redirect: value[SingleFetchRedirectSymbol]
+ 	};
+-	return encode(data, {
+-		signal: controller.signal,
+-		onComplete: cleanupCallbacks,
+-		plugins: [(value) => {
+-			if (value instanceof Error) {
+-				let { name, message, stack } = serverMode === "production" ? sanitizeError(value, serverMode) : value;
+-				return [
+-					"SanitizedError",
+-					name,
+-					message,
+-					stack
+-				];
+-			}
+-			if (value instanceof ErrorResponseImpl) {
+-				let { data, status, statusText } = value;
+-				return [
+-					"ErrorResponse",
+-					data,
+-					status,
+-					statusText
+-				];
+-			}
+-			if (value && typeof value === "object" && SingleFetchRedirectSymbol in value) return ["SingleFetchRedirect", value[SingleFetchRedirectSymbol]];
+-		}],
+-		postPlugins: [(value) => {
+-			if (!value) return;
+-			if (typeof value !== "object") return;
+-			return ["SingleFetchClassInstance", Object.fromEntries(Object.entries(value))];
+-		}, () => ["SingleFetchFallback"]]
+-	});
++	if (depth === 0) return value;
++	let result = {};
++	for (let key of Object.keys(value)) result[key] = toJsonEnvelope(value[key], depth - 1, serverMode);
++	return result;
+ }
+ //#endregion
+ export { SERVER_NO_BODY_STATUS_CODES, encodeViaTurboStream, generateSingleFetchRedirectResponse, singleFetchAction, singleFetchLoaders };
+diff --git a/dist/production/lib/types/route-data.d.ts b/dist/production/lib/types/route-data.d.ts
+index aa9953fd326fcddd44c071ad627113f5d4c4590e..6a0b542087104a3618f2f0cfec9de5fb63cff7da 100644
+--- a/dist/production/lib/types/route-data.d.ts
++++ b/dist/production/lib/types/route-data.d.ts
+@@ -7,7 +7,8 @@ import { RouteModule } from "./route-module.js";
+ import { unstable_SerializesTo } from "./serializes-to.js";
+ 
+ //#region lib/types/route-data.d.ts
+-type Serialize<T> = T extends unstable_SerializesTo<infer To> ? To : T extends Serializable ? T : T extends ((...args: any[]) => unknown) ? undefined : T extends Promise<infer U> ? Promise<Serialize<U>> : T extends Map<infer K, infer V> ? Map<Serialize<K>, Serialize<V>> : T extends ReadonlyMap<infer K, infer V> ? ReadonlyMap<Serialize<K>, Serialize<V>> : T extends Set<infer U> ? Set<Serialize<U>> : T extends ReadonlySet<infer U> ? ReadonlySet<Serialize<U>> : T extends [] ? [] : T extends readonly [infer F, ...infer R] ? [Serialize<F>, ...Serialize<R>] : T extends Array<infer U> ? Array<Serialize<U>> : T extends readonly unknown[] ? readonly Serialize<T[number]>[] : T extends Record<any, any> ? { [K in keyof T]: Serialize<T[K]> } : undefined;
++// patched: loader data goes over plain JSON (see server-runtime/single-fetch.js), so types follow JSON.stringify
++type Serialize<T> = T extends unstable_SerializesTo<infer To> ? To : T extends string | number | boolean | null | undefined ? T : T extends Date | URL ? string : T extends ((...args: any[]) => unknown) | symbol ? undefined : T extends Promise<unknown> | bigint ? never : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | RegExp | Error ? Record<string, never> : T extends [] ? [] : T extends readonly [infer F, ...infer R] ? [Serialize<F>, ...Serialize<R>] : T extends Array<infer U> ? Array<Serialize<U>> : T extends readonly unknown[] ? readonly Serialize<T[number]>[] : T extends Record<any, any> ? { [K in keyof T]: Serialize<T[K]> } : undefined;
+ type VoidToUndefined<T> = Equal<T, void> extends true ? undefined : T;
+ type DataFrom<T> = IsAny<T> extends true ? undefined : T extends Func ? VoidToUndefined<Awaited<ReturnType<T>>> : undefined;
+ type ClientData<T> = T extends Response ? never : T extends DataWithResponseInit<infer U> ? U : T;
+diff --git a/dist/production/vendor/turbo-stream-v2/flatten.js b/dist/production/vendor/turbo-stream-v2/flatten.js
+index 3466186decd73dac3b1705b213594bb63548293d..56b8c9bdb147cc277e3363af93ca159cf5dd4088 100644
+--- a/dist/production/vendor/turbo-stream-v2/flatten.js
++++ b/dist/production/vendor/turbo-stream-v2/flatten.js
+@@ -46,15 +46,16 @@ async function stringify(stack) {
+ 		stack.push([value, index]);
+ 		return index;
+ 	};
++	// patched: built once instead of once per value
++	const partsForObj = (obj) => Object.keys(obj).map((k) => `"_${flattenValue(k)}":${flattenValue(obj[k])}`).join(",");
+ 	let i = 0;
+ 	while (stack.length > 0) {
+-		const now = getNow();
+-		if (++i % 6e3 === 0 && now - lastYieldTime >= TIME_LIMIT_MS) {
++		// patched: reads the clock only when a yield is due instead of once per value
++		if (++i % 6e3 === 0 && getNow() - lastYieldTime >= TIME_LIMIT_MS) {
+ 			await yieldToMain();
+ 			lastYieldTime = getNow();
+ 		}
+ 		const [input, index] = stack.pop();
+-		const partsForObj = (obj) => Object.keys(obj).map((k) => `"_${flattenValue(k)}":${flattenValue(obj[k])}`).join(",");
+ 		let error = null;
+ 		switch (typeof input) {
+ 			case "boolean":

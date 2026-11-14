@@ -2,7 +2,6 @@ import { differenceInMinutes } from "date-fns";
 import * as R from "remeda";
 import { AVAILABILITY } from "~/features/availability/availability-constants";
 import type { TimeRange } from "~/features/availability/availability-types";
-import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import {
 	databaseTimestampToDate,
 	dateToDatabaseTimestamp,
@@ -84,7 +83,7 @@ export const serializeLutiDiv = (div: LutiDiv): number => {
 	return Number(div);
 };
 
-/** Starts a request can still be made for: the post's start, the half hours inside its flexibility and its end, past ones dropped. No flexibility left offers `now` ("looking now"). */
+/** Starts a request can still be made for: the post's start, the half hours inside its flexibility and its end, past ones dropped. Once all have passed a flexible post keeps offering all of them, one with no flexibility offers `now` ("looking now"). */
 export function requestStarts({
 	post,
 	now,
@@ -92,16 +91,17 @@ export function requestStarts({
 	post: Pick<ScrimPost, "startsAt" | "rangeEndsAt">;
 	now: number;
 }): Array<number> {
-	const starts = post.rangeEndsAt
-		? generateTimeOptions(
-				databaseTimestampToDate(post.startsAt),
-				databaseTimestampToDate(post.rangeEndsAt),
-			).map((timestamp) => dateToDatabaseTimestamp(new Date(timestamp)))
-		: [post.startsAt];
+	if (!post.rangeEndsAt) {
+		return post.startsAt >= now ? [post.startsAt] : [now];
+	}
 
+	const starts = generateTimeOptions(
+		databaseTimestampToDate(post.startsAt),
+		databaseTimestampToDate(post.rangeEndsAt),
+	).map((timestamp) => dateToDatabaseTimestamp(new Date(timestamp)));
 	const upcoming = starts.filter((startsAt) => startsAt >= now);
 
-	return upcoming.length > 0 ? upcoming : [now];
+	return upcoming.length > 0 ? upcoming : starts;
 }
 
 /** The whole span the scrim could take up: earliest start still on offer to the end of a scrim from the latest one. */
@@ -120,12 +120,13 @@ export function postSpan({
 	};
 }
 
+/** @internal */
 export function generateTimeOptions(startDate: Date, endDate: Date): number[] {
 	const timestamps = new Set<number>();
 
 	const clearSubMinutes = (date: Date) => {
 		const cleared = new Date(date);
-		cleared.setSeconds(0, 0);
+		cleared.setUTCSeconds(0, 0);
 		return cleared;
 	};
 
@@ -133,33 +134,20 @@ export function generateTimeOptions(startDate: Date, endDate: Date): number[] {
 	timestamps.add(clearSubMinutes(endDate).getTime());
 
 	const currentDate = clearSubMinutes(startDate);
-	const minutes = currentDate.getMinutes();
+	const minutes = currentDate.getUTCMinutes();
 
 	if (minutes > 0 && minutes < 30) {
-		currentDate.setMinutes(30, 0, 0);
+		currentDate.setUTCMinutes(30, 0, 0);
 	} else if (minutes > 30) {
-		currentDate.setHours(currentDate.getHours() + 1, 0, 0, 0);
+		currentDate.setUTCHours(currentDate.getUTCHours() + 1, 0, 0, 0);
 	}
 
 	while (currentDate <= endDate) {
 		timestamps.add(currentDate.getTime());
-		currentDate.setMinutes(currentDate.getMinutes() + 30);
+		currentDate.setUTCMinutes(currentDate.getUTCMinutes() + 30);
 	}
 
 	return Array.from(timestamps).sort((a, b) => a - b);
-}
-
-export function parseMapPoolInput(input: string): MapPool | null {
-	const serialized = extractSerializedPool(input);
-	if (!serialized) return null;
-
-	try {
-		const pool = new MapPool(serialized);
-		if (pool.isEmpty()) return null;
-		return pool;
-	} catch {
-		return null;
-	}
 }
 
 export function formatFlexTimeDisplay(
@@ -184,25 +172,4 @@ export function formatFlexTimeDisplay(
 	}
 
 	return null;
-}
-
-function extractSerializedPool(input: string): string | null {
-	const trimmed = input.trim();
-	if (!trimmed) return null;
-
-	if (trimmed.includes("://")) {
-		try {
-			const url = new URL(trimmed);
-			// biome-ignore lint/plugin: URL pasted by the user, not one this app routed to
-			return url.searchParams.get("pool");
-		} catch {
-			return null;
-		}
-	}
-
-	if (trimmed.includes("pool=")) {
-		return new URLSearchParams(trimmed).get("pool");
-	}
-
-	return trimmed;
 }

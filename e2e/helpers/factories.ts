@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { NZAP_TEST_DISCORD_ID } from "~/db/seed/constants";
 import { ADMIN_DISCORD_ID } from "~/features/admin/admin-constants";
+import { postRetryingTransientFailures } from "./request";
 
 export type Factories = Awaited<ReturnType<typeof loadFactories>>;
 
@@ -56,7 +57,9 @@ export async function loadFactories(parallelIndex: number) {
 		ImageFactory: await import("~/db/seed/factories/ImageFactory"),
 		LFGPostFactory: await import("~/db/seed/factories/LFGPostFactory"),
 		LiveStreamFactory: await import("~/db/seed/factories/LiveStreamFactory"),
+		LobbyFactory: await import("~/db/seed/factories/LobbyFactory"),
 		LogInLinkFactory: await import("~/db/seed/factories/LogInLinkFactory"),
+		MapResultFactory: await import("~/db/seed/factories/MapResultFactory"),
 		NotificationFactory: await import(
 			"~/db/seed/factories/NotificationFactory"
 		),
@@ -141,11 +144,13 @@ export async function flushIfDirty(
 	);
 	if (!isDatabaseDirty() && !resetDevOverrides) return;
 
-	// deliberately not retryPost: that helper calls this one, and would recurse
-	const response = await page.request.post("/refresh-caches", {
-		timeout: 7_500,
-		form: { resetDevOverrides: String(resetDevOverrides) },
-	});
+	const response = await postRetryingTransientFailures(
+		page,
+		"/refresh-caches",
+		{
+			form: { resetDevOverrides: String(resetDevOverrides) },
+		},
+	);
 	if (!response.ok()) {
 		throw new Error(`Cache refresh failed with status ${response.status()}`);
 	}

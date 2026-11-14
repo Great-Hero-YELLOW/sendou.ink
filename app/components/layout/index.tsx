@@ -1,5 +1,4 @@
 import clsx from "clsx";
-import { isToday, isTomorrow } from "date-fns";
 import {
 	Calendar,
 	ChevronRight,
@@ -10,17 +9,15 @@ import {
 	Users,
 } from "lucide-react";
 import * as React from "react";
-import { ViewTransition } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useFetcher, useLocation, useMatches } from "react-router";
-import { Config } from "~/config";
 import { useUser } from "~/features/auth/core/user";
 import { ScheduleNudge } from "~/features/availability/components/ScheduleNudge";
 import { useChatContext } from "~/features/chat/ChatProvider";
 import { FriendMenu } from "~/features/friends/components/FriendMenu";
 import { useGlobalStatus } from "~/features/global-status/GlobalStatusProvider";
 import { useLayoutData } from "~/features/layout/LayoutDataProvider";
-import { useDateTimeFormat } from "~/hooks/intl/useDateTimeFormat";
+import { useRelativeDayFormat } from "~/hooks/intl/useRelativeDayFormat";
 import { useClosePopoversOnNavigation } from "~/hooks/useClosePopoversOnNavigation";
 import { useHydrated } from "~/hooks/useHydrated";
 import { MOBILE_LAYOUT_QUERY, useLayoutSize } from "~/hooks/useLayoutSize";
@@ -37,18 +34,20 @@ import {
 	FRIENDS_PAGE,
 	navIconUrl,
 	SETTINGS_PAGE,
+	smallImageUrl,
 	teamPage,
 	userPage,
 } from "~/utils/urls";
 import { Avatar } from "../Avatar";
 import { SendouButton, type SendouButtonProps } from "../elements/Button";
-import { SendouModal } from "../elements/Dialog";
 import { isOwnToggle } from "../elements/Popover";
-import { FuseZone } from "../fuse/Fuse";
+import { Flipper } from "../Flipper";
+import { FuseZone, useAdsShown } from "../fuse/Fuse";
 import { Image } from "../Image";
+import { ListLink } from "../ListItem";
 import { MobileNav } from "../MobileNav";
 import { NotificationDot } from "../NotificationDot";
-import { ListLink, SideNav, SideNavFooter, SideNavHeader } from "../SideNav";
+import { SideNav, SideNavFooter, SideNavHeader } from "../SideNav";
 import { StreamListItems } from "../StreamListItems";
 import { ChatSidebar } from "./ChatSidebar";
 import { Footer } from "./Footer";
@@ -71,42 +70,6 @@ const AuthErrorDialog = React.lazy(() =>
 
 /** Loading-bar track inside the header that NProgress mounts into; styled in common.css. */
 export const NPROGRESS_ANCHOR_ID = "nprogress-anchor";
-
-function useRelativeDayFormat() {
-	const { i18n } = useTranslation();
-	const { formatter: timeFormatter } = useDateTimeFormat({
-		hour: "numeric",
-		minute: "numeric",
-	});
-	const { formatter: dateTimeFormatter } = useDateTimeFormat({
-		month: "numeric",
-		day: "numeric",
-		hour: "numeric",
-		minute: "numeric",
-	});
-
-	const formatRelativeDay = (daysFromToday: number) => {
-		const rtf = new Intl.RelativeTimeFormat(i18n.language, { numeric: "auto" });
-		const str = rtf.format(daysFromToday, "day");
-		return str.charAt(0).toUpperCase() + str.slice(1);
-	};
-
-	const formatRelativeDate = (timestamp: number) => {
-		const date = new Date(timestamp * 1000);
-		const timeStr = timeFormatter.format(date);
-
-		if (isToday(date)) {
-			return `${formatRelativeDay(0)}, ${timeStr}`;
-		}
-		if (isTomorrow(date)) {
-			return `${formatRelativeDay(1)}, ${timeStr}`;
-		}
-
-		return dateTimeFormatter.format(date);
-	};
-
-	return { formatRelativeDate };
-}
 
 function useBreadcrumbData() {
 	const { t } = useTranslation();
@@ -142,20 +105,6 @@ function useSideNavCollapsed(initialCollapsed: boolean) {
 	};
 
 	return [collapsed, setCollapsedAndPersist] as const;
-}
-
-/** Open state of a tablet-layout-only modal; leaving that layout or navigating closes it. */
-function useTabletModal(isTabletLayout: boolean) {
-	const location = useLocation();
-	const [openedOnPathname, setOpenedOnPathname] = React.useState<string | null>(
-		null,
-	);
-
-	const isOpen = isTabletLayout && openedOnPathname === location.pathname;
-	const setIsOpen = (open: boolean) =>
-		setOpenedOnPathname(open ? location.pathname : null);
-
-	return [isOpen, setIsOpen] as const;
 }
 
 /** Hides the mobile header while scrolling down and brings it back on scrolling up; always `0` outside the mobile layout. */
@@ -252,31 +201,17 @@ export function Layout({
 	children: React.ReactNode;
 	data?: RootLoaderData;
 }) {
-	const chatContext = useChatContext();
 	const [sideNavCollapsed, setSideNavCollapsed] = useSideNavCollapsed(
 		data?.sidenavCollapsed ?? false,
 	);
-	const layoutSize = useLayoutSize();
-	const isTabletLayout = layoutSize === "tablet";
 	const sideNavId = React.useId();
 	const sideNavRef = React.useRef<HTMLElement>(null);
 	const [sideNavDrawerOpen, setSideNavDrawerOpen] = React.useState(false);
 	useClosePopoversOnNavigation(sideNavRef);
 	useScrollLock(sideNavDrawerOpen);
 	useVisualViewport();
-	const [chatSidebarModalOpen, setChatSidebarModalOpen] =
-		useTabletModal(isTabletLayout);
-	const chatSidebarOpen = chatContext?.chatOpen ?? false;
-	const setChatSidebarOpen = chatContext?.setChatOpen ?? (() => {});
-
-	const setChatSidebarModalOpenAndSync = (open: boolean) => {
-		setChatSidebarModalOpen(open);
-		setChatSidebarOpen(open);
-	};
 
 	const { t } = useTranslation(["front", "common", "friends"]);
-	const { formatRelativeDate } = useRelativeDayFormat();
-	const isHydrated = useHydrated();
 	const location = useLocation();
 	const [authError] = useSearchParam(authErrorSearchParams, "authError");
 	const headerRef = React.useRef<HTMLElement>(null);
@@ -284,7 +219,6 @@ export function Layout({
 	useRevealNavOnStatusChange(revealNav);
 
 	const user = useUser();
-	const { showUnseenDot } = useNotifications();
 	const { sidebar: sidebarData } = useLayoutData();
 	const events = sidebarData?.events ?? [];
 	const friends = sidebarData?.friends ?? [];
@@ -297,9 +231,7 @@ export function Layout({
 	const isFrontPage = location.pathname === "/";
 
 	const showLeaderboard =
-		Config.fuseEnabled &&
-		!data?.user?.roles.includes("MINOR_SUPPORT") &&
-		!location.pathname.includes("plans");
+		useAdsShown(data?.user) && !location.pathname.includes("plans");
 
 	const sideNavFooterContent = (
 		<SideNavFooter>
@@ -313,7 +245,11 @@ export function Layout({
 				icon={<Calendar />}
 				action={
 					user ? (
-						<Link to={EVENTS_PAGE} className={styles.viewAllLink}>
+						<Link
+							to={EVENTS_PAGE}
+							prefetch="intent"
+							className={styles.viewAllLink}
+						>
 							{t("common:actions.viewAll")}
 							<ChevronRight size={14} />
 						</Link>
@@ -330,13 +266,7 @@ export function Layout({
 						to={event.url}
 						imageUrl={event.logoUrl ?? undefined}
 						user={event.user ?? undefined}
-						subtitle={
-							isHydrated ? (
-								formatRelativeDate(event.startsAt)
-							) : (
-								<span className="invisible">Placeholder</span>
-							)
-						}
+						subtitle={<EventStartTime startsAt={event.startsAt} />}
 					>
 						{event.scrimStatus === "booked"
 							? t("front:sideNav.scrimVs", { opponent: event.name })
@@ -367,7 +297,11 @@ export function Layout({
 									{unseenFriendRequests}
 								</span>
 							) : null}
-							<Link to={FRIENDS_PAGE} className={styles.viewAllLink}>
+							<Link
+								to={FRIENDS_PAGE}
+								prefetch="intent"
+								className={styles.viewAllLink}
+							>
 								{t("common:actions.viewAll")}
 								<ChevronRight size={14} />
 							</Link>
@@ -436,26 +370,20 @@ export function Layout({
 						transform: `translateY(${navOffset}px)`,
 					}}
 				>
-					<Link to="/" className={clsx(styles.siteLogo, styles.mobileLogo)}>
+					<Link
+						to="/"
+						prefetch="intent"
+						className={clsx(styles.siteLogo, styles.mobileLogo)}
+					>
 						<SiteLogoContent />
 					</Link>
 					<SideNavCollapseButton
 						popoverTarget={sideNavId}
 						className={styles.sideNavModalTrigger}
-						showNotificationDot={!sideNavDrawerOpen && showUnseenDot}
+						showNotificationDotIfUnseen={!sideNavDrawerOpen}
 						badgeCount={!sideNavDrawerOpen ? unseenFriendRequests : 0}
 						testId="sidenav-modal-trigger"
 					/>
-					{chatSidebarModalOpen ? (
-						<SendouModal
-							className={styles.chatSidebarModal}
-							isDismissable
-							aria-label={t("common:chat.sidebar.title")}
-							onClose={() => setChatSidebarModalOpenAndSync(false)}
-						>
-							<ChatSidebar />
-						</SendouModal>
-					) : null}
 					<form
 						method="post"
 						action={SIDENAV_ACTION}
@@ -478,7 +406,7 @@ export function Layout({
 						<SideNavCollapseButton
 							type="submit"
 							className={styles.sideNavCollapseButton}
-							showNotificationDot={sideNavCollapsed && showUnseenDot}
+							showNotificationDotIfUnseen={sideNavCollapsed}
 							badgeCount={sideNavCollapsed ? unseenFriendRequests : 0}
 							testId="sidenav-collapse-button"
 						/>
@@ -489,17 +417,6 @@ export function Layout({
 							data && !data?.user?.roles.includes("MINOR_SUPPORT"),
 						)}
 						isLoggedIn={Boolean(data?.user)}
-						onChatToggle={
-							data?.user && !chatSidebarOpen
-								? () => setChatSidebarOpen(true)
-								: undefined
-						}
-						onChatModalToggle={
-							data?.user
-								? () => setChatSidebarModalOpenAndSync(!chatSidebarModalOpen)
-								: undefined
-						}
-						chatUnreadCount={chatContext?.totalUnreadCount}
 					/>
 					<div id={NPROGRESS_ANCHOR_ID} aria-hidden />
 				</header>
@@ -513,16 +430,7 @@ export function Layout({
 				{children}
 				<Footer />
 			</div>
-			{chatSidebarOpen && layoutSize === "desktop" ? (
-				<div
-					className={clsx(
-						styles.chatSidebar,
-						showLeaderboard && styles.sidebarFuseSpace,
-					)}
-				>
-					<ChatSidebar onClose={() => setChatSidebarOpen(false)} />
-				</div>
-			) : null}
+			<DesktopChatSidebar showLeaderboard={showLeaderboard} />
 			{typeof authError === "string" ? (
 				<React.Suspense>
 					<AuthErrorDialog />
@@ -540,20 +448,15 @@ function SiteTitle() {
 	const hasBreadcrumbs = breadcrumbs.length > 0;
 
 	return (
-		<div className={styles.siteTitle}>
-			{/* the key remounts the logo when it changes place so it animates as a
-			    shared element; an update animation would instead run on every
-			    navigation since React can't tell the logo didn't move */}
-			<ViewTransition
-				key={isFrontPage ? "front" : "other"}
-				name="site-logo"
-				share="auto"
-				default="none"
+		<Flipper flipKey={isFrontPage} className={styles.siteTitle}>
+			<Link
+				to="/"
+				prefetch="intent"
+				className={styles.siteLogo}
+				data-flip-id="site-logo"
 			>
-				<Link to="/" className={styles.siteLogo}>
-					<SiteLogoContent />
-				</Link>
-			</ViewTransition>
+				<SiteLogoContent />
+			</Link>
 
 			{hasBreadcrumbs ? (
 				<>
@@ -566,7 +469,11 @@ function SiteTitle() {
 								{isCurrentPage ? (
 									<PageIcon crumb={crumb} />
 								) : (
-									<Link to={crumb.href} className={styles.breadcrumbLink}>
+									<Link
+										to={crumb.href}
+										prefetch="intent"
+										className={styles.breadcrumbLink}
+									>
 										<PageIcon crumb={crumb} />
 									</Link>
 								)}
@@ -575,11 +482,13 @@ function SiteTitle() {
 					})}
 
 					{currentPageText ? (
-						<span className={styles.pageName}>{currentPageText}</span>
+						<span className={clsx(styles.pageName, "truncate")}>
+							{currentPageText}
+						</span>
 					) : null}
 				</>
 			) : null}
-		</div>
+		</Flipper>
 	);
 }
 
@@ -592,19 +501,51 @@ function SiteLogoContent() {
 	);
 }
 
+// own component so that hydration re-renders just the time instead of the whole layout
+function EventStartTime({ startsAt }: { startsAt: number }) {
+	const isHydrated = useHydrated();
+	const { formatRelativeDate } = useRelativeDayFormat();
+
+	if (!isHydrated) {
+		return <span className="invisible">Placeholder</span>;
+	}
+
+	return formatRelativeDate(startsAt);
+}
+
+function DesktopChatSidebar({ showLeaderboard }: { showLeaderboard: boolean }) {
+	const chatContext = useChatContext();
+	const layoutSize = useLayoutSize();
+
+	if (!chatContext?.chatOpen || layoutSize !== "desktop") return null;
+
+	return (
+		<div
+			className={clsx(
+				styles.chatSidebar,
+				showLeaderboard && styles.sidebarFuseSpace,
+			)}
+		>
+			<ChatSidebar onClose={() => chatContext.setChatOpen(false)} />
+		</div>
+	);
+}
+
 function SideNavCollapseButton({
 	className,
-	showNotificationDot,
+	showNotificationDotIfUnseen,
 	badgeCount,
 	testId,
 	...buttonProps
 }: {
 	className?: string;
-	showNotificationDot?: boolean;
+	showNotificationDotIfUnseen: boolean;
 	badgeCount?: number;
 	testId?: string;
 } & Pick<SendouButtonProps, "type" | "popoverTarget">) {
 	const { t } = useTranslation(["friends"]);
+	const { showUnseenDot } = useNotifications();
+	const showNotificationDot = showNotificationDotIfUnseen && showUnseenDot;
 
 	return (
 		<div className={styles.sideNavCollapseButtonContainer} data-testid={testId}>
@@ -641,8 +582,6 @@ function PageIcon({ crumb }: { crumb: Breadcrumb }) {
 
 	const lastPathSegment = crumb.imgPath.split("/").pop() ?? "";
 	const isExternal = lastPathSegment.includes(".");
-	const iconClass = clsx(styles.pageIcon, "rounded");
-
 	// an <img> can finish loading (and fail) before React hydrates and attaches onError, so that
 	// error is missed — re-check on mount and fall back manually so SSR'd icons still heal
 	const checkAlreadyErrored = (img: HTMLImageElement | null) => {
@@ -659,9 +598,9 @@ function PageIcon({ crumb }: { crumb: Breadcrumb }) {
 			{isExternal ? (
 				<img
 					ref={checkAlreadyErrored}
-					src={identiconSrc ?? crumb.imgPath}
+					src={identiconSrc ?? smallImageUrl(crumb.imgPath)}
 					alt=""
-					className={iconClass}
+					className={clsx(styles.pageIcon, "rounded")}
 					width={28}
 					height={28}
 					onError={() => setIsErrored(true)}
@@ -670,7 +609,7 @@ function PageIcon({ crumb }: { crumb: Breadcrumb }) {
 				<Image
 					path={crumb.imgPath}
 					alt=""
-					className={iconClass}
+					className={styles.pageIcon}
 					width={20}
 					height={20}
 				/>
@@ -688,25 +627,31 @@ function SideNavUserPanel() {
 	if (user) {
 		return (
 			<>
-				<Link to={userPage(user)} className={styles.sideNavFooterUser}>
+				<Link
+					to={userPage(user)}
+					prefetch="intent"
+					className={styles.sideNavFooterUser}
+				>
 					<Avatar user={user} size="xs" />
-					<span className={styles.sideNavFooterUsername}>{user.username}</span>
+					<span className="truncate">{user.username}</span>
 				</Link>
 				<div className={styles.sideNavFooterActions}>
 					{user.team ? (
 						<Link
 							to={teamPage(user.team.customUrl)}
+							prefetch="intent"
 							className={styles.sideNavFooterButton}
 							aria-label={t("header.myTeam")}
 							title={t("header.myTeam")}
 						>
 							{user.team.avatarUrl ? (
 								<img
-									src={user.team.avatarUrl}
+									src={smallImageUrl(user.team.avatarUrl)}
 									alt=""
 									className={styles.sideNavFooterTeamAvatar}
 									width={22}
 									height={22}
+									loading="lazy"
 								/>
 							) : (
 								<Image path={navIconUrl("t")} alt="" width={22} height={22} />
@@ -729,7 +674,11 @@ function SideNavUserPanel() {
 							triggerClassName={styles.sideNavFooterButton}
 						/>
 					</div>
-					<Link to={SETTINGS_PAGE} className={styles.sideNavFooterButton}>
+					<Link
+						to={SETTINGS_PAGE}
+						prefetch="intent"
+						className={styles.sideNavFooterButton}
+					>
 						<Settings />
 					</Link>
 				</div>
@@ -745,7 +694,11 @@ function SideNavUserPanel() {
 				</SendouButton>
 			</LogInButtonContainer>
 			<div className={styles.sideNavFooterActions}>
-				<Link to={SETTINGS_PAGE} className={styles.sideNavFooterButton}>
+				<Link
+					to={SETTINGS_PAGE}
+					prefetch="intent"
+					className={styles.sideNavFooterButton}
+				>
 					<Settings />
 				</Link>
 			</div>

@@ -125,6 +125,42 @@ export async function markAsSeenByType({
 	return R.unique(updated.map((row) => row.userId));
 }
 
+export async function findUserIdsWithUnseenByType({
+	userIds,
+	type,
+	meta,
+}: {
+	userIds: number[];
+	type: Notification["type"];
+	meta: Record<string, number | string>;
+}): Promise<number[]> {
+	if (userIds.length === 0) return [];
+
+	let query = db
+		.selectFrom("NotificationUser")
+		.innerJoin(
+			"Notification",
+			"Notification.id",
+			"NotificationUser.notificationId",
+		)
+		.select("NotificationUser.userId")
+		.where("NotificationUser.seen", "=", 0)
+		.where("NotificationUser.userId", "in", userIds)
+		.where("Notification.type", "=", type);
+
+	for (const [key, value] of Object.entries(meta)) {
+		query = query.where(
+			sql`json_extract("Notification"."meta", ${`$.${key}`})`,
+			"=",
+			value,
+		);
+	}
+
+	const rows = await query.execute();
+
+	return R.unique(rows.map((row) => row.userId));
+}
+
 /** Marks the actor's notifications as seen. Returns `[actorId]` if any row changed, else `[]`, shaped for `ChatSystemMessage.notifyNotificationsChanged`. */
 export async function markOwnAsSeen(notificationIds: number[]) {
 	const updated = await db
@@ -150,25 +186,43 @@ export function deleteOld() {
 		.executeTakeFirst();
 }
 
+/** Saves the actor's push subscription, keeping only their {@link NOTIFICATIONS.MAX_PUSH_SUBSCRIPTIONS_PER_USER} most recent ones. */
 export function upsertOwnSubscription(subscription: NotificationSubscription) {
-	return db
-		.insertInto("NotificationUserSubscription")
-		.values({
-			userId: actorId(),
-			subscription: JSON.stringify(subscription),
-		})
-		.onConflict((oc) =>
-			// an endpoint identifies one browser; a resubscribe or another user
-			// logging in on the same browser takes the row over instead of
-			// duplicating deliveries to it
-			oc
-				.expression(sql`json_extract("subscription", '$.endpoint')`)
-				.doUpdateSet({
-					userId: actorId(),
-					subscription: JSON.stringify(subscription),
-				}),
-		)
-		.execute();
+	const userId = actorId();
+
+	return db.transaction().execute(async (trx) => {
+		// an endpoint identifies one browser; a resubscribe or another user
+		// logging in on the same browser takes the row over instead of
+		// duplicating deliveries to it
+		await trx
+			.deleteFrom("NotificationUserSubscription")
+			.where(
+				sql`json_extract("subscription", '$.endpoint')`,
+				"=",
+				subscription.endpoint,
+			)
+			.execute();
+
+		await trx
+			.insertInto("NotificationUserSubscription")
+			.values({ userId, subscription: JSON.stringify(subscription) })
+			.execute();
+
+		await trx
+			.deleteFrom("NotificationUserSubscription")
+			.where("userId", "=", userId)
+			.where(
+				"id",
+				"not in",
+				trx
+					.selectFrom("NotificationUserSubscription")
+					.select("id")
+					.where("userId", "=", userId)
+					.orderBy("id", "desc")
+					.limit(NOTIFICATIONS.MAX_PUSH_SUBSCRIPTIONS_PER_USER),
+			)
+			.execute();
+	});
 }
 
 /** Push subscriptions of the notification's recipients who have not seen it yet, so the push sender skips users who addressed it during the grace period. */
@@ -186,7 +240,7 @@ export function findUnseenSubscriptionsByNotificationId(
 		.select([
 			"NotificationUserSubscription.id",
 			"NotificationUserSubscription.subscription",
-			"User.discordId",
+			"NotificationUser.userId",
 			"User.customUrl",
 		])
 		.where("NotificationUser.notificationId", "=", notificationId)

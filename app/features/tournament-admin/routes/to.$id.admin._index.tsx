@@ -26,6 +26,7 @@ import {
 	type SortState,
 } from "~/components/SortableTableHeader";
 import { Table } from "~/components/Table";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
 import { DroppedOutPopover } from "~/features/tournament/components/DroppedOutPopover";
 import { useTournament } from "~/features/tournament/tournament-context";
 import * as CheckIn from "~/features/tournament-bracket/core/CheckIn";
@@ -34,6 +35,7 @@ import type {
 	Tournament,
 } from "~/features/tournament-bracket/core/Tournament";
 import type { TournamentTeamFull } from "~/features/tournament-bracket/core/Tournament.server";
+import { tournamentChannel } from "~/features/tournament-bracket/tournament-bracket-utils";
 import { addSubForUserFormSchema } from "~/features/tournament-lfg/tournament-lfg-schemas";
 import { SendouForm } from "~/form/SendouForm";
 import { useActionSubmit } from "~/hooks/useActionSubmit";
@@ -58,18 +60,27 @@ type SortKey = "name" | "checkIn";
 
 export default function TournamentAdminTeamsPage() {
 	const tournament = useTournament();
-	const { teams } = useLoaderData<TournamentAdminTeamsLoaderData>();
+	const { teams, memberDiscordIds } =
+		useLoaderData<TournamentAdminTeamsLoaderData>();
 
 	const [search, setSearch] = React.useState("");
 	const [sort, setSort] = React.useState<SortState<SortKey>>(null);
 	const [exportOpen, setExportOpen] = React.useState(false);
+
+	// check-ins and registrations, after the start the room fills with bracket changes
+	useTopicRevalidation(
+		tournamentChannel(tournament.ctx.id),
+		!tournament.hasStarted,
+	);
 
 	const maxRosterSize = Math.max(
 		1,
 		...teams.map((team) => team.members.length),
 	);
 
-	const filteredTeams = teams.filter((team) => teamMatchesQuery(team, search));
+	const filteredTeams = teams.filter((team) =>
+		teamMatchesQuery({ team, search, memberDiscordIds }),
+	);
 	const sortedTeams = sortTeams(filteredTeams, sort);
 
 	return (
@@ -101,6 +112,7 @@ export default function TournamentAdminTeamsPage() {
 					onChange={(e) => setSearch(e.target.value)}
 					aria-label="Search teams"
 					placeholder="Search teams"
+					type="search"
 					icon={<Search aria-hidden />}
 				/>
 			</div>
@@ -154,7 +166,11 @@ export default function TournamentAdminTeamsPage() {
 			</Table>
 
 			{exportOpen ? (
-				<ExportDialog teams={teams} close={() => setExportOpen(false)} />
+				<ExportDialog
+					teams={teams}
+					memberDiscordIds={memberDiscordIds}
+					close={() => setExportOpen(false)}
+				/>
 			) : null}
 		</div>
 	);
@@ -221,7 +237,7 @@ function TeamRow({
 							tournamentId: tournament.ctx.id,
 							tournamentTeamId: team.id,
 						})}
-						className={styles.teamName}
+						className={clsx(styles.teamName, "truncate")}
 						data-testid="team-name"
 					>
 						{team.name}
@@ -243,7 +259,7 @@ function TeamRow({
 					<td key={`player-${i}`}>
 						{member ? (
 							<Link
-								to={userPage(member)}
+								to={userPage({ ...member, id: member.userId })}
 								className={clsx("stack horizontal xxs items-center", {
 									"font-bold": member.role === "OWNER",
 								})}
@@ -319,7 +335,7 @@ function TeamRowMenu({
 }) {
 	const tournament = useTournament();
 	const [confirming, setConfirming] = React.useState<
-		"DELETE_TEAM" | "DROP_TEAM_OUT" | null
+		"CHECK_OUT" | "DELETE_TEAM" | "DROP_TEAM_OUT" | null
 	>(null);
 
 	const { submit } = useActionSubmit(adminTeamsActionSchema, {
@@ -328,6 +344,8 @@ function TeamRowMenu({
 
 	const checkInOpen = tournament.regularCheckInStartInThePast;
 	const checkedIn = isTournamentCheckedIn(team);
+	const startingBracketStarted =
+		!tournament.bracketsMeta[tournament.startingBracketIdxOfTeam(team)].preview;
 	const bracketsRequiringCheckIn = checkInBracketsForTeam(tournament, team);
 	const eventLabelSuffix = tournament.bracketsMeta.some(isCheckInBracket)
 		? " (event)"
@@ -351,26 +369,27 @@ function TeamRowMenu({
 					/>
 				}
 			>
-				{checkInOpen && !tournament.hasStarted ? (
-					checkedIn ? (
-						<SendouMenuItem
-							icon={<LogOut />}
-							onAction={() =>
-								submit("CHECK_OUT", { teamId: team.id, bracketIdx: 0 })
-							}
-						>
-							{`Check out${eventLabelSuffix}`}
-						</SendouMenuItem>
-					) : (
-						<SendouMenuItem
-							icon={<LogIn />}
-							onAction={() =>
-								submit("CHECK_IN", { teamId: team.id, bracketIdx: 0 })
-							}
-						>
-							{`Check in${eventLabelSuffix}`}
-						</SendouMenuItem>
-					)
+				{checkInOpen && checkedIn && !startingBracketStarted ? (
+					<SendouMenuItem
+						icon={<LogOut />}
+						onAction={() =>
+							tournament.hasStarted
+								? setConfirming("CHECK_OUT")
+								: submit("CHECK_OUT", { teamId: team.id, bracketIdx: 0 })
+						}
+					>
+						{`Check out${eventLabelSuffix}`}
+					</SendouMenuItem>
+				) : null}
+				{checkInOpen && !checkedIn && !tournament.hasStarted ? (
+					<SendouMenuItem
+						icon={<LogIn />}
+						onAction={() =>
+							submit("CHECK_IN", { teamId: team.id, bracketIdx: 0 })
+						}
+					>
+						{`Check in${eventLabelSuffix}`}
+					</SendouMenuItem>
 				) : null}
 				{team.checkIns.length > 0
 					? bracketsRequiringCheckIn.map((bracket) => {
@@ -421,7 +440,7 @@ function TeamRowMenu({
 						>
 							Undo drop out
 						</SendouMenuItem>
-					) : (
+					) : startingBracketStarted ? (
 						<SendouMenuItem
 							icon={<LogOut />}
 							isDestructive
@@ -429,7 +448,7 @@ function TeamRowMenu({
 						>
 							Drop out
 						</SendouMenuItem>
-					)
+					) : null
 				) : (
 					<SendouMenuItem
 						icon={<Trash2 />}
@@ -440,6 +459,17 @@ function TeamRowMenu({
 					</SendouMenuItem>
 				)}
 			</SendouMenu>
+			<FormWithConfirm
+				isOpen={confirming === "CHECK_OUT"}
+				onOpenChange={(isOpen) => !isOpen && setConfirming(null)}
+				fields={[
+					["_action", "CHECK_OUT"],
+					["teamId", team.id],
+					["bracketIdx", 0],
+				]}
+				dialogHeading={`Check out "${team.name}"? The tournament has started so they can't be checked back in.`}
+				submitButtonText="Check out"
+			/>
 			<FormWithConfirm
 				isOpen={confirming === "DELETE_TEAM"}
 				onOpenChange={(isOpen) => !isOpen && setConfirming(null)}
@@ -490,7 +520,7 @@ function isCheckInBracket(bracket: BracketMeta) {
 /** Is the team going to play (or pending check-in) in this bracket? */
 function isTeamInBracket(bracket: BracketMeta, teamId: number) {
 	return Boolean(
-		bracket.seeding?.includes(teamId) ||
+		bracket.previewSeeding?.includes(teamId) ||
 			bracket.teamsPendingCheckIn?.includes(teamId),
 	);
 }
@@ -553,7 +583,15 @@ function activeCheckInCount(team: TournamentTeamFull) {
 	return activeCheckInLabels(team, () => "").length;
 }
 
-function teamMatchesQuery(team: TournamentTeamFull, search: string) {
+function teamMatchesQuery({
+	team,
+	search,
+	memberDiscordIds,
+}: {
+	team: TournamentTeamFull;
+	search: string;
+	memberDiscordIds: Record<number, string>;
+}) {
 	const query = search.trim();
 	if (!query) return true;
 
@@ -572,7 +610,7 @@ function teamMatchesQuery(team: TournamentTeamFull, search: string) {
 		return team.members.some((member) => {
 			if ("id" in identifier) return member.userId === identifier.id;
 			if ("discordId" in identifier) {
-				return member.discordId === identifier.discordId;
+				return memberDiscordIds[member.userId] === identifier.discordId;
 			}
 			return (
 				member.customUrl?.toLowerCase() === identifier.customUrl.toLowerCase()

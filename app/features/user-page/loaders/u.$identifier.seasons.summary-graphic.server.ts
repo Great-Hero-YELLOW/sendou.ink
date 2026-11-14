@@ -11,8 +11,8 @@ import * as ReportedWeaponRepository from "~/features/sendouq-match/ReportedWeap
 import * as UserRepository from "~/features/user-page/UserRepository.server";
 import { userPageUserId } from "~/features/user-page/user-page-context.server";
 import type { SerializeFrom } from "~/utils/remix";
-import { forbidden } from "~/utils/remix.server";
-import { resolveAvatarUrl } from "~/utils/urls";
+import { badRequest, forbidden } from "~/utils/remix.server";
+import { avatarUrl } from "~/utils/urls";
 import { userSeasonSummaryGraphicSearchParams } from "../user-page-search-params";
 
 const BEST_SETS_COUNT = 3;
@@ -25,7 +25,7 @@ export const loader = async ({ url }: LoaderFunctionArgs) => {
 	const loggedInUser = requireUser();
 	const { season } = userSeasonSummaryGraphicSearchParams.parse(url);
 	if (typeof season !== "number") {
-		throw new Response(null, { status: 400 });
+		badRequest();
 	}
 
 	const userId = userPageUserId();
@@ -43,7 +43,7 @@ export const loader = async ({ url }: LoaderFunctionArgs) => {
 			hasCalculatedSkill: true,
 		})
 	) {
-		throw forbidden();
+		forbidden();
 	}
 
 	const peakOrdinal = await SkillRepository.findSeasonPeakOrdinalByUserId({
@@ -131,13 +131,10 @@ export const loader = async ({ url }: LoaderFunctionArgs) => {
 				name: mate.user.username,
 				countryCode: countries.get(mate.user.id),
 			},
-			discordId: mate.user.discordId,
-			avatarUrl: resolveAvatarUrl({
-				customAvatarUrl: mate.user.customAvatarUrl,
-				discordId: mate.user.discordId,
-				discordAvatar: mate.user.discordAvatar,
-				size: "sm",
-			}),
+			userId: mate.user.id,
+			avatarUrl: mate.user.avatar
+				? avatarUrl(mate.user.avatar, "sm")
+				: undefined,
 			setsCount: mate.setWins + mate.setLosses,
 		})),
 		bestStage: SeasonSummary.bestStage(

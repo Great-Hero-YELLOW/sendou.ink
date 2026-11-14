@@ -1,0 +1,108 @@
+.trophySlot {
+	flex: none;
+	width: 100px;
+	aspect-ratio: 1 / 1;
+}
+
+.medalCounts {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--s-2);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.medalCount {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--s-0-5);
+
+	& img {
+		flex: none;
+		max-width: none;
+	}
+}
+
+@container (width < 260px) {
+	.placementsCell {
+		display: none;
+	}
+}
+
+@container (width < 400px) {
+	.medalCounts {
+		gap: var(--s-1-5);
+	}
+
+	.medalTimes {
+		display: none;
+	}
+
+	.podiumStack,
+	.standingsAvatar {
+		display: none;
+	}
+}
+
+.showcaseList {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto auto;
+
+	@container (width < 400px) {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+	}
+
+	& .showcaseRow {
+		grid-column: 1 / -1;
+		grid-template-columns: subgrid;
+	}
+}
+
+.showcaseEnd {
+	display: contents;
+
+	& > :last-child {
+		justify-self: end;
+	}
+
+	@container (width < 400px) {
+		display: grid;
+		justify-items: center;
+		gap: var(--s-1);
+
+		& > :last-child {
+			justify-self: center;
+		}
+	}
+}
+
+.showcaseTier {
+	display: flex;
+	justify-content: center;
+}
+
+.emptySlot {
+	flex: none;
+	width: 30px;
+	height: 30px;
+	border-radius: 50%;
+	border: 2px dashed var(--color-text-high);
+}
+
+.placingTop {
+	color: var(--color-fg-second);
+}
+
+.chain {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--s-1);
+	font-size: var(--font-xs);
+
+	& span {
+		padding: 2px var(--s-2);
+		border-radius: var(--radius-selector);
+		background-color: var(--color-bg-higher);
+	}
+}

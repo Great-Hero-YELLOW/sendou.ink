@@ -12,9 +12,9 @@ import {
 } from "../core/detectors/map-start/index";
 import { createScoreboardDetector } from "../core/detectors/scoreboard/index";
 import { createScoreboardBattleLogReplayDetector } from "../core/detectors/scoreboard-battle-log-replay/index";
+import { TimelineBuilder } from "../core/timeline/index";
 import {
-	type Fixture,
-	isFieldSkipped,
+	fieldTestOptions,
 	loadFixtures,
 	runDetectorOnFixture,
 } from "../node/fixtures";
@@ -56,9 +56,18 @@ for (const fixture of fixtures) {
 		);
 		const expected = fixture.expected.data ?? {};
 
+		await t.test("clears the timeline's confidence floor", () => {
+			const { action } = new TimelineBuilder().push(event);
+			assert.notEqual(
+				action,
+				"dropped",
+				`confidence ${event.confidence.toFixed(3)} is under the floor`,
+			);
+		});
+
 		await t.test(
 			"mode",
-			{ skip: expected.mode === undefined || skip(fixture, "mode") },
+			fieldTestOptions(fixture, "mode", expected.mode !== undefined),
 			() => {
 				assert.equal(
 					event.data.mode,
@@ -70,7 +79,7 @@ for (const fixture of fixtures) {
 
 		await t.test(
 			"stage",
-			{ skip: expected.stage === undefined || skip(fixture, "stage") },
+			fieldTestOptions(fixture, "stage", expected.stage !== undefined),
 			() => {
 				assert.equal(
 					event.data.stage,
@@ -140,8 +149,4 @@ for (const fixture of fixtures.filter((f) => f.expected.event === "MapStart")) {
 			`death gate fired (score=${death.gate.score.toFixed(3)})`,
 		);
 	});
-}
-
-function skip(fixture: Fixture, field: string): boolean | string {
-	return isFieldSkipped(fixture, field) ? "skipFields" : false;
 }

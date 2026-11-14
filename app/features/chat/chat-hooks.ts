@@ -1,13 +1,17 @@
 import * as React from "react";
-import { useRevalidator } from "react-router";
+import { useFetchers, useNavigation, useRevalidator } from "react-router";
+import * as R from "remeda";
 import {
 	useEventStreamCatchUp,
 	useEventsTopic,
 	useServerEventListener,
 } from "~/features/events/events-hooks";
+import { useLatestRef } from "~/hooks/useLatestRef";
 import { useUser } from "../auth/core/user";
 import type { ClientChatMessage } from "./chat-types";
+import * as Attention from "./core/Attention";
 import {
+	holdRevalidations,
 	revalidateWithScope,
 	scheduleBroadcastRevalidation,
 } from "./revalidation-scope";
@@ -16,14 +20,26 @@ import {
 const THRESHOLD = 100;
 // how long after wheel/touch/keyboard input a scroll event still counts as user-initiated
 const USER_SCROLL_INTENT_MS = 150;
+// room left above the message the view is held at (the first unread, a jumped-to one)
+const ANCHOR_MARGIN = 8;
 
 export function useChatAutoScroll(
 	messages: ClientChatMessage[],
 	ref: React.RefObject<HTMLElement | null>,
+	{
+		firstUnreadMessageId = null,
+		firstUnreadOffset = () => null,
+	}: {
+		firstUnreadMessageId?: number | null;
+		firstUnreadOffset?: () => number | null;
+	} = {},
 ) {
 	const user = useUser();
 	const [unseenMessages, setUnseenMessages] = React.useState(false);
 	const pinnedToBottomRef = React.useRef(true);
+	/** Where the view is held (the first unread, a jumped-to message) until the user scrolls, while the virtualizer measures the rows above it. */
+	const anchorOffsetRef = React.useRef<(() => number | null) | null>(null);
+	const firstUnreadOffsetRef = useLatestRef(firstUnreadOffset);
 	const lastUserScrollIntentRef = React.useRef(Number.NEGATIVE_INFINITY);
 	const isPointerDownRef = React.useRef(false);
 	const lastStableScrollTopRef = React.useRef(0);
@@ -33,8 +49,22 @@ export function useChatAutoScroll(
 		if (!messagesContainer) return;
 
 		pinnedToBottomRef.current = true;
+		anchorOffsetRef.current = null;
 		messagesContainer.scrollTop = messagesContainer.scrollHeight;
 		setUnseenMessages(false);
+	}, [ref]);
+
+	const scrollToAnchor = React.useCallback(() => {
+		const messagesContainer = ref.current;
+		const offset = anchorOffsetRef.current?.() ?? null;
+		if (!messagesContainer || offset === null) return;
+
+		const bottom =
+			messagesContainer.scrollHeight - messagesContainer.clientHeight;
+		const top = R.clamp(offset - ANCHOR_MARGIN, { min: 0, max: bottom });
+
+		pinnedToBottomRef.current = top >= bottom;
+		messagesContainer.scrollTop = top;
 	}, [ref]);
 
 	React.useEffect(() => {
@@ -63,7 +93,13 @@ export function useChatAutoScroll(
 			// whenever the message collection changes; undo those resets so
 			// they neither unpin the auto scroll nor yank the user out of the
 			// history they were reading
-			if (!isUserScroll) {
+			if (isUserScroll) {
+				anchorOffsetRef.current = null;
+			} else {
+				if (anchorOffsetRef.current) {
+					scrollToAnchor();
+					return;
+				}
 				if (pinnedToBottomRef.current && !isScrolledToBottom) {
 					messagesContainer.scrollTop = messagesContainer.scrollHeight;
 					return;
@@ -104,12 +140,12 @@ export function useChatAutoScroll(
 			window.removeEventListener("pointerup", handlePointerUp);
 			messagesContainer.removeEventListener("scroll", handleScroll);
 		};
-	}, [ref]);
+	}, [ref, scrollToAnchor]);
 
 	const hasMessages = messages.length > 0;
 
 	// the virtualizer resizes the content asynchronously as it measures rows, without
-	// scroll events, so keep the view glued to the bottom while pinned there
+	// scroll events, so keep the view glued to where it is pinned
 	React.useEffect(() => {
 		if (!hasMessages) return;
 
@@ -118,14 +154,16 @@ export function useChatAutoScroll(
 		if (!scrollContent) return;
 
 		const observer = new ResizeObserver(() => {
-			if (pinnedToBottomRef.current) {
+			if (anchorOffsetRef.current) {
+				scrollToAnchor();
+			} else if (pinnedToBottomRef.current) {
 				messagesContainer.scrollTop = messagesContainer.scrollHeight;
 			}
 		});
 		observer.observe(scrollContent);
 
 		return () => observer.disconnect();
-	}, [ref, hasMessages]);
+	}, [ref, hasMessages, scrollToAnchor]);
 
 	const latestMessage = messages.at(-1);
 	const latestMessagePublicId = latestMessage?.publicId;
@@ -135,16 +173,38 @@ export function useChatAutoScroll(
 	React.useEffect(() => {
 		if (!latestMessagePublicId) return;
 
-		if (latestMessageIsOwn || pinnedToBottomRef.current) {
+		const messagesContainer = ref.current;
+		const everyMessageFits =
+			messagesContainer != null &&
+			messagesContainer.scrollHeight <= messagesContainer.clientHeight;
+
+		if (latestMessageIsOwn || pinnedToBottomRef.current || everyMessageFits) {
 			scrollToBottom();
 		} else {
 			setUnseenMessages(true);
 		}
-	}, [latestMessagePublicId, latestMessageIsOwn, scrollToBottom]);
+	}, [ref, latestMessagePublicId, latestMessageIsOwn, scrollToBottom]);
+
+	React.useEffect(() => {
+		anchorOffsetRef.current =
+			firstUnreadMessageId !== null
+				? () => firstUnreadOffsetRef.current()
+				: null;
+		scrollToAnchor();
+	}, [firstUnreadMessageId, scrollToAnchor]);
+
+	const scrollToOffset = React.useCallback(
+		(getOffset: () => number | null) => {
+			anchorOffsetRef.current = getOffset;
+			scrollToAnchor();
+		},
+		[scrollToAnchor],
+	);
 
 	return {
 		unseenMessagesInTheRoom: unseenMessages,
 		scrollToBottom,
+		scrollToOffset,
 	};
 }
 
@@ -185,4 +245,33 @@ export function useServerRevalidationEvents(userId: number) {
 		// every subscribed client refetch in the same instant
 		scheduleBroadcastRevalidation(revalidate, event.scope);
 	});
+}
+
+/** Whether the user is paying attention to this tab right now, `false` on the server. */
+export function useIsAttending() {
+	return React.useSyncExternalStore(
+		Attention.tracker.subscribe,
+		Attention.tracker.isAttending,
+		() => false,
+	);
+}
+
+/** Holds broadcast revalidations while any form submission is in flight, also covering those not going through `holdRevalidationsDuring` (e.g. a plain `<fetcher.Form>`). */
+export function useHoldRevalidationsDuringSubmissions() {
+	const navigation = useNavigation();
+	const fetchers = useFetchers();
+
+	const isSubmitting =
+		isMutationMethod(navigation.formMethod) ||
+		fetchers.some((fetcher) => isMutationMethod(fetcher.formMethod));
+
+	React.useEffect(() => {
+		if (!isSubmitting) return;
+
+		return holdRevalidations();
+	}, [isSubmitting]);
+}
+
+function isMutationMethod(formMethod: string | undefined) {
+	return formMethod !== undefined && formMethod.toUpperCase() !== "GET";
 }

@@ -54,6 +54,7 @@ import type {
 	UserCardData,
 	UserCardFriendship,
 	UserCardStat,
+	UserCardsById,
 } from "../user-card-types";
 import styles from "./UserCard.module.css";
 
@@ -102,9 +103,59 @@ export function UserCard({
 
 	// keyed so friendship state doesn't carry over to another user e.g. when navigating between user pages
 	return (
-		<UserCardPopover
+		<LazyUserCardPopover
 			key={data.id}
 			data={data}
+			withMutualFriends={withMutualFriends}
+		>
+			{children}
+		</LazyUserCardPopover>
+	);
+}
+
+// pages can render hundreds of closed cards, so the popover machinery mounts on the first press
+function LazyUserCardPopover({
+	data,
+	withMutualFriends,
+	children,
+}: {
+	data: UserCardData;
+	withMutualFriends: boolean;
+	children: React.ReactNode;
+}) {
+	const user = useUser();
+	const [isActivated, setIsActivated] = React.useState(false);
+	const fetcher = useFetcher<UserCardFriendshipLoaderData>();
+
+	const activate = () => {
+		setIsActivated(true);
+
+		if (user?.id === data.id) return;
+
+		fetcher.load(
+			userCardFriendshipSearchParams.href(userCardFriendshipPage(data.id), {
+				mutuals: withMutualFriends,
+			}),
+		);
+	};
+
+	if (!isActivated) {
+		return (
+			<button
+				type="button"
+				className={styles.trigger}
+				aria-haspopup="dialog"
+				onClick={activate}
+			>
+				{children}
+			</button>
+		);
+	}
+
+	return (
+		<UserCardPopover
+			data={data}
+			friendship={fetcher.data}
 			withMutualFriends={withMutualFriends}
 		>
 			{children}
@@ -112,12 +163,16 @@ export function UserCard({
 	);
 }
 
+/** Mounted by the first press of the trigger, so it starts open. */
 function UserCardPopover({
 	data,
+	friendship,
 	withMutualFriends,
 	children,
 }: {
 	data: UserCardData;
+	/** Lazy-loaded; `undefined` while the friendship fetch is in flight. */
+	friendship: UserCardFriendship | undefined;
 	withMutualFriends: boolean;
 	children: React.ReactNode;
 }) {
@@ -129,31 +184,11 @@ function UserCardPopover({
 	const user = useUser();
 	const isOwnCard = user?.id === data.id;
 
-	const [isOpen, setIsOpen] = React.useState(false);
+	const [isOpen, setIsOpen] = React.useState(true);
 	// outside the popover so the modals survive it closing when they take focus
 	const [isNoteDialogOpen, setIsNoteDialogOpen] = React.useState(false);
 	const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = React.useState(false);
 	const [isReportDialogOpen, setIsReportDialogOpen] = React.useState(false);
-
-	const fetcher = useFetcher<UserCardFriendshipLoaderData>();
-	const friendshipLoadedRef = React.useRef(false);
-
-	const handleOpenChange = (nextIsOpen: boolean) => {
-		setIsOpen(nextIsOpen);
-
-		if (!nextIsOpen) return;
-		if (friendshipLoadedRef.current) return;
-		if (isOwnCard) return;
-
-		friendshipLoadedRef.current = true;
-		fetcher.load(
-			userCardFriendshipSearchParams.href(userCardFriendshipPage(data.id), {
-				mutuals: withMutualFriends,
-			}),
-		);
-	};
-
-	const friendship = fetcher.data;
 
 	// close the popover so only the modal is shown
 	const openNoteDialog = () => {
@@ -175,11 +210,13 @@ function UserCardPopover({
 		<>
 			<SendouPopover
 				isOpen={isOpen}
-				onOpenChange={handleOpenChange}
+				onOpenChange={setIsOpen}
 				placement={placement}
 				popoverClassName={styles.popover}
 				trigger={
-					<button type="button" className={styles.trigger}>
+					// replaces the pressed placeholder button, focused so closing the card returns focus here
+					// biome-ignore lint/a11y/noAutofocus: see above
+					<button type="button" className={styles.trigger} autoFocus>
 						{children}
 					</button>
 				}
@@ -236,10 +273,8 @@ export function useUserCardData(
 	if (typeof userId !== "number") return undefined;
 
 	for (const match of matches) {
-		const data = match.loaderData as
-			| { userCards?: Map<number, UserCardData> }
-			| undefined;
-		const card = data?.userCards?.get(userId);
+		const data = match.loaderData as { userCards?: UserCardsById } | undefined;
+		const card = data?.userCards?.[userId];
 		if (card) return card;
 	}
 
@@ -352,9 +387,11 @@ function CardContent({
 					<Avatar user={data} size="md" className={styles.avatar} />
 				</NoteAvatar>
 				<div className={styles.nameGroup}>
-					<h2 className={styles.username}>{data.username}</h2>
+					<h2 className={clsx(styles.username, "truncate")}>{data.username}</h2>
 					{data.customUrl ? (
-						<div className={styles.subtitle}>{data.customUrl}</div>
+						<div className={clsx(styles.subtitle, "truncate")}>
+							{data.customUrl}
+						</div>
 					) : null}
 					{data.friendCode ? (
 						<span className={styles.friendCode}>SW-{data.friendCode}</span>

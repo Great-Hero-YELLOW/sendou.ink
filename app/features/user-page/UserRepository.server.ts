@@ -11,6 +11,7 @@ import {
 	type TournamentTierNumber,
 	WORST_TIER_NUMBER,
 } from "~/features/tournament/core/tiering";
+import * as TournamentTeamRepository from "~/features/tournament/TournamentTeamRepository.server";
 import type {
 	BuildSort,
 	ResultSource,
@@ -24,12 +25,13 @@ import {
 } from "~/utils/dates";
 import { invariant } from "~/utils/invariant";
 import {
-	asJson,
 	commonUserSelect,
 	concatUserSubmittedImagePrefix,
-	customAvatarUrl,
+	containsIgnoringCase,
+	equalsIgnoringCase,
 	jsonArrayFrom,
 	jsonObjectFrom,
+	supporterCustomTheme,
 	tournamentLogoOrNull,
 	userByIdentifierQuery,
 } from "~/utils/kysely.server";
@@ -52,7 +54,7 @@ export function findIdByIdentifier(identifier: string) {
 /** Identity of the user a `/u/:identifier` page is about, incl. what their canonical page URL needs. */
 export function findPageUserByIdentifier(identifier: string) {
 	return userByIdentifierQuery(identifier)
-		.select(["User.discordId", "User.customUrl"])
+		.select("User.customUrl")
 		.executeTakeFirst();
 }
 
@@ -69,6 +71,19 @@ export async function findCountriesByUserIds(userIds: number[]) {
 		.execute();
 
 	return new Map(rows.map((row) => [row.id, row.country]));
+}
+
+/** Discord ids of the given users keyed by user id. Not for public responses. */
+export async function findDiscordIdsByUserIds(userIds: number[]) {
+	if (userIds.length === 0) return new Map<number, string>();
+
+	const rows = await db
+		.selectFrom("User")
+		.select(["User.id", "User.discordId"])
+		.where("User.id", "in", userIds)
+		.execute();
+
+	return new Map(rows.map((row) => [row.id, row.discordId]));
 }
 
 /** Plus tiers of the given users keyed by user id, users without a tier absent. */
@@ -123,9 +138,7 @@ export function findLayoutDataById(userId: number, loggedInUserId?: number) {
 			"PlusTier.tier as plusTier",
 			"User.commissionText",
 			"User.commissionsOpen",
-			asJson(
-				sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
-			).as("customTheme"),
+			supporterCustomTheme.as("customTheme"),
 			eb
 				.selectFrom("TournamentResult")
 				.whereRef("TournamentResult.userId", "=", "User.id")
@@ -212,7 +225,13 @@ export async function findProfileByUserId(userId: number) {
 			"PlusTier.tier as plusTier",
 			"User.pronouns",
 			"User.customAvatarImgId",
-			customAvatarUrl(eb).as("customAvatarUrl"),
+			concatUserSubmittedImagePrefix(
+				eb
+					.selectFrom("UserSubmittedImage")
+					.select("UserSubmittedImage.url")
+					.whereRef("UserSubmittedImage.id", "=", "User.customAvatarImgId")
+					.$asScalar(),
+			).as("customAvatarUrl"),
 			jsonArrayFrom(
 				eb
 					.selectFrom("TeamMemberWithSecondary")
@@ -323,7 +342,7 @@ export async function findWidgetsByUserId(
 export function findByCustomUrl(customUrl: string) {
 	return db
 		.selectFrom("User")
-		.select(["User.id", "User.discordId", "User.customUrl", "User.patronTier"])
+		.select(["User.id", "User.customUrl", "User.patronTier"])
 		.where("customUrl", "=", customUrl)
 		.executeTakeFirst();
 }
@@ -354,6 +373,7 @@ export async function findLeanById(id: number) {
 		.where("User.id", "=", id)
 		.select(({ eb }) => [
 			...commonUserSelect(eb),
+			"User.discordId",
 			"User.createdAt",
 			"User.customTheme",
 			"User.isArtist",
@@ -410,6 +430,7 @@ export function findModInfoById(id: number) {
 	return db
 		.selectFrom("User")
 		.select((eb) => [
+			"User.discordId",
 			"User.discordUniqueName",
 			"User.isVideoAdder",
 			"User.isArtist",
@@ -456,9 +477,7 @@ export function findAllPatrons() {
 			"User.discordId",
 			"User.username",
 			"User.patronTier",
-			asJson(
-				sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
-			).as("customTheme"),
+			supporterCustomTheme.as("customTheme"),
 		])
 		.where("User.patronTier", "is not", null)
 		.orderBy("User.patronTier", "desc")
@@ -472,11 +491,8 @@ export async function findAllPatronsForFooter() {
 		.selectFrom("User")
 		.select([
 			"User.id",
-			"User.discordId",
 			"User.username",
-			asJson(
-				sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
-			).as("customTheme"),
+			supporterCustomTheme.as("customTheme"),
 		])
 		.where("User.patronTier", "is not", null)
 		.orderBy("User.id", "asc")
@@ -600,14 +616,16 @@ const baseCalendarEventResultsQuery = (
 	}
 
 	if (filters.tournamentName) {
-		query = query.where(
-			nameLikeExpr("CalendarEvent.name", filters.tournamentName),
+		const tournamentName = filters.tournamentName;
+		query = query.where((eb) =>
+			containsIgnoringCase(eb.ref("CalendarEvent.name"), tournamentName),
 		);
 	}
 
 	if (filters.teamName) {
-		query = query.where(
-			nameLikeExpr("CalendarEventResultTeam.name", filters.teamName),
+		const teamName = filters.teamName;
+		query = query.where((eb) =>
+			containsIgnoringCase(eb.ref("CalendarEventResultTeam.name"), teamName),
 		);
 	}
 
@@ -695,13 +713,17 @@ const baseTournamentResultsQuery = (
 	}
 
 	if (filters.tournamentName) {
-		query = query.where(
-			nameLikeExpr("CalendarEvent.name", filters.tournamentName),
+		const tournamentName = filters.tournamentName;
+		query = query.where((eb) =>
+			containsIgnoringCase(eb.ref("CalendarEvent.name"), tournamentName),
 		);
 	}
 
 	if (filters.teamName) {
-		query = query.where(nameLikeExpr("TournamentTeam.name", filters.teamName));
+		const teamName = filters.teamName;
+		query = query.where((eb) =>
+			containsIgnoringCase(eb.ref("TournamentTeam.name"), teamName),
+		);
 	}
 
 	if (filters.mateUserId) {
@@ -752,14 +774,6 @@ const baseTournamentResultsQuery = (
 	}
 
 	return query;
-};
-
-const escapeLikePattern = (value: string) =>
-	value.replace(/[\\%_]/g, (char) => `\\${char}`);
-
-const nameLikeExpr = (column: string, name: string) => {
-	const pattern = `%${escapeLikePattern(name)}%`;
-	return sql<boolean>`${sql.ref(column)} like ${pattern} escape '\\'`;
 };
 
 export async function findResultsByUserId(
@@ -927,10 +941,9 @@ export async function countResultsByUserId(
 		filters,
 	).select(({ fn }) => [fn.countAll<number>().as("count")]);
 
-	const [calendarEventResults, tournamentResults] = await Promise.all([
-		calendarEventResultsQuery.executeTakeFirst(),
-		tournamentResultsQuery.executeTakeFirst(),
-	]);
+	const calendarEventResults =
+		await calendarEventResultsQuery.executeTakeFirst();
+	const tournamentResults = await tournamentResultsQuery.executeTakeFirst();
 
 	return (calendarEventResults?.count ?? 0) + (tournamentResults?.count ?? 0);
 }
@@ -999,24 +1012,22 @@ export async function search({
 }) {
 	// one scan over User with exact matches ranked first instead of an exact pass + a fuzzy pass
 	const exactConditions = (eb: ExpressionBuilder<DB, "User">) => [
-		eb("User.username", "like", query),
-		eb("User.inGameName", "like", query),
-		eb("User.discordUniqueName", "like", query),
-		eb("User.customUrl", "like", query),
+		equalsIgnoringCase(eb.ref("User.username"), query),
+		equalsIgnoringCase(eb.ref("User.inGameName"), query),
+		equalsIgnoringCase(eb.ref("User.discordUniqueName"), query),
+		equalsIgnoringCase(eb.ref("User.customUrl"), query),
 	];
 
-	const fuzzyQuery = `%${query}%`;
 	const fuzzyConditions = (eb: ExpressionBuilder<DB, "User">) => [
-		eb("User.username", "like", fuzzyQuery),
-		eb("User.inGameName", "like", fuzzyQuery),
-		eb("User.discordUniqueName", "like", fuzzyQuery),
+		containsIgnoringCase(eb.ref("User.username"), query),
+		containsIgnoringCase(eb.ref("User.inGameName"), query),
+		containsIgnoringCase(eb.ref("User.discordUniqueName"), query),
 	];
 
 	const includeExactMatches = query.length > 1;
 
-	// the trigram index needs 3+ characters and can't do LIKE wildcards; those queries scan User
-	const canUseSearchIndex =
-		query.length >= 3 && !query.includes("%") && !query.includes("_");
+	// the trigram index needs 3+ characters; shorter queries scan User
+	const canUseSearchIndex = query.length >= 3;
 
 	let dbQuery = db
 		.selectFrom("User")
@@ -1133,6 +1144,11 @@ export async function findFriendCodesByUserId(userId: number) {
 
 let cachedFriendCodes: Set<string> | null = null;
 
+/** Drops the cached friend codes, for when the table was written to behind this module's back. */
+export function clearFriendCodesCache() {
+	cachedFriendCodes = null;
+}
+
 export async function findAllCurrentFriendCodes() {
 	if (cachedFriendCodes) {
 		return cachedFriendCodes;
@@ -1227,12 +1243,12 @@ export function insertFriendCode(args: TablesInsertable["UserFriendCode"]) {
 	return db.insertInto("UserFriendCode").values(args).execute();
 }
 
+/** Inserts or updates the user by Discord id. The avatar is stored separately via {@link replaceSyncedAvatar}. */
 export function upsert(
 	args: Pick<
 		TablesInsertable["User"],
 		| "discordId"
 		| "discordName"
-		| "discordAvatar"
 		| "discordUniqueName"
 		| "twitch"
 		| "youtubeId"
@@ -1260,8 +1276,66 @@ export function upsert(
 				...R.omit(args, ["discordId"]),
 			});
 		})
-		.returning("id")
+		.returning(["id", "discordAvatar", "syncedAvatarImgId"])
 		.executeTakeFirstOrThrow();
+}
+
+/**
+ * Points the user's synced avatar at a newly stored image file (`null` = no avatar) and deletes the
+ * previous image row. Returns the previous file name so its files can be deleted from storage.
+ */
+export function replaceSyncedAvatar({
+	userId,
+	discordAvatar,
+	fileName,
+}: {
+	userId: number;
+	/** Hash of the Discord avatar the file was copied from. */
+	discordAvatar: string | null;
+	fileName: string | null;
+}) {
+	return db.transaction().execute(async (trx) => {
+		const previous = await trx
+			.selectFrom("User")
+			.leftJoin(
+				"UnvalidatedUserSubmittedImage",
+				"UnvalidatedUserSubmittedImage.id",
+				"User.syncedAvatarImgId",
+			)
+			.select([
+				"UnvalidatedUserSubmittedImage.id",
+				"UnvalidatedUserSubmittedImage.url",
+			])
+			.where("User.id", "=", userId)
+			.executeTakeFirstOrThrow();
+
+		const image = fileName
+			? await trx
+					.insertInto("UnvalidatedUserSubmittedImage")
+					.values({
+						submitterUserId: userId,
+						url: fileName,
+						validatedAt: databaseTimestampNow(),
+					})
+					.returning("id")
+					.executeTakeFirstOrThrow()
+			: null;
+
+		await trx
+			.updateTable("User")
+			.set({ discordAvatar, syncedAvatarImgId: image?.id ?? null })
+			.where("id", "=", userId)
+			.execute();
+
+		if (previous.id) {
+			await trx
+				.deleteFrom("UnvalidatedUserSubmittedImage")
+				.where("id", "=", previous.id)
+				.execute();
+		}
+
+		return previous.url;
+	});
 }
 
 type UpdateProfileArgs = Pick<
@@ -1298,7 +1372,7 @@ export function updateOwnProfile(args: UpdateProfileArgs) {
 				.execute();
 		}
 
-		return trx
+		const user = await trx
 			.updateTable("User")
 			.set({
 				country: args.country,
@@ -1319,8 +1393,17 @@ export function updateOwnProfile(args: UpdateProfileArgs) {
 				customAvatarImgId: args.customAvatarImgId ?? null,
 			})
 			.where("id", "=", userId)
-			.returning(["User.id", "User.customUrl", "User.discordId"])
+			.returning(["User.id", "User.customUrl"])
 			.executeTakeFirstOrThrow();
+
+		const inGameNameUpdatedTournamentIds = args.inGameName
+			? await TournamentTeamRepository.updateOwnMemberInGameNameForNonStarted(
+					args.inGameName,
+					trx,
+				)
+			: [];
+
+		return { ...user, inGameNameUpdatedTournamentIds };
 	});
 }
 
@@ -1438,6 +1521,8 @@ export type UpdatePatronDataArgs = Array<
 >;
 export function updatePatronData(users: UpdatePatronDataArgs) {
 	return db.transaction().execute(async (trx) => {
+		const patronDiscordIds = users.map((user) => user.discordId);
+
 		await trx
 			.updateTable("User")
 			.set({
@@ -1445,11 +1530,16 @@ export function updatePatronData(users: UpdatePatronDataArgs) {
 				patronStartedAt: null,
 				patronExpiresAt: null,
 			})
+			// "> 0" instead of "is not null" so that the patronTier index gets used
+			.where("patronTier", ">", 0)
 			.where((eb) =>
 				eb.or([
-					eb("patronExpiresAt", "<", dateToDatabaseTimestamp(new Date())),
+					eb("patronExpiresAt", "<", databaseTimestampNow()),
 					eb("patronExpiresAt", "is", null),
 				]),
+			)
+			.$if(patronDiscordIds.length > 0, (qb) =>
+				qb.where("discordId", "not in", patronDiscordIds),
 			)
 			.execute();
 
@@ -1462,35 +1552,13 @@ export function updatePatronData(users: UpdatePatronDataArgs) {
 					patronExpiresAt: null,
 				})
 				.where("User.discordId", "=", user.discordId)
-				.execute();
-		}
-	});
-}
-
-export function updateMany(
-	argsArr: Array<
-		Pick<
-			Tables["User"],
-			"discordAvatar" | "discordName" | "discordUniqueName" | "discordId"
-		>
-	>,
-) {
-	return db.transaction().execute(async (trx) => {
-		for (const updateArgs of argsArr) {
-			await trx
-				.updateTable("User")
-				.set((eb) => ({
-					discordAvatar: updateArgs.discordAvatar,
-					discordName: eb.fn.coalesce(
-						eb.val(updateArgs.discordName),
-						"User.discordName",
-					),
-					discordUniqueName: eb.fn.coalesce(
-						eb.val(updateArgs.discordUniqueName),
-						"User.discordUniqueName",
-					),
-				}))
-				.where("User.discordId", "=", updateArgs.discordId)
+				.where((eb) =>
+					eb.or([
+						eb("patronTier", "is not", user.patronTier),
+						eb("patronStartedAt", "is not", user.patronStartedAt),
+						eb("patronExpiresAt", "is not", null),
+					]),
+				)
 				.execute();
 		}
 	});
@@ -1572,12 +1640,28 @@ export async function findSocialLinksByUserId(userId: number) {
 	return links;
 }
 
-export function findIdsByTwitchUsernames(twitchUsernames: string[]) {
-	if (twitchUsernames.length === 0) return [];
+/** Users whose connected Twitch login or YouTube channel id is among the given ones. */
+export function findIdsByStreamAccounts({
+	twitchNames,
+	youtubeIds,
+}: {
+	twitchNames: string[];
+	youtubeIds: string[];
+}) {
+	if (twitchNames.length === 0 && youtubeIds.length === 0) return [];
 
 	return db
 		.selectFrom("User")
-		.select(["User.id", "User.twitch"])
-		.where("User.twitch", "in", twitchUsernames)
+		.select(["User.id", "User.twitch", "User.youtubeId"])
+		.where((eb) =>
+			eb.or([
+				...(twitchNames.length > 0
+					? [eb("User.twitch", "in", twitchNames)]
+					: []),
+				...(youtubeIds.length > 0
+					? [eb("User.youtubeId", "in", youtubeIds)]
+					: []),
+			]),
+		)
 		.execute();
 }

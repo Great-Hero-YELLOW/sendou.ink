@@ -38,6 +38,8 @@ const COLLAPSED_TEXT_HEIGHT = 150;
 /** Server-side guess of whether the text gets clipped, corrected by measuring once mounted */
 const CLIPPED_TEXT_GUESS = { length: 300, lines: 6 };
 
+let cachedViewerTimezone: string | null = null;
+
 export function LFGPost({ post }: { post: Post }) {
 	if (post.team) {
 		return <TeamLFGPost post={{ ...post, team: post.team }} />;
@@ -186,7 +188,9 @@ function PostTeamMember({
 					<NoteAvatar sentiment={cardData?.privateNote?.sentiment} size="sm">
 						<Avatar size="xs" user={member} />
 					</NoteAvatar>
-					<span className={styles.teamMemberName}>{member.username}</span>
+					<span className={clsx(styles.teamMemberName, "truncate")}>
+						{member.username}
+					</span>
 				</span>
 			</UserCard>
 		</div>
@@ -214,7 +218,9 @@ function PostUserHeader({
 							>
 								<Avatar size="xsm" user={author} />
 							</NoteAvatar>
-							<span className={styles.userName}>{author.username}</span>
+							<span className={clsx(styles.userName, "truncate")}>
+								{author.username}
+							</span>
 						</span>
 					</UserCard>{" "}
 					{author.country ? <Flag countryCode={author.country} tiny /> : null}
@@ -305,8 +311,7 @@ function PostTimezonePillPlaceholder() {
 }
 
 function PostTimezonePill({ timezone }: { timezone: string }) {
-	const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-	const diff = hourDifferenceBetweenTimezones(userTimezone, timezone);
+	const diff = hourDifferenceBetweenTimezones(viewerTimezone(), timezone);
 
 	const textColorClass = () => {
 		const absDiff = Math.abs(diff);
@@ -462,4 +467,9 @@ function PostExpandableText({
 			{isTextCollapsed ? <div className={styles.textCut} /> : null}
 		</div>
 	);
+}
+
+function viewerTimezone() {
+	cachedViewerTimezone ??= Intl.DateTimeFormat().resolvedOptions().timeZone;
+	return cachedViewerTimezone;
 }

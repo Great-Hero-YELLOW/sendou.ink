@@ -1,56 +1,54 @@
 import { beforeEach, describe, expect, test } from "vitest";
-import { deleteVod, listVods, saveVod, saveVodResultsSend } from "./vods";
+import { sessionSummary } from "../core/sessions";
+import { deleteVod, listVods, loadVodMinimaps, saveVod } from "./vods";
 
-const VOD_NAME = "results-send.mkv";
+const NAME = "game.mp4";
 
-async function saveTestVod() {
-	await saveVod({ name: VOD_NAME, savedAt: 1_000, duration: 60 }, [
-		{ type: "scoreboard", t: 10, confidence: 0.9, data: {} },
-	]);
+function minimapAt(t: number) {
+	return { t, image: new Blob([new Uint8Array(4)], { type: "image/webp" }) };
 }
 
-async function storedVod() {
-	return (await listVods()).find((vod) => vod.name === VOD_NAME);
+function saveWithMinimaps(name: string, ts: number[]): Promise<void> {
+	return saveVod(
+		{
+			name,
+			savedAt: Date.now(),
+			duration: 60,
+			summary: sessionSummary([]),
+		},
+		[],
+		ts.map(minimapAt),
+	);
 }
 
-describe("saveVodResultsSend()", () => {
+async function minimapTimes(name: string): Promise<number[]> {
+	return (await loadVodMinimaps(name)).map((minimap) => minimap.t);
+}
+
+describe("loadVodMinimaps", () => {
 	beforeEach(async () => {
-		await deleteVod(VOD_NAME);
+		for (const vod of await listVods()) await deleteVod(vod.name);
 	});
 
-	test("a saved scan has no send outcome", async () => {
-		await saveTestVod();
+	test("loads the VoD's minimaps chronologically", async () => {
+		await saveWithMinimaps(NAME, [30, 10, 20]);
+		await saveWithMinimaps("other.mp4", [15]);
 
-		expect((await storedVod())?.resultsSend).toBeUndefined();
+		expect(await minimapTimes(NAME)).toEqual([10, 20, 30]);
 	});
 
-	test("remembers the send outcome of a scan", async () => {
-		await saveTestVod();
-		await saveVodResultsSend(VOD_NAME, {
-			sent: 2,
-			total: 3,
-			error: null,
-			at: 5_000,
-		});
+	test("a rescan replaces the earlier minimaps", async () => {
+		await saveWithMinimaps(NAME, [10, 20]);
+		await saveWithMinimaps(NAME, [5]);
 
-		expect((await storedVod())?.resultsSend).toEqual({
-			sent: 2,
-			total: 3,
-			error: null,
-			at: 5_000,
-		});
+		expect(await minimapTimes(NAME)).toEqual([5]);
 	});
 
-	test("re-scanning the file forgets the send outcome", async () => {
-		await saveTestVod();
-		await saveVodResultsSend(VOD_NAME, {
-			sent: 3,
-			total: 3,
-			error: null,
-			at: 5_000,
-		});
-		await saveTestVod();
+	test("deleting the VoD deletes its minimaps", async () => {
+		await saveWithMinimaps(NAME, [10]);
 
-		expect((await storedVod())?.resultsSend).toBeUndefined();
+		await deleteVod(NAME);
+
+		expect(await minimapTimes(NAME)).toEqual([]);
 	});
 });

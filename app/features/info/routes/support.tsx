@@ -58,6 +58,11 @@ const PERKS = [
 	},
 	{
 		tier: 2,
+		name: "createLobbies",
+		extraInfo: false,
+	},
+	{
+		tier: 2,
 		name: "earlyAccess",
 		extraInfo: false,
 	},
@@ -207,7 +212,7 @@ function SupportTable() {
 											</SendouButton>
 										}
 									>
-										{t(`support.perk.${perk.name}.extra` as any)}
+										{t(`support.perk.${perk.name}.extra`)}
 									</SendouPopover>
 								</>
 							) : null}

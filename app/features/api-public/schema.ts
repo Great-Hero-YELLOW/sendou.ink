@@ -2,7 +2,7 @@ import type { Pronouns } from "~/db/tables-json";
 import type { TierName } from "~/features/mmr/mmr-constants";
 import type { BracketData } from "~/features/tournament-bracket/core/engine/types";
 
-/** GET /api/user/{userId|discordId} */
+/** GET /api/user/{userId|discordId|customUrl} */
 
 export interface GetUserResponse {
 	id: number;
@@ -12,12 +12,14 @@ export interface GetUserResponse {
 	discordId: string;
 	/** @example "https://sendou.ink/u/sendou" */
 	url: string;
-	/** @example "https://cdn.discordapp.com/avatars/79237403620945920/6fc41a44b069a0d2152ac06d1e496c6c.png" */
+	/** @example "https://sendou.nyc3.cdn.digitaloceanspaces.com/avatar-274-6fc41a44b069a0d2152ac06d1e496c6c.webp" */
 	avatarUrl: string | null;
 	/** @example "FI" */
 	country: string | null;
 	socials: {
 		twitch: string | null;
+		/** YouTube channel ID @example "UCLN8s9Ogn71QcCYIPtb9mtw" */
+		youtube: string | null;
 		/** @deprecated */
 		twitter: null;
 		bsky: string | null;
@@ -148,7 +150,12 @@ export type GetTournamentTeamsResponse = Array<{
 	teamPageUrl: string | null;
 	/** Pickup team logos are only shown before the tournament starts to organizers and the team's own members. @example "https://sendou.nyc3.cdn.digitaloceanspaces.com/pickup-logo-uReSb1b1XS3TWGLCKMDUD-1719054364813.webp" */
 	logoUrl: string | null;
+	/** Seed of the team. Once the tournament has started, numbered within its starting bracket (division). */
 	seed: number | null;
+	/** Index of the bracket the team starts in, in `brackets` of GET /api/tournament/{tournamentId}. Always 0 unless the tournament has several starting brackets (divisions). */
+	startingBracketIdx: number;
+	/** Division of the team as shown on the site, derived from the names of its starting bracket and the brackets it leads to. Null if the tournament has only one starting bracket. @example "Division 1" */
+	division: string | null;
 	/** Overall placement in the tournament. Null while the team is still playing. @example 5 */
 	placement: number | null;
 	/** Sets and maps the team has won and lost across every bracket it played. Null before the tournament has started. */
@@ -171,7 +178,7 @@ export type GetTournamentTeamsResponse = Array<{
 		name: string;
 		/** @example "79237403620945920" */
 		discordId: string;
-		/** @example "https://cdn.discordapp.com/avatars/79237403620945920/6fc41a44b069a0d2152ac06d1e496c6c.png" */
+		/** @example "https://sendou.nyc3.cdn.digitaloceanspaces.com/avatar-274-6fc41a44b069a0d2152ac06d1e496c6c.webp" */
 		avatarUrl: string | null;
 		/** @example "FI" */
 		country: string | null;
@@ -197,7 +204,7 @@ export type GetTournamentPlayersResponse = Array<{
 /** GET /api/tournament/{tournamentId}/casted */
 
 export interface GetCastedTournamentMatchesResponse {
-	/** Matches that are currently being played and casted. One per casting channel. */
+	/** Match currently assigned to each casting channel. Stays until the next match is assigned, so it may already be finished. */
 	current: Array<{
 		matchId: number;
 		channel: TournamentCastChannel;
@@ -210,17 +217,22 @@ export interface GetCastedTournamentMatchesResponse {
 }
 
 type TournamentCastChannel = {
-	type: "TWITCH";
-	/** @example "iplsplatoon" */
+	type: "TWITCH" | "YOUTUBE";
+	/** Twitch login or YouTube channel ID. @example "iplsplatoon" */
 	channelId: string;
+	/** @example "https://twitch.tv/iplsplatoon" */
+	url: string;
 };
 
 /** GET /api/tournament/{tournamentId}/streams */
 
 export type GetTournamentStreamsResponse = Array<
 	{
-		platform: "TWITCH";
+		platform: "TWITCH" | "YOUTUBE";
+		/** Twitch login or YouTube channel ID. */
 		channelId: string;
+		/** Where the stream can be watched. @example "https://twitch.tv/iplsplatoon" */
+		url: string;
 		viewerCount: number;
 	} & ({ type: "PLAYER"; userId: number } | { type: "CAST" })
 >;
@@ -234,6 +246,7 @@ export interface GetTournamentMatchResponse {
 	bracketName: string | null;
 	/** Name of the round this match belongs to. @example "Grand Finals" */
 	roundName: string | null;
+	/** Maps already played (with their results) followed by the upcoming ones. Once the set is over, only the played maps. `null` until both teams are known. */
 	mapList: Array<MapListMap> | null;
 	/** @example "https://sendou.ink/to/9/matches/695" */
 	url: string;
@@ -284,6 +297,27 @@ export interface GetTournamentBracketStandingsResponse {
 		};
 	}>;
 }
+
+/** GET /api/tournament/{tournamentId}/matches */
+
+/** Every match of the tournament with both teams known, bracket by bracket. */
+export type GetTournamentMatchesResponse = Array<{
+	id: number;
+	/** Index of the bracket the match belongs to. Same index as GET /api/tournament/{tournamentId}/brackets/{bracketIndex} uses. */
+	bracketIdx: number;
+	/** @example "Alpha Bracket" */
+	bracketName: string;
+	/** @example "Grand Finals" */
+	roundName: string | null;
+	teamOne: TournamentMatchTeam;
+	teamTwo: TournamentMatchTeam;
+	/** `null` while the set is in progress. */
+	winnerTeamId: number | null;
+	/** Maps played so far with their results, in the order they were played. Upcoming maps are not included, see GET /api/tournament-match/{matchId} for those. */
+	playedMaps: Array<MapListMap>;
+	/** @example "https://sendou.ink/to/9/matches/695" */
+	url: string;
+}>;
 
 /** GET /api/org/{organizationId} */
 
@@ -401,6 +435,7 @@ export type MapListMap = {
 		| "TO"
 		| "COUNTERPICK"
 		| "ROLL";
+	/** `null` if the map has not been played yet. */
 	winnerTeamId: number | null;
 	participatedUserIds: Array<number> | null;
 	/** (round robin only) whether the map ended in a knockout. `null` if not tracked. */
@@ -415,6 +450,27 @@ type TournamentMatchTeam = {
 type TournamentBracket = {
 	type: "double_elimination" | "single_elimination" | "round_robin" | "swiss";
 	name: string;
+	/** Brackets that teams advance to this one from. Absent for a starting bracket, teams join those via sign-up. */
+	sources?: Array<TournamentBracketSource>;
+	/** When the bracket is scheduled to start. Absent if no start time was set. @example "2024-01-12T22:00:00.000Z" */
+	startTime?: string;
+	/** Do teams have to check in separately for this bracket. */
+	requiresCheckIn: boolean;
+};
+
+type TournamentBracketSource = {
+	/** Index of the source bracket in `brackets`. Same index as GET /api/tournament/{tournamentId}/brackets/{bracketIndex} uses. */
+	bracketIdx: number;
+	/**
+	 * Which teams of the source bracket advance to this one:
+	 * - positive numbers are placements, e.g. [1, 2] = top 2. With round robin and Swiss groups they are per group, e.g. [1] = every group's winner.
+	 * - negative numbers are teams eliminated from an elimination bracket in the given (losers) round, e.g. [-1, -2] = teams eliminated in rounds 1 & 2. Used for underground brackets.
+	 * - empty array means teams that reached the early advance threshold of a Swiss bracket.
+	 * @example [1, 2]
+	 */
+	placements: Array<number>;
+	/** If true, the highest number in `placements` also means every placement after it, e.g. [5] = 5th place and below. */
+	rest?: boolean;
 };
 
 type TournamentBracketData = BracketData;
@@ -423,6 +479,7 @@ type TournamentBracketData = BracketData;
 
 /** @lintignore */
 export interface TournamentSeedsBody {
+	/** Ids of teams not registered to the tournament are ignored. */
 	tournamentTeamIds: number[];
 }
 
@@ -430,6 +487,7 @@ export interface TournamentSeedsBody {
 
 /** @lintignore */
 export interface TournamentStartingBracketsBody {
+	/** Entries of teams not registered to the tournament are ignored. */
 	startingBrackets: Array<{
 		tournamentTeamId: number;
 		startingBracketIdx: number;

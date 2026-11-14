@@ -1,6 +1,6 @@
 import type { ShouldRevalidateFunction } from "react-router";
 import * as v from "valibot";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import * as SearchParams from "./search-params";
 import { SP } from "./search-params";
 import {
@@ -474,5 +474,65 @@ describe("SearchParams.skipSearchOnlyRevalidation", () => {
 		expect(run("/x", "/y")).toBe(true);
 		expect(run("/x", "/x?page=2", { formMethod: "POST" })).toBe(true);
 		expect(run("/x?page=2", "/x?page=2")).toBe(true);
+	});
+});
+
+describe("SearchParams.omitFromSearch", () => {
+	test.each([
+		{ why: "removes the key", search: "?a=1&step=x", expected: "a=1" },
+		{ why: "removes every value of it", search: "step=x&step=y", expected: "" },
+		{
+			why: "keeps a search without it",
+			search: "?a=1&b=2",
+			expected: "a=1&b=2",
+		},
+	])("$why", ({ search, expected }) => {
+		expect(SearchParams.omitFromSearch(["step"], search)).toBe(expected);
+	});
+});
+
+describe("SearchParams.trackReaderForDevTools", () => {
+	test("counts mounted readers and notifies subscribers", () => {
+		const definition = SearchParams.define({
+			trackedReaders: SP.param(v.number(), { default: 0, loader: false }),
+		});
+		const readersOf = () =>
+			SearchParams.definitionsForDevTools().find(
+				(entry) => entry.definition === definition,
+			)?.readers;
+		const listener = vi.fn();
+		const unsubscribe = SearchParams.subscribeDevTools(listener);
+
+		const untrackFirst = SearchParams.trackReaderForDevTools(definition);
+		const untrackSecond = SearchParams.trackReaderForDevTools(definition);
+		expect(readersOf()).toBe(2);
+
+		untrackFirst();
+		untrackSecond();
+		unsubscribe();
+
+		expect(readersOf()).toBe(0);
+		expect(listener).toHaveBeenCalledTimes(4);
+	});
+});
+
+describe("SearchParams.definitionsForDevTools", () => {
+	test("keeps one entry when a module defines the same keys again, as on HMR", () => {
+		const defineRedeclared = () =>
+			SearchParams.define({
+				redeclared: SP.param(v.string(), { default: "", loader: false }),
+			});
+		defineRedeclared();
+		const latest = defineRedeclared();
+
+		const entries = SearchParams.definitionsForDevTools().filter((entry) =>
+			entry.definition.keys.includes("redeclared"),
+		);
+
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({
+			definition: latest,
+			source: "app/modules/search-params/search-params.test.ts",
+		});
 	});
 });

@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { CalendarDays, Pin } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -15,6 +16,7 @@ import { markFriendRequestsSeen } from "~/hooks/useUnseenFriendRequests";
 import { useSearchParam } from "~/modules/search-params/hooks";
 import { metaTags } from "~/utils/remix";
 import type { SendouRouteHandle } from "~/utils/remix.server";
+import { FRIENDS_PAGE } from "~/utils/urls";
 import { FriendMenu } from "../components/FriendMenu";
 import { friendSectionSortValue } from "../friends-constants";
 import {
@@ -102,13 +104,14 @@ function IncomingRequestsSection() {
 						<Link to={request.sender.url} className={styles.pendingUser}>
 							<Avatar
 								user={{
-									discordId: request.sender.discordId,
-									discordAvatar: request.sender.discordAvatar,
-									customAvatarUrl: request.sender.customAvatarUrl,
+									id: request.sender.id,
+									avatar: request.sender.avatar,
 								}}
 								size="xxsm"
 							/>
-							<span className={styles.userName}>{request.sender.username}</span>
+							<span className={clsx(styles.userName, "truncate")}>
+								{request.sender.username}
+							</span>
 						</Link>
 						<div className="stack horizontal sm">
 							<ActionButton
@@ -150,13 +153,12 @@ function PendingRequestsSection() {
 						<Link to={request.receiver.url} className={styles.pendingUser}>
 							<Avatar
 								user={{
-									discordId: request.receiver.discordId,
-									discordAvatar: request.receiver.discordAvatar,
-									customAvatarUrl: request.receiver.customAvatarUrl,
+									id: request.receiver.id,
+									avatar: request.receiver.avatar,
 								}}
 								size="xxsm"
 							/>
-							<span className={styles.userName}>
+							<span className={clsx(styles.userName, "truncate")}>
 								{request.receiver.username}
 							</span>
 						</Link>
@@ -212,7 +214,7 @@ function FriendsListSection() {
 					{VIEW_FILTERS.map((value) => (
 						<SubNavLink
 							key={value}
-							to={friendsSearchParams.href("", { view: value })}
+							to={friendsSearchParams.href(FRIENDS_PAGE, { view: value })}
 							secondary
 							controlled
 							active={filter === value}

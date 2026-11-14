@@ -1,6 +1,6 @@
 import { sql } from "kysely";
 import type { LoaderFunctionArgs } from "react-router";
-import * as v from "valibot";
+import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { TournamentSettings } from "~/db/tables-json";
 import { getUser } from "~/features/auth/core/user.server";
@@ -8,6 +8,7 @@ import { ordinalToSp } from "~/features/mmr/mmr-utils";
 import * as Standings from "~/features/tournament/core/Standings";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import {
+	getBracketProgressionLabel,
 	seedsByStartingBracket,
 	sortTeamsBySeeding,
 } from "~/features/tournament/tournament-utils";
@@ -17,24 +18,21 @@ import {
 	isTournamentTeamInfoRevealed,
 	requireTournamentVisible,
 	tournamentDataCached,
-	tournamentFromDB,
+	tournamentSharedCached,
 } from "~/features/tournament-bracket/core/Tournament.server";
 import { getFixedTForLanguage } from "~/modules/i18n/i18next.server";
-import { nullifyingAvg } from "~/utils/arrays";
 import { databaseTimestampToDate } from "~/utils/dates";
 import {
 	concatUserSubmittedImagePrefix,
 	jsonArrayFrom,
 	jsonObjectFrom,
 	tournamentUsername,
+	userAvatar,
 } from "~/utils/kysely.server";
 import { parseParams } from "~/utils/remix.server";
-import { id } from "~/utils/schema";
+import { idObject } from "~/utils/schema";
+import { avatarUrl } from "~/utils/urls";
 import type { GetTournamentTeamsResponse } from "../schema";
-
-const paramsSchema = v.object({
-	id,
-});
 
 const ZERO_STATS: Standings.TeamRecord = {
 	setWins: 0,
@@ -48,7 +46,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	const user = getUser();
 	const { id: tournamentId } = parseParams({
 		params,
-		schema: paramsSchema,
+		schema: idObject,
 	});
 
 	const tournament = await tournamentDataCached(tournamentId);
@@ -113,7 +111,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 						"User.id as userId",
 						tournamentUsername().as("username"),
 						"User.discordId",
-						"User.discordAvatar",
+						userAvatar(eb).as("avatar"),
 						"User.country",
 						"User.pronouns",
 						"TournamentTeamMember.inGameName",
@@ -154,7 +152,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		: null;
 
 	const fullTournament = hasStarted
-		? await tournamentFromDB(tournamentId)
+		? await tournamentSharedCached(tournamentId)
 		: null;
 	const placementByTeamId = fullTournament
 		? new Map(
@@ -167,7 +165,14 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 		? Standings.recordByTeamId(fullTournament)
 		: null;
 
+	const progression = tournament.ctx.settings.bracketProgression;
+	const startingBracketIdxs = Progression.startingBrackets(progression);
+
 	const result: GetTournamentTeamsResponse = teams.map((team) => {
+		const startingBracketIdx = validStartingBracketIdx(
+			team.startingBracketIdx,
+			startingBracketIdxs,
+		);
 		const isOwnTeam = team.members.some((member) => member.userId === user?.id);
 		const showTeamInfo = revealInfo || isOwnTeam;
 		const pickupAvatarUrl = showTeamInfo ? team.avatarUrl : null;
@@ -181,6 +186,11 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 					? `https://sendou.ink/t/${team.team.customUrl}`
 					: null,
 			seed: seedByTeamId ? (seedByTeamId.get(team.id) ?? null) : team.seed,
+			startingBracketIdx,
+			division:
+				startingBracketIdxs.length > 1
+					? getBracketProgressionLabel(startingBracketIdx, progression)
+					: null,
 			placement: placementByTeamId?.get(team.id) ?? null,
 			stats: statsByTeamId ? (statsByTeamId.get(team.id) ?? ZERO_STATS) : null,
 			registeredAt: databaseTimestampToDate(team.createdAt).toISOString(),
@@ -198,9 +208,7 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 					userId: member.userId,
 					name: member.username,
 					discordId: member.discordId,
-					avatarUrl: member.discordAvatar
-						? `https://cdn.discordapp.com/avatars/${member.discordId}/${member.discordAvatar}.png`
-						: null,
+					avatarUrl: member.avatar ? avatarUrl(member.avatar, "lg") : null,
 					country: member.country,
 					captain: member.role === "OWNER",
 					inGameName: member.inGameName,
@@ -264,13 +272,14 @@ function seedsOfStartedTournament({
 				? team.startingBracketIdx
 				: null,
 			memberUserIds: team.members.map((member) => member.userId),
-			avgSeedingSkillOrdinal: nullifyingAvg(
-				team.members
-					.map((member) =>
-						settings.isRanked ? member.rankedOrdinal : member.unrankedOrdinal,
-					)
-					.filter((ordinal) => typeof ordinal === "number"),
-			),
+			avgSeedingSkillOrdinal:
+				R.mean(
+					team.members
+						.map((member) =>
+							settings.isRanked ? member.rankedOrdinal : member.unrankedOrdinal,
+						)
+						.filter((ordinal) => typeof ordinal === "number"),
+				) ?? null,
 		})),
 		settings.minMembersPerTeam ?? 4,
 	);
@@ -280,10 +289,23 @@ function seedsOfStartedTournament({
 	);
 }
 
+/** A missing or stale index (the bracket no longer being a starting one) falls back to the first bracket, like the site does. */
+function validStartingBracketIdx(
+	startingBracketIdx: number | null,
+	startingBracketIdxs: number[],
+) {
+	if (
+		typeof startingBracketIdx !== "number" ||
+		!startingBracketIdxs.includes(startingBracketIdx)
+	) {
+		return 0;
+	}
+
+	return startingBracketIdx;
+}
+
 function toSeedingPowerSP(ordinals: (number | null)[]) {
-	const avg = nullifyingAvg(
-		ordinals.filter((ordinal) => typeof ordinal === "number"),
-	);
+	const avg = R.mean(ordinals.filter((ordinal) => typeof ordinal === "number"));
 
 	if (typeof avg !== "number") return null;
 

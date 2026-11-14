@@ -51,8 +51,10 @@ export const GATE_SCORE_MIN_MAX_BRIGHTNESS = 200;
 /**
  * Gate anchor: the timer's white M:SS in a near-black box. In-match HUD reads
  * <=32 on each dark probe; closest lookalike is the replay-browser header's
- * stage tag ("Banlieue Balibot" ~48). Turf War and the death cam also show a
- * timer; the plate probes and no-readable-count rejection handle those.
+ * stage tag ("Banlieue Balibot" ~48). Turf War shows the timer with no
+ * counter: the gate's timer variant, which reads the strip alone. The
+ * last minute's digits are yellow, which peaks at 220-249 in gray against
+ * white's 255.
  */
 export const TIMER_DIGIT_ROI: Roi = { x: 908, y: 54, w: 100, h: 40 };
 export const TIMER_DARK_PROBES: readonly Roi[] = [
@@ -61,7 +63,21 @@ export const TIMER_DARK_PROBES: readonly Roi[] = [
 	{ x: 1012, y: 57, w: 7, h: 26 },
 ];
 export const GATE_TIMER_MAX_MEAN = 40;
-export const GATE_TIMER_MIN_MAX_BRIGHTNESS = 240;
+export const GATE_TIMER_MIN_MAX_BRIGHTNESS = 200;
+
+/**
+ * The timer's colon sits at one x whatever the digits: two bright dots with
+ * dark between. With no counter under the timer (Turf War) it is what tells
+ * the box from a dark lookalike pill (a minimap player card). Attested dots
+ * >=218 (yellow last-minute digits included), gap <=49; card text ~15.
+ */
+export const TIMER_COLON_DOT_ROIS: readonly Roi[] = [
+	{ x: 945, y: 67, w: 5, h: 5 },
+	{ x: 945, y: 84, w: 5, h: 5 },
+];
+export const TIMER_COLON_GAP_ROI: Roi = { x: 945, y: 77, w: 5, h: 2 };
+export const GATE_TIMER_COLON_MIN_DOT_MEAN = 150;
+export const GATE_TIMER_COLON_MAX_GAP_MEAN = 120;
 
 /**
  * Timer digits are 34px on native 1080p, ~40px on upscaled 720p; both tried,
@@ -102,261 +118,209 @@ export const PENALTY_SINGLE_PROBE_MIN_CONF = 0.8;
 /** Control = saturated plate fill: even deep blue keeps ~130 spread; attested fills >=112 vs <=19. */
 export const CONTROL_PLATE_MIN_SATURATION = 60;
 
-// Player-status icon strips: eight squid/octo icons flank the timer (alive =
-// team-ink body, special held = pale wash, splatted = grey X). Three geometries
-// named by which side sits at the packed pitch: "even" draws both sides at
-// ~88px (the SWS26 broadcast draws it badges and all; the S2 POV fixture's
-// ~99px strip still reads at these centers); the spectator HUD draws bigger
-// icons (gauge digits top-RIGHT, camera badges below) at per-side pitches (~98
-// left vs ~76 right = "narrow-right"). Nothing is mirror-symmetric, so centers
-// are measured per side. Spectator icons ride ~20px left of their badge
-// centers; the narrow outer-right center sits past the measured icon (~1313)
-// because splat X's lean into inked backdrop on the left while alive bodies
-// extend right (dead <=0.16 vs alive >=0.33 at 1320).
-//
-// The spectator strip MIRRORS its pitches when the broadcast specs the other
-// team (AREA CUP VoD): "narrow-left", badges and all. Its right column lands
-// within px of even's, so it must be its own scored, badge-probed candidate or
-// the left column misreads. S3 POV draws both badge-less narrow arrangements
-// in steady state (2026-08-22 Sendou VoD = narrow-left, 2026-08-11 =
-// narrow-right), so no geometry implies a footage type; only badges prove a
-// broadcast (`cast`). Broadcasts can also hide badges while keeping geometry
-// (AREA CUP VoD), so player-status.ts scores the geometries by body-read
-// decisiveness; a mispicked layout flickers phantom deaths on the outer players.
+// Player-status icon strips (player-status.ts): four squid/octo icons per side
+// flank the timer, alive = team ink, special ready = a pale wash that pulses,
+// splatted = dark plate under a grey X, vacant seat = an opaque black squid. The game resizes each side
+// continuously (S3 POV swings it with the objective, a splatted POV player
+// shrinks it, spectators toggle views, broadcasts mirror it), so each side's
+// pitch is fitted per read. Icons scale with their pitch about a fixed center
+// line, the inner icon pinned beside the timer.
 
-/** Per-side slot center x's, slots left-to-right. */
-export const STATUS_SLOT_CENTERS_EVEN: readonly [
-	readonly number[],
-	readonly number[],
-] = [
-	[571, 657, 750, 839],
-	[1090, 1178, 1267, 1355],
+/** Each side's icon strip at any fitted pitch, for the debug views' crops. */
+export const STATUS_STRIP_ROIS: readonly [Roi, Roi] = [
+	{ x: 470, y: 10, w: 420, h: 115 },
+	{ x: 1030, y: 10, w: 425, h: 115 },
 ];
-export const STATUS_SLOT_CENTERS_NARROW_RIGHT: readonly [
-	readonly number[],
-	readonly number[],
+
+/** Band every fitted pitch's apexes, gaps, team-hue sample and body probe fall within. */
+export const STATUS_BAND: Roi = { x: 440, y: 10, w: 1040, h: 92 };
+
+/**
+ * Fitted pitches span every attested geometry and the tweens between (S3
+ * draws in-between pitches for seconds, e.g. ~81 beside ~91). The inner icon
+ * holds within a few px of these centers at every pitch.
+ */
+export const STATUS_PITCH_RANGE: readonly [number, number] = [72, 102];
+export const STATUS_INNER_CENTER_RANGES: readonly [
+	readonly [number, number],
+	readonly [number, number],
 ] = [
-	[543, 642, 741, 837],
-	[1085, 1161, 1237, 1320],
-];
-export const STATUS_SLOT_CENTERS_NARROW_LEFT: readonly [
-	readonly number[],
-	readonly number[],
-] = [
-	[605, 681, 757, 833],
-	[1090, 1187, 1283, 1381],
+	[830, 838],
+	[1082, 1092],
 ];
 
 /**
- * Shoulder probe (special-ready glow): upper-left body, clear of the weapon
- * silhouette, spectator gauge digits (top-right) and even trinkets (bottom).
- * Relative to a slot center.
+ * Icon model: at pitch p the icon scales by p / STATUS_REFERENCE_PITCH about
+ * y = STATUS_ICON_CENTER_Y, its kite apex STATUS_APEX_RISE (scaled) above that
+ * with 45° flanks. An octoling's dome contains the kite's apex triangle, so
+ * the triangle core reads either shape.
  */
-export const STATUS_SHOULDER_BOX_EVEN = { dx: -30, y: 38, w: 24, h: 20 };
-export const STATUS_SHOULDER_BOX_NARROW = { dx: -30, y: 35, w: 24, h: 30 };
+export const STATUS_REFERENCE_PITCH = 88;
+export const STATUS_ICON_CENTER_Y = 68;
+export const STATUS_APEX_RISE = 46;
 
 /**
- * Body probe (team ink = alive): widest band dodging camera badges (y>=100) and
- * even coin trinkets (y>=95). A slimmer box read alive 0.24 vs dead bleed 0.23
- * (AREA CUP VoD); this footprint separates them at 0.26 vs 0.20.
+ * An octoling's dome at the reference pitch: a circle this far above the icon
+ * center with this radius (its top just under the kite apex). Its top arc is
+ * fitted as the kite's flanks are: inside a row of domes the flanks find no
+ * edge, and an in-between pitch lining gaps up with dome sides outscored them.
  */
-export const STATUS_BODY_BOX_EVEN = { dx: -40, y: 40, w: 80, h: 50 };
-export const STATUS_BODY_BOX_NARROW = { dx: -40, y: 45, w: 80, h: 50 };
-
-/** Ink pixel: saturated and bright; the value floor excludes dark saturated backdrops (blue walls v<=90). */
-export const STATUS_INK_MIN_SPREAD = 70;
-export const STATUS_INK_MIN_VALUE = 105;
+export const STATUS_DOME_CENTER_DY = -5;
+export const STATUS_DOME_RADIUS = 39;
 
 /**
- * Glow pixel: 225 splits ready shoulders (>=0.40) from the brightest alive ink (even lime: 0.97 at
- * 215, 0.00 at 225).
+ * Fit weights (player-status.ts fitSide): the apex edge contrast is the
+ * precise term; the gap corners (outside kite and dome alike) keep dome icons
+ * readable; team ink inside the apex vs beside it pins alive icons a white X
+ * or pale backdrop would otherwise outscore.
  */
-export const STATUS_GLOW_MIN_VALUE = 225;
+export const STATUS_GAP_WEIGHT = 0.5;
+export const STATUS_TEAM_WEIGHT = 1;
 
 /**
- * Narrow-layout glow must be UNSATURATED: the wash is pale while backdrop leak
- * is colored (sky over a dead shoulder: 0.30 raw, 0.00 capped, spread >130;
- * lilac/pink washes spread 70-90, capped 0.46-0.61). Even ready icons light IN
- * team color (glow 0.94 saturated), so narrow layouts only.
+ * Search effort: fit statistics sample every STATUS_FIT_ROW_STEP-th row, and
+ * the coarse 2px grid's best few seeds are refined at 1px.
  */
-export const STATUS_GLOW_MAX_SPREAD = 90;
+export const STATUS_FIT_ROW_STEP = 2;
+export const STATUS_FIT_REFINED_SEEDS = 3;
 
 /**
- * Pale pixel: bright but unsaturated. The wash PULSES, dimming below the glow
- * floor (~190-220) at its trough; without this class a trough frame reads as a splat.
+ * The previous read's fit holds while it scores within this ratio of the best
+ * (single frames mislead: a splat's X stamping in oversized, a team wipe).
  */
-export const STATUS_PALE_MIN_VALUE = 185;
-export const STATUS_PALE_MAX_SPREAD = 70;
+export const STATUS_STICKY_SCORE_RATIO = 0.8;
+
+/** The fit carries forward only across reads this close (~1s apart in-match); longer means a new match. */
+export const STATUS_FIT_STICKY_MAX_GAP_S = 30;
 
 /**
- * Tinted pixel: bright-ish and unsaturated, but not neutral. The special-ready
- * wash is a pale team tint (lavender, pink, ...) at every pulse phase, while a
- * splatted icon is a neutral grey plate under a grey X — and under a blown-out
- * backdrop that plate reads near-white, so brightness alone cannot tell them
- * apart. Spread floor sits above chroma-subsampling noise on grey (splats
- * <=0.19 tinted) and the value floor above the dimmed plate.
+ * Apex pixel classes, by value (max channel) and saturation (spread / max):
+ * ink = saturated team ink of any hue; pale = bright and not saturated (the
+ * wash, lilac to near-white); grey = the X strokes and the unlit plate.
+ * Saturation as a ratio is what tells a pale lavender wash (spread ~80 at
+ * value ~250) from team ink.
  */
-export const STATUS_TINT_MIN_VALUE = 100;
-export const STATUS_TINT_MIN_SPREAD = 12;
+export const STATUS_INK_MIN_SATURATION = 0.5;
+export const STATUS_INK_MIN_VALUE = 100;
+export const STATUS_PALE_MIN_VALUE = 160;
+export const STATUS_GREY_MAX_SATURATION = 0.15;
+export const STATUS_DARK_MAX_VALUE = 60;
 
 /**
- * Splatted: body ink under the floor (dead <=0.20 vs alive >=0.26) and a
- * neutral body (STATUS_WASH_MIN_BODY_TINT). Even reads add the shoulder-glow
- * guard (ready >=0.40 vs dead <=0.03); on narrow layouts backdrop leak past a
- * shrunken X reads 0.26-0.35 there, so only the body classes decide.
+ * Team ink for the fit: within this hue distance of the side's modal ink hue
+ * (10° bins), sampled every other pixel over the icons' upper bodies.
  */
-export const STATUS_DEAD_MAX_BODY_INK = 0.23;
-export const STATUS_DEAD_MAX_SHOULDER_GLOW = 0.2;
-
-/**
- * Wash body: tinted past this on an ink-poor body means the special-ready
- * wash at any pulse phase (bright frames and the dim trough alike), under it
- * a splat. Splats read <=0.19 (SWS26 splat on a blown-out white sky: 0.07 at
- * pale 0.80), ink-poor washes >=0.45 (SWS26 even-layout trough: 0.57 at pale
- * 0.13, shoulder glow 0.20 — under both ready floors).
- */
-export const STATUS_WASH_MIN_BODY_TINT = 0.3;
-
-/** Special ready: shoulder glow past this (attested >=0.40 vs <=0.06). */
-export const STATUS_READY_MIN_SHOULDER_GLOW = 0.25;
-
-/**
- * Ready off the body when the shoulder misses the wash (trough, compressed
- * footage): ready >=0.31 (AREA CUP after a respawn) vs alive <=0.25 (silhouette whites).
- */
-export const STATUS_READY_MIN_BODY_PALE = 0.3;
-
-/**
- * Narrow-layout ready guard: the wash REPLACES body ink, so an ink-heavy body
- * means backdrop leak (the overhead view's left column sits ~12px off, sliding
- * probes onto pale buildings / the lead banner: ink >=0.44). Graded: clean
- * washes ink <=0.303 (SWS26 pale pink on orange; nearest alive 0.33 has no
- * wash signal); inky washes (0.316/0.344) still read strongly pale
- * (>=0.399) while the Um'ami POV leak read ink 0.36 / pale 0.269. Even ready
- * icons light IN team color (ink up to 0.68), so narrow only. Margins are THIN
- * (ink 0.303 vs 0.32, 0.344 vs 0.4; pale 0.399 vs 0.35) — re-measure before moving any.
- */
-export const STATUS_READY_WASH_MAX_BODY_INK = 0.4;
-export const STATUS_READY_CLEAN_WASH_MAX_BODY_INK = 0.32;
-export const STATUS_READY_INKY_WASH_MIN_BODY_PALE = 0.35;
-
-/**
- * Narrow ready reads also need a minimally pale body: every attested wash reads
- * >=0.22 (bright and trough) while a dead icon under skylight leak (2026-08-22
- * VoD: shoulder 0.26-0.35) reads pale <=0.15 — a dead body is ink-poor, so the
- * ink guards cannot catch it. Even reads skip this.
- */
-export const STATUS_READY_MIN_WASH_BODY_PALE = 0.2;
-
-/**
- * Layout scoring: per-slot decisiveness is body-ink distance from the dead
- * threshold, capped so one saturated slot cannot carry a misaligned geometry.
- * Sticky margin: what a challenger must win by to switch an established layout.
- */
-export const STATUS_LAYOUT_SCORE_CAP = 0.3;
-export const STATUS_LAYOUT_STICKY_MARGIN = 0.04;
-
-/**
- * Fresh badge-less picks prefer narrow-right (badge-less even is barely
- * attested; busy backdrops mis-rank: sendou-triton match-start scores even
- * 0.278 / narrow-right 0.273 yet is narrow-right). Even wins only when
- * narrow-right reads under the floor (S2 POV fixture 0.198 vs true >=0.212) or
- * leads decisively (true narrow-right mis-leads even by at most 0.036). With even
- * at the SWS26 pitch, the badge-less AREA CUP trough frame (0.192 vs even 0.224)
- * lands on even too, where every slot still reads right.
- */
-export const STATUS_FRESH_NARROW_RIGHT_MIN_DECISIVENESS = 0.21;
-export const STATUS_FRESH_EVEN_MIN_LEAD = 0.05;
-
-/**
- * Fresh badge-less NARROW-LEFT pick (pickLayout): S3 POV draws it in steady
- * state (2026-08-22 Sendou VoD, centers within ~10px) over pale backdrops that
- * drown the comb, so the LEFT column — the only one differing from even — must
- * win decisively: true frames lead by >=0.046, rival winners by <=0.001. The S2
- * POV fixture survives that (lead 0.052 off featureless backdrop) but its left
- * comb is strong at the rival pitch (0.326/0.325 vs <=0.220 on true frames), so
- * a readable rival left comb vetoes.
- */
-export const STATUS_FRESH_NARROW_LEFT_MIN_LEFT_LEAD = 0.025;
-export const STATUS_FRESH_NARROW_LEFT_RIVAL_COMB_VETO = 0.3;
-
-/**
- * Slot-comb contrast (combContrast): a rigid comb exposes the pitch — badge-less
- * narrow-left scores 0.81 while narrow-right reads it at -0.07 (sendou-triton
- * MakoMart), so a decisive win proves narrow-left despite the shared right
- * column. Both gates needed: worst false narrow-left comb is 0.44 with a 0.24 lead.
- */
-export const STATUS_COMB_BAND_Y = 35;
-export const STATUS_COMB_BAND_H = 61;
-export const STATUS_COMB_SIDE_SPANS: readonly [
-	[number, number],
-	[number, number],
-] = [
-	[440, 960],
-	[960, 1480],
+export const STATUS_TEAM_MAX_HUE_DIST = 25;
+export const STATUS_TEAM_HUE_ROIS: readonly [Roi, Roi] = [
+	{ x: 500, y: 45, w: 370, h: 41 },
+	{ x: 1050, y: 45, w: 370, h: 41 },
 ];
-export const STATUS_COMB_CENTER_HALF_WIDTH = 16;
-export const STATUS_COMB_GAP_HALF_WIDTH = 7;
-export const STATUS_COMB_MAX_SHIFT = 10;
-export const STATUS_NARROW_LEFT_COMB_MIN = 0.5;
-export const STATUS_NARROW_LEFT_COMB_LEAD = 0.25;
 
 /**
- * Sticky flips away from narrow-right need comb corroboration (past this floor
- * AND leading by STATUS_NARROW_LEFT_COMB_LEAD): while the S3 POV player is dead
- * the strip shrinks ~0.77 toward the timer, landing near narrow-left pitches
- * (2026-08-11 Um'ami VoD locked 107 of 136 reads that way). True narrow-left
- * combs 0.41-0.81 with >=0.31 lead; worst POV false comb 0.20, negative lead.
+ * Slot state off the apex fractions. Over every fixture slot: alive apexes
+ * read ink >=0.43 vs <=0.19 otherwise; ready read pale >=0.6 at grey <=0.14,
+ * splats grey >=0.18 at pale <=0.38 (a blown-out backdrop through the plate).
  */
-export const STATUS_STICKY_FLIP_COMB_MIN = 0.3;
-
-/** Layout carries forward only across reads this close (~1s apart in-match); longer means a new match. */
-export const STATUS_LAYOUT_STICKY_MAX_GAP_S = 30;
-
-// Strip weapon-icon evidence (strip-weapons.ts), calibrated on the sendou-triton
-// VoD (narrow-right, 720p upscaled to canonical).
+export const STATUS_ALIVE_MIN_INK = 0.3;
+export const STATUS_READY_MIN_PALE = 0.45;
+export const STATUS_READY_MAX_GREY = 0.2;
 
 /**
- * Search window per slot center: holds the render at any geometry (~65px on narrow strips) without
- * a neighbor's art.
+ * A wash pales the whole icon, while a weapon render pale over the apex
+ * (Painbrush's head) leaves the body around it in team ink: a pale apex reads
+ * ready only while at least one body side (reference px about the icon center,
+ * x offsets from it) is short of this ink share. Every fixture wash and the
+ * real Painbrush washes leave a side at <=0.23 ink; the Painbrush render holds
+ * >=0.78 on both.
  */
-export const STRIP_WEAPON_BOX = { dx: -50, y: 20, w: 100, h: 100 };
-
-/** Narrow strips draw renders at ~55-70px depending on the weapon's aspect. */
-export const STRIP_WEAPON_TEMPLATE_SIZES = [44, 52, 60, 68, 76] as const;
+export const STATUS_WASH_BODY_SIDE = {
+	top: -10,
+	bottom: 14,
+	inner: 24,
+	outer: 34,
+};
+export const STATUS_WASH_MAX_BODY_INK = 0.5;
 
 /**
- * Knocked-out plate pixels and template backgrounds: mid-grey so dark barrels and white bodies both
- * keep contrast.
+ * Vacant seat (no player in a 1v1 lobby, or a disconnect): the body (reference
+ * px about the icon center line) all but black with no grey X stroke or weapon
+ * render in it. Switzerland 1v1 cast: every empty seat read black >=0.85 at
+ * grey 0; ~5000 splats elsewhere passed only on 12 frames of the X stamping in
+ * oversized and black (the death then starts a read later).
  */
-export const STRIP_WEAPON_TEMPLATE_BACKGROUND = 90;
+export const STATUS_VACANT_BODY = { top: -20, bottom: 26, halfWidth: 28 };
+export const STATUS_VACANT_MIN_DARK = 0.85;
+export const STATUS_VACANT_MAX_GREY = 0.03;
 
-/** Ink floor for the NCC coverage penalty over that background. */
-export const STRIP_WEAPON_INK_THRESHOLD = 140;
+// Strip weapon-icon evidence (strip-weapons.ts): plate-composited NCC at the
+// fitted scale, calibrated on the sendou-triton VoD (pitches 74-97) and the
+// XHXYlzu4Zt8 one (octoling domes, team ink on a same-colored backdrop).
 
 /**
- * Plate pixel: saturated, bright, near the region's modal saturated hue. Floors
- * sit under the modal-vote floors (+15 in strip-weapons.ts) to reach dimmer edge pixels.
+ * Each slot's crop is resampled to the reference pitch: a box of these half
+ * sizes (reference px) about the icon center, nudged down STRIP_WEAPON_CENTER_DY.
+ * Leaves room for the template plus the search offsets.
  */
-export const STRIP_WEAPON_KNOCKOUT_MIN_SPREAD = 55;
-export const STRIP_WEAPON_KNOCKOUT_MIN_VALUE = 90;
-export const STRIP_WEAPON_MAX_PLATE_HUE_DIST = 30;
+export const STRIP_WEAPON_CROP_HALF = { x: 64, y: 52 };
+export const STRIP_WEAPON_CENTER_DY = 1;
 
-/** Single reads rank the true weapon top-1 about half the time, but top-8 often enough for the aggregate. */
+/** The game icon's full canvas width at the reference pitch (its art drawn at ~1.05x the pitch). */
+export const STRIP_WEAPON_ICON_SIZE = 92;
+
+/** Template pixels count only where the icon art is this opaque, so the plate and backdrop never weigh in. */
+export const STRIP_WEAPON_MASK_MIN_ALPHA = 200;
+
+/**
+ * Radius (reference px) about the icon center that the plate always covers,
+ * kite and dome alike: the art's see-through pixels in it match the plate color.
+ */
+export const STRIP_WEAPON_PLATE_RADIUS = 32;
+
+/**
+ * The icon corner (reference px from its center) where kit variants draw their
+ * brand badge: the art's see-through pixels there match one flat color of
+ * their own (plate, strip band or scene), so a base kit loses to a drawn badge.
+ */
+export const STRIP_WEAPON_BADGE_CORNER = {
+	left: 12,
+	right: 36,
+	top: 16,
+	bottom: 42,
+};
+
+/**
+ * Template offsets searched about the crop center (reference px): the fitted
+ * centers wobble a few px across a strip, and an off fit (team ink on a
+ * backdrop of its own color) sits an outer icon up to ~15px off; the icon's
+ * height barely moves.
+ */
+export const STRIP_WEAPON_SEARCH = { x: 16, y: 1 };
+
+/**
+ * Top two candidates this close are told apart by the parts only one of them
+ * draws (strip-weapons.ts differenceScore): a kit's badge or a scope is too
+ * small a share of the icon to rank siblings in the full score.
+ */
+export const STRIP_WEAPON_TIE_MARGIN = 0.03;
+
+/** A half-resolution pass over every weapon shortlists this many for the full-resolution pass. */
+export const STRIP_WEAPON_SHORTLIST = 12;
+
+/** The true weapon ranks top-1 on ~99% of single reads; the aggregate needs only the runners-up's score floor. */
 export const STRIP_WEAPON_TOP_K = 8;
 
-/**
- * Every Nth counter read samples strip weapons: ~20 samples over a short match assign correctly;
- * the sweep is too heavy per read.
- */
+/** Below this best score the slot holds no weapon render (an empty seat, a covered icon) and is skipped. */
+export const STRIP_WEAPON_MIN_SCORE = 0.5;
+
+/** Every Nth counter read samples strip weapons: identities hold all game, so dense reads add nothing. */
 export const STRIP_WEAPON_SAMPLE_INTERVAL = 5;
 
 /**
  * Broadcast discriminator (`cast`): the spectator HUD draws white camera badges
- * under the right team's icons, one row per geometry (even's at the ~88px
- * pitch, SWS26). All four probes must read white (bright AND unsaturated — sky
- * is saturated cyan). Badge frames read >=0.33 (AREA CUP faded row), every
- * badge-less frame <=0.004.
+ * under the right team's icons, one row per strip arrangement (the ~88px one
+ * on SWS26). All four probes must read white (bright AND unsaturated — sky is
+ * saturated cyan). Badge frames read >=0.33 (AREA CUP faded row); a white
+ * backdrop under a POV strip still fakes a row now and then.
  */
 export const STATUS_DPAD_PROBES_NARROW_RIGHT: readonly Roi[] = [
 	1105, 1180, 1256, 1332,
@@ -370,3 +334,145 @@ export const STATUS_DPAD_PROBES_EVEN: readonly Roi[] = [
 export const STATUS_WHITE_MIN_VALUE = 215;
 export const STATUS_WHITE_MAX_SPREAD = 40;
 export const STATUS_CAST_MIN_DPAD_WHITE = 0.25;
+
+// Tower Control / Rainmaker track overlay (track.ts): a dotted track under the
+// icon strip, end to end x514..1405 at y155 in both modes, with the objective's
+// icon riding it and each team's "Remaining" plate hanging under the point its
+// push reached (so a side's plate always sits on the half it pushes into:
+// the left team pushes right). Calibrated on the tower_control / rainmaker VoDs
+// (720p upscaled) and the TC/RM death fixtures (German, lime/magenta,
+// yellow/purple lobbies).
+
+export const TRACK_Y = 155;
+export const TRACK_CENTER_X = 959.5;
+export const TRACK_HALF_LENGTH = 445.5;
+
+/**
+ * Track dots sit at a fixed pitch and phase in every attested lobby and mode
+ * (DFT peak 14.10-14.15 px, dot centers x528.7 + k·14.13), whatever markers
+ * cover some of them.
+ */
+export const TRACK_DOT_PITCH = 14.13;
+export const TRACK_FIRST_DOT_X = 528.7;
+export const TRACK_COMB_SPAN: readonly [number, number] = [520, 1400];
+/** Rows above/below the line a dot stands out from: past its ~9px diameter. */
+export const TRACK_COMB_OFFSET_Y = 9;
+
+/**
+ * The comb projects each 110px window on its own and drops the two worst: a
+ * checkpoint square, an end marker or a backdrop edge along the line (the
+ * overhead super-jump camera on Humpback Pump Track) drives a window into
+ * anti-phase, which sank a whole-span projection under the floor.
+ */
+export const TRACK_COMB_WINDOW = 110;
+export const TRACK_COMB_DROPPED_WINDOWS = 2;
+
+/**
+ * Comb projection at the dot phase: gameplay with the track reads >=26 on
+ * every TC/RM fixture, though a low-contrast backdrop leaves little between
+ * dots and ground (Humpback Pump Track samples 8-20, purple dots over navy
+ * the lowest); every other frame <=7.5 (SZ HUD, lobby, results, the intro,
+ * the POV map).
+ */
+export const GATE_TRACK_MIN_COMB = 11;
+
+/**
+ * Held icon: team-ink disc (outer radius ~18) with a white squid glyph filling
+ * r7-11. Neutral (the anchor badge, dropped Rainmaker / idle tower): white
+ * ring r18-21 around an olive disc r13-16.
+ */
+export const TRACK_ICON_SPAN: readonly [number, number] = [505, 1415];
+export const TRACK_ICON_RING_RADII = [15.5, 16.5, 17.5] as const;
+export const TRACK_ICON_CORE_RADII = [8, 9.5, 11] as const;
+export const TRACK_NEUTRAL_RING_RADII = [18.5, 19.5, 20.5] as const;
+export const TRACK_NEUTRAL_DISC_RADII = [13.5, 14.5, 15.5] as const;
+export const TRACK_ICON_Y_JITTER = 1;
+
+/**
+ * Icon pixel classes: saturated ink / white glyph / the neutral badge's olive
+ * (~130,133,30 in every lobby). Pale sky (~188,220,252) must be neither ink nor
+ * white, or a sky backdrop scores as the neutral badge's white ring.
+ */
+export const TRACK_INK_MIN_SPREAD = 80;
+export const TRACK_INK_MIN_VALUE = 90;
+export const TRACK_WHITE_MIN_VALUE = 170;
+export const TRACK_WHITE_MAX_SPREAD = 55;
+/** Olive is duller than team ink: compressed footage reads it at spread ~60. */
+export const TRACK_OLIVE_HUE_RANGE: readonly [number, number] = [40, 75];
+export const TRACK_OLIVE_MIN_SPREAD = 45;
+export const TRACK_OLIVE_MAX_VALUE = 190;
+
+/**
+ * Checkpoint markers tell the modes apart: TC squares (31 or 40px, ~3px black
+ * frame, pale ink quadrants), RM pedestals (white base ~47px wide at y169, white cap y133-141, ink
+ * body above). Squares are scored off the ends (both modes draw rings there);
+ * pedestals up to them, as RM's goal pedestals replace the end rings.
+ */
+export const TRACK_SQUARE_SPAN: readonly [number, number] = [545, 1375];
+export const TRACK_PEDESTAL_SPAN: readonly [number, number] = [505, 1415];
+export const TRACK_SQUARE_SIZES = [31, 40] as const;
+export const TRACK_PEDESTAL = {
+	baseY: 169,
+	baseHalfWidth: 18,
+	bodyY: 160,
+	capY: 137,
+	capHalfWidth: 10,
+};
+export const TRACK_MARKER_MIN_SCORE = 0.75;
+export const TRACK_MARKER_ICON_CLEARANCE = 30;
+export const TRACK_DARK_MAX_VALUE = 60;
+
+/** Shape score (ring fraction × core fraction) an icon must reach. */
+export const TRACK_ICON_MIN_SCORE = 0.5;
+
+/** A held icon's ink hue must sit this close to its team's strip hue. */
+export const TRACK_ICON_MAX_TEAM_HUE_DIST = 40;
+
+/**
+ * "Remaining" plates: localized label over ~35px white digits with a dark
+ * outline; digits sit y220-255 wherever the plate slides. The band spans every
+ * plate position (centers x514..1405, ~90px wide).
+ */
+export const TRACK_PLATE_DIGIT_ROI: Roi = { x: 460, y: 214, w: 1000, h: 48 };
+export const TRACK_PLATE_TEXT_HEIGHTS = [33, 36] as const;
+export const TRACK_PLATE_BIN_THRESHOLD = 190;
+export const TRACK_PLATE_DIGIT_MIN_CONF = 0.75;
+/** Plate ink sampled beside a digit run: this far out and this tall. */
+export const TRACK_PLATE_INK_PAD_X = 10;
+/**
+ * A plate sits on the half its team pushes into; the tip can reach just past
+ * the center when a side's record is still ~100.
+ */
+export const TRACK_PLATE_CENTER_SLACK = 30;
+
+/**
+ * Each team's ink off its own end of the track: the end marker's core (TC
+ * ring center, RM pedestal body) and the first four dots are always drawn in
+ * the ink of the team defending that end. Kept tight: the backdrop around them
+ * is often inked too. The icon only covers them when pushed there by the other
+ * team, so they are skipped while it is within reach.
+ */
+export const TRACK_END_INK_ROIS: readonly [readonly Roi[], readonly Roi[]] =
+	(() => {
+		const dot = (k: number): Roi => ({
+			x: Math.round(TRACK_FIRST_DOT_X + k * TRACK_DOT_PITCH) - 2,
+			y: TRACK_Y - 2,
+			w: 4,
+			h: 4,
+		});
+		const lastDot = Math.floor((1400 - TRACK_FIRST_DOT_X) / TRACK_DOT_PITCH);
+		return [
+			[{ x: 508, y: 149, w: 12, h: 12 }, ...[0, 1, 2, 3].map(dot)],
+			[
+				{ x: 1399, y: 149, w: 12, h: 12 },
+				...[0, 1, 2, 3].map((k) => dot(lastDot - k)),
+			],
+		];
+	})();
+export const TRACK_END_INK_ICON_CLEARANCE = 25;
+
+/** Fallback: the icon strip (team-ink squid plates) per side; splats and backdrop can drown it. */
+export const TRACK_STRIP_INK_ROIS: readonly [Roi, Roi] = [
+	{ x: 520, y: 40, w: 370, h: 55 },
+	{ x: 1030, y: 40, w: 370, h: 55 },
+];

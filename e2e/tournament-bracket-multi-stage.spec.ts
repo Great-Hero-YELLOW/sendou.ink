@@ -1,5 +1,7 @@
-import { subMinutes } from "date-fns";
+import { addHours, subMinutes } from "date-fns";
 import { ADMIN_ID } from "~/features/admin/admin-constants";
+import { MapPool } from "~/features/map-list-generator/core/map-pool";
+import { dateToDatabaseTimestamp } from "~/utils/dates";
 import { expect, impersonate, isNotVisible, test } from "./helpers/playwright";
 import {
 	createTeams,
@@ -10,6 +12,7 @@ import {
 	SOS_BRACKETS,
 	startedTournamentTimes,
 	TO_MAP_POOL,
+	TWO_STARTING_BRACKETS,
 	teamSeeds,
 } from "./helpers/tournament";
 import { CalendarNewEventPage } from "./pages/calendar/calendar-new-event-page";
@@ -43,7 +46,7 @@ test.describe("Tournament bracket multi stage", () => {
 		const brackets = new TournamentBracketsPage(page);
 		await brackets.goto(tournament.id);
 
-		await brackets.bracketTab("Underground").click();
+		await brackets.selectBracket("Underground");
 		await brackets.checkInBracket();
 
 		await impersonate(page);
@@ -87,10 +90,10 @@ test.describe("Tournament bracket multi stage", () => {
 		await factories.TournamentFactory.playOut(topFourTournament.id);
 
 		await brackets.goto(topFourTournament.id);
-		await brackets.bracketTab("Groups stage").click();
+		await brackets.selectBracket("Groups stage");
 		const topFourGroups = await brackets.groupStandingsTeamNames(4);
 
-		await brackets.bracketTab("Final stage").click();
+		await brackets.selectBracket("Final stage");
 		const topFourLineup = await brackets.firstRoundTeamNames(16);
 
 		expectGroupsSpreadAcrossBracket(topFourLineup, topFourGroups);
@@ -106,10 +109,10 @@ test.describe("Tournament bracket multi stage", () => {
 		await factories.TournamentFactory.playOut(topTwoTournament.id);
 
 		await brackets.goto(topTwoTournament.id);
-		await brackets.bracketTab("Groups stage").click();
+		await brackets.selectBracket("Groups stage");
 		const topTwoGroups = await brackets.groupStandingsTeamNames(4);
 
-		await brackets.bracketTab("Final stage").click();
+		await brackets.selectBracket("Final stage");
 		const topTwoLineup = await brackets.firstRoundTeamNames(8);
 
 		expectGroupsSpreadAcrossBracket(
@@ -195,7 +198,7 @@ test.describe("Tournament bracket multi stage", () => {
 
 		const eventEdit = await admin.editEventInfo();
 		await eventEdit.deleteLastBracket();
-		await eventEdit.fillLastPlacements("3,4");
+		await eventEdit.pickLastPlacements([3, 4]);
 		await eventEdit.save();
 
 		const brackets = new TournamentBracketsPage(page);
@@ -220,10 +223,10 @@ test.describe("Tournament bracket multi stage", () => {
 		await lastGroupsMatch.reportResult({ mapsToReport: 2 });
 		await lastGroupsMatch.backToBracket();
 
-		await brackets.bracketTab("Hammerhead").click();
+		await brackets.selectBracket("Hammerhead");
 		await isNotVisible(brackets.locators.bracketsViewer);
 
-		await brackets.bracketTab("Mako").click();
+		await brackets.selectBracket("Mako");
 		await expect(brackets.locators.bracketsViewer).toBeVisible();
 
 		await brackets.finalize();
@@ -300,11 +303,105 @@ test.describe("Tournament bracket multi stage", () => {
 			"Hammerhead",
 			"Mako",
 		]) {
-			await brackets.bracketTab(bracketName).click();
+			await brackets.selectBracket(bracketName);
 			await brackets.finalize();
 		}
 
 		await expect(brackets.match(11)).toBeVisible();
+	});
+
+	test("offers check out until the team's starting bracket starts and drop out after", async ({
+		page,
+		factories,
+	}) => {
+		const tournament = await factories.TournamentFactory.create({
+			authorId: ADMIN_ID,
+			startTimes: startedTournamentTimes(),
+			bracketProgression: TWO_STARTING_BRACKETS,
+			mapPoolMaps: TO_MAP_POOL,
+		});
+		const teams = await createTeams(
+			factories,
+			tournament.id,
+			[0, 0, 0, 0, 1, 1, 1, 1].map((startingBracketIdx) => ({
+				startingBracketIdx,
+			})),
+		);
+		await factories.TournamentFactory.startBracket(tournament.id, {
+			bracketIdx: 0,
+		});
+
+		await impersonate(page);
+
+		const brackets = new TournamentBracketsPage(page);
+		await brackets.goto(tournament.id, 1);
+		await expect(brackets.bracketTeamName("Team 5")).toBeVisible();
+
+		const admin = new TournamentAdminPage(page);
+		await admin.goto(tournament.id);
+		await admin.openTeamActions(teams[0].id);
+		await expect(admin.teamActionsMenuItem("Drop out")).toBeVisible();
+		await expect(admin.teamActionsMenuItem(/^Check out/)).toHaveCount(0);
+
+		await admin.goto(tournament.id);
+		await admin.openTeamActions(teams[4].id);
+		await expect(admin.teamActionsMenuItem(/^Check out/)).toBeVisible();
+		await expect(admin.teamActionsMenuItem("Drop out")).toHaveCount(0);
+
+		await admin.goto(tournament.id);
+		await admin.checkStartedTeamOut(teams[4].id);
+
+		await expect(admin.teamRow(teams[4].id)).toHaveCount(0);
+
+		await brackets.goto(tournament.id, 1);
+		await expect(brackets.bracketTeamName("Team 6")).toBeVisible();
+		await expect(brackets.bracketTeamName("Team 5")).toHaveCount(0);
+	});
+
+	test("starts a starting bracket with the maps prepared for another starting bracket", async ({
+		page,
+		factories,
+	}) => {
+		const [division1, division2] = TWO_STARTING_BRACKETS;
+		const tournament = await factories.TournamentFactory.create({
+			authorId: ADMIN_ID,
+			startTimes: startedTournamentTimes(),
+			// maps can only be prepared for a bracket that can't be started yet
+			bracketProgression: [
+				division1,
+				{
+					...division2,
+					startTime: dateToDatabaseTimestamp(addHours(new Date(), 1)),
+				},
+			],
+			mapPoolMaps: TO_MAP_POOL,
+		});
+		await createTeams(
+			factories,
+			tournament.id,
+			[0, 0, 0, 0, 1, 1, 1, 1].map((startingBracketIdx) => ({
+				startingBracketIdx,
+			})),
+		);
+
+		await impersonate(page);
+
+		const brackets = new TournamentBracketsPage(page);
+		await brackets.goto(tournament.id, 1);
+
+		const prepareDialog = await brackets.openPrepareMapsDialog();
+		await prepareDialog.confirm();
+
+		await brackets.goto(tournament.id, 1);
+		await expect(brackets.locators.preparedMapsCheckIcon).toBeVisible();
+
+		await brackets.goto(tournament.id, 0);
+
+		const startDialog = await brackets.openFinalizeDialog();
+		await expect(startDialog.locators.preparedByText).toBeVisible();
+		await startDialog.confirm();
+
+		await expect(brackets.locators.matches.first()).toBeVisible();
 	});
 
 	test("plays out a redemption bracket set up in the tournament creation form", async ({
@@ -325,8 +422,9 @@ test.describe("Tournament bracket multi stage", () => {
 		// start time in the past so the brackets can be started right away
 		await newTournament.setFirstDate(subMinutes(new Date(), 30));
 
+		await newTournament.goToStep("maps");
 		await newTournament.form.checkItems("mapPickingStyle", ["TO"]);
-		await newTournament.selectMapPoolTemplate("preset:SZ");
+		await newTournament.pasteMapPool(MapPool.SZ);
 
 		// groups of 4: top 2 advance to the finals directly, 3rd placers get
 		// another shot at the last finals spot through the redemption bracket
@@ -335,16 +433,16 @@ test.describe("Tournament bracket multi stage", () => {
 		await newTournament.addFollowUpBracket({
 			name: "Redemption",
 			format: "Single elimination",
-			placements: "3",
+			placements: [3],
 		});
 		await newTournament.addFollowUpBracket({
 			name: "Finals",
 			format: "Single elimination",
-			placements: "1-2",
+			placements: [1, 2],
 		});
-		await newTournament.addSourceToLastBracket("1");
+		await newTournament.connect(1, 2, [1]);
 
-		await newTournament.form.submit();
+		await newTournament.save();
 
 		await expect(page).toHaveURL(/\/to\/\d+/);
 		const tournamentId = Number(page.url().match(/\/to\/(\d+)/)![1]);
@@ -355,16 +453,16 @@ test.describe("Tournament bracket multi stage", () => {
 		const brackets = new TournamentBracketsPage(page);
 		await brackets.goto(tournamentId);
 
-		await brackets.bracketTab("Groups").click();
+		await brackets.selectBracket("Groups");
 		const groups = await brackets.groupStandingsTeamNames(2);
 		const redemptionTeamNames = groups.map((group) => group[2]);
 
 		// the finals can not be started before the redemption bracket has been played out
-		await brackets.bracketTab("Finals").click();
+		await brackets.selectBracket("Finals");
 		await expect(brackets.locators.teamsPendingFromSourcesText).toBeVisible();
 		await isNotVisible(brackets.locators.finalizeBracketButton);
 
-		await brackets.bracketTab("Redemption").click();
+		await brackets.selectBracket("Redemption");
 		await brackets.finalize();
 
 		const redemptionMatchId = Number(
@@ -378,7 +476,7 @@ test.describe("Tournament bracket multi stage", () => {
 		});
 		await redemptionMatch.backToBracket();
 
-		await brackets.bracketTab("Finals").click();
+		await brackets.selectBracket("Finals");
 		await isNotVisible(brackets.locators.teamsPendingFromSourcesText);
 		await brackets.finalize();
 
@@ -407,28 +505,28 @@ test.describe("Tournament bracket multi stage", () => {
 		const brackets = new TournamentBracketsPage(page);
 		await brackets.goto(tournament.id);
 
-		await brackets.bracketTab("Great White").click();
+		await brackets.selectBracket("Great White");
 
 		const prepareDialog = await brackets.openPrepareMapsDialog();
 		await prepareDialog.setExpectedTeams(8);
 		await prepareDialog.confirm();
 
 		await brackets.goto(tournament.id);
-		await brackets.bracketTab("Great White").click();
+		await brackets.selectBracket("Great White");
 
 		await expect(brackets.locators.preparedMapsCheckIcon).toBeVisible();
 
 		// we did not prepare maps for group stage
-		await brackets.bracketTab("Groups stage").click();
+		await brackets.selectBracket("Groups stage");
 
 		await isNotVisible(brackets.locators.preparedMapsCheckIcon);
 
 		// reuses the maps prepared for Great White
-		await brackets.bracketTab("Hammerhead").click();
+		await brackets.selectBracket("Hammerhead");
 
 		await expect(brackets.locators.preparedMapsCheckIcon).toBeVisible();
 
-		await brackets.bracketTab("Great White").click();
+		await brackets.selectBracket("Great White");
 
 		const unlinkDialog = await brackets.openPrepareMapsDialog();
 		await unlinkDialog.unlinkFinalsThirdPlaceMatch();
@@ -436,7 +534,7 @@ test.describe("Tournament bracket multi stage", () => {
 		await unlinkDialog.confirm();
 
 		await brackets.goto(tournament.id);
-		await brackets.bracketTab("Great White").click();
+		await brackets.selectBracket("Great White");
 
 		const relinkDialog = await brackets.openPrepareMapsDialog();
 

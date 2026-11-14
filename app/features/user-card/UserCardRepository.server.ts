@@ -4,7 +4,7 @@ import { sql } from "kysely";
 import { ServerConfig } from "~/config.server";
 import { db } from "~/db/sql";
 import type { Tables } from "~/db/tables";
-import type { CustomTheme, PeakXP } from "~/db/tables-json";
+import type { PeakXP } from "~/db/tables-json";
 import { actorId, actorIdOrNull } from "~/features/auth/core/user.server";
 import { cachedFullUserLeaderboard } from "~/features/leaderboards/core/leaderboards.server";
 import { LFG } from "~/features/lfg/lfg-constants";
@@ -17,11 +17,11 @@ import { LRUCache } from "~/modules/cache";
 import type { StageId } from "~/modules/in-game-lists/types";
 import { dateToDatabaseTimestamp } from "~/utils/dates";
 import {
-	asJson,
 	commonUserObjectFields,
 	concatUserSubmittedImagePrefix,
 	jsonBuildObject,
 	jsonObjectFrom,
+	supporterCustomTheme,
 } from "~/utils/kysely.server";
 import { PRESET_COLORS } from "../tier-list-maker/tier-list-maker-constants";
 import type {
@@ -29,6 +29,7 @@ import type {
 	UserCardData,
 	UserCardStat,
 	UserCardStatXPValue,
+	UserCardsById,
 } from "./user-card-types";
 import { isValidUnverifiedXp } from "./user-card-utils";
 
@@ -47,16 +48,18 @@ export async function findAllByUserIds({
 	include?: { friendCode?: boolean };
 	/** Keep hidden stats in `stats`; only the edit page opts in, so hidden values never reach a viewer. */
 	includeHiddenStats?: boolean;
-}): Promise<{ userCards: Map<number, UserCardData> }> {
-	if (userIds.length === 0) return { userCards: new Map() };
+}): Promise<{ userCards: UserCardsById }> {
+	if (userIds.length === 0) return { userCards: {} };
 
 	return {
-		userCards: await queryUserCards({
-			userIds,
-			viewerId: actorIdOrNull(),
-			include,
-			includeHiddenStats,
-		}),
+		userCards: Object.fromEntries(
+			await queryUserCards({
+				userIds,
+				viewerId: actorIdOrNull(),
+				include,
+				includeHiddenStats,
+			}),
+		),
 	};
 }
 
@@ -79,9 +82,9 @@ export async function findAllByUserIdsCached({
 	userIds: Array<number>;
 	/** Opt-in fields skipped from the query by default. */
 	include?: { friendCode?: boolean };
-}): Promise<{ userCards: Map<number, UserCardData> }> {
+}): Promise<{ userCards: UserCardsById }> {
 	if (ServerConfig.disableCache) return findAllByUserIds({ userIds, include });
-	if (userIds.length === 0) return { userCards: new Map() };
+	if (userIds.length === 0) return { userCards: {} };
 
 	const now = Date.now();
 	const pendingCards = new Map<number, Promise<UserCardData | undefined>>();
@@ -113,13 +116,13 @@ export async function findAllByUserIdsCached({
 		? await findFriendCodesByUserIds([...cards.keys()])
 		: new Map<number, string>();
 
-	const userCards = new Map<number, UserCardData>();
+	const userCards: UserCardsById = {};
 	for (const [userId, card] of cards) {
-		userCards.set(userId, {
+		userCards[userId] = {
 			...card,
 			privateNote: privateNotes.get(userId) ?? null,
 			friendCode: friendCodes.get(userId) ?? null,
-		});
+		};
 	}
 
 	return { userCards };
@@ -165,20 +168,18 @@ async function queryUserCards({
 	includeHiddenStats?: boolean;
 }): Promise<Map<number, UserCardData>> {
 	// a user's card surfaces the better of their last two finished seasons (see bestSeasonResult)
-	const [rows, seasonResults] = await Promise.all([
-		db
-			.selectFrom("User")
-			.select((eb) =>
-				userCardDataJsonObject(eb, { viewerId, include }).as("cardData"),
-			)
-			.where("User.id", "in", userIds)
-			.execute(),
-		Promise.all(
-			Seasons.allFinished()
-				.slice(0, 2)
-				.map((season) => seasonResult(season, userIds)),
-		),
-	]);
+	const rows = await db
+		.selectFrom("User")
+		.select((eb) =>
+			userCardDataJsonObject(eb, { viewerId, include }).as("cardData"),
+		)
+		.where("User.id", "in", userIds)
+		.execute();
+	const seasonResults = await Promise.all(
+		Seasons.allFinished()
+			.slice(0, 2)
+			.map((season) => seasonResult(season, userIds)),
+	);
 
 	const userCards = new Map<number, UserCardData>();
 	for (const { cardData } of rows) {
@@ -351,9 +352,7 @@ function userCardDataJsonObject(
 		...commonUserObjectFields(eb),
 		shortBio: eb.ref("User.shortBio"),
 		div: eb.ref("User.div"),
-		customTheme: asJson(
-			sql<CustomTheme | null>`IIF(COALESCE("User"."patronTier", 0) >= 2, "User"."customTheme", null)`,
-		),
+		customTheme: supporterCustomTheme,
 		hiddenCardStats: eb.ref("User.hiddenCardStats"),
 		banner: bannerJson(eb),
 		friendCode: include?.friendCode
@@ -625,10 +624,8 @@ function enrichUserCardData(
 	return {
 		id: cardData.id,
 		username: cardData.username,
-		discordId: cardData.discordId,
-		discordAvatar: cardData.discordAvatar,
 		customUrl: cardData.customUrl,
-		customAvatarUrl: cardData.customAvatarUrl,
+		avatar: cardData.avatar,
 		shortBio: cardData.shortBio,
 		customTheme: cardData.customTheme,
 		banner: enrichBanner(cardData.banner),

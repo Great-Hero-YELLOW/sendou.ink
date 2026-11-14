@@ -13,15 +13,19 @@ import {
 } from "~/features/notifications/core/pushSubscription";
 import { SendouForm } from "~/form/SendouForm";
 import { useHydrated } from "~/hooks/useHydrated";
+import { useHasRole } from "~/modules/permissions/hooks";
 import { logger } from "~/utils/logger";
 import {
 	disableBuildAbilitySortingSchema,
 	disallowScrimPickupsFromUntrustedSchema,
+	newHomePageSchema,
 	spoilerFreeModeSchema,
+	voicePushToTalkSchema,
 } from "../settings-schemas";
 
 export function PreferencesTab() {
 	const user = useUser();
+	const isFeedTester = useHasRole("FEED_TESTER");
 	if (!user) return null;
 
 	return (
@@ -63,6 +67,30 @@ export function PreferencesTab() {
 				>
 					{({ FormField }) => <FormField name="newValue" />}
 				</SendouForm>
+				<SendouForm
+					schema={voicePushToTalkSchema}
+					defaultValues={{
+						newValue: user.preferences.voicePushToTalk ?? false,
+					}}
+					mode="autoSubmit"
+					revalidateRoot
+					fullWidth
+				>
+					{({ FormField }) => <FormField name="newValue" />}
+				</SendouForm>
+				{isFeedTester ? (
+					<SendouForm
+						schema={newHomePageSchema}
+						defaultValues={{
+							newValue: user.preferences.newHomePage ?? false,
+						}}
+						mode="autoSubmit"
+						revalidateRoot
+						fullWidth
+					>
+						{({ FormField }) => <FormField name="newValue" />}
+					</SendouForm>
+				) : null}
 			</div>
 		</div>
 	);
@@ -107,15 +135,13 @@ function PushNotificationsEnabler() {
 		if (permission !== "granted") return;
 
 		subscribeInFlight.current = true;
-		try {
-			setSubscribeFailed(false);
-			await subscribeToPush();
+		setSubscribeFailed(false);
+		const subscribed = await trySubscribeToPush();
+		subscribeInFlight.current = false;
+		if (subscribed) {
 			setHasSubscription(true);
-		} catch (err) {
-			logger.error("Failed to enable push notifications", err);
+		} else {
 			setSubscribeFailed(true);
-		} finally {
-			subscribeInFlight.current = false;
 		}
 	}
 
@@ -174,4 +200,14 @@ function PushNotificationsEnabler() {
 			</FormMessage>
 		</div>
 	);
+}
+
+async function trySubscribeToPush() {
+	try {
+		await subscribeToPush();
+		return true;
+	} catch (err) {
+		logger.error("Failed to enable push notifications", err);
+		return false;
+	}
 }

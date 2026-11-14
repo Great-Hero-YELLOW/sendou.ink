@@ -1,6 +1,6 @@
 import clsx from "clsx";
-import { Check, X } from "lucide-react";
-import { ViewTransition } from "react";
+import { Check, Vote, X } from "lucide-react";
+import * as React from "react";
 import { preload } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Avatar } from "~/components/Avatar";
@@ -11,6 +11,7 @@ import {
 import { SendouPopover } from "~/components/elements/Popover";
 import type { ModeShort, StageId } from "~/modules/in-game-lists/types";
 import { SPLATTERCOLOR_SCREEN_ID } from "~/modules/in-game-lists/weapon-ids";
+import type { CommonUser } from "~/utils/kysely.server";
 import { stageBannerImageUrl } from "~/utils/urls";
 import { ModeImage, SpecialWeaponImage } from "../Image";
 import styles from "./MatchBanner.module.css";
@@ -47,66 +48,63 @@ export function MatchBanner({
 	host,
 	children,
 }: MatchBannerProps) {
-	const { t } = useTranslation(["game-misc"]);
+	const { t } = useTranslation(["game-misc", "common"]);
+	const stageKey = `${mode}-${stageId}`;
+	const [shown, setShown] = React.useState({
+		stageKey,
+		stageId,
+		previousStageId: null as StageId | null,
+	});
+	if (shown.stageKey !== stageKey) {
+		setShown({ stageKey, stageId, previousStageId: shown.stageId });
+	}
+	const isSwapped = shown.previousStageId !== null;
 
 	return (
-		// keyed so a map change makes a share pair; default="none" so other
-		// re-renders (score reports, timer ticks) start no transition
-		<ViewTransition
-			key={`${mode}-${stageId}`}
-			name="match-stage-banner"
-			share="stage-banner-swap"
-			default="none"
-		>
-			<div
-				className={styles.banner}
-				style={{
-					"--stage-img": `url(${stageBannerImageUrl(stageId)})`,
-				}}
-				data-testid="stage-banner"
-			>
-				<ViewTransition
-					name="match-stage-banner-map"
-					share="stage-banner-text reduced-motion-safe"
-					default="none"
-				>
+		// keyed so a map change remounts it and plays the swap animations once
+		<div key={stageKey} className={styles.banner} data-testid="stage-banner">
+			<div className={styles.backdrop}>
+				{shown.previousStageId !== null ? (
 					<div
-						className={clsx(styles.map, styles.thickText)}
-						data-testid={`banner-map-${mode}-${stageId}`}
-					>
-						<ModeImage mode={mode} size={24} />
-						{t(`game-misc:MODE_SHORT_${mode}`)}{" "}
-						{t(`game-misc:STAGE_${stageId}`)}
-					</div>
-				</ViewTransition>
-				<ViewTransition
-					name="match-stage-banner-info"
-					share="stage-banner-text reduced-motion-safe"
-					default="none"
-				>
-					<div className={clsx(styles.info, styles.thickText)}>{children}</div>
-				</ViewTransition>
-
-				{joinPool ? (
-					<ViewTransition
-						name="match-stage-banner-join"
-						share="stage-banner-static"
-						default="none"
-					>
-						<JoinInfo pool={joinPool} pass={joinPass} host={host} />
-					</ViewTransition>
+						className={styles.backdropImage}
+						style={{
+							"--stage-img": `url(${stageBannerImageUrl(shown.previousStageId)})`,
+						}}
+					/>
 				) : null}
-				{screenLegal !== undefined ? (
-					<ViewTransition
-						name="match-stage-banner-notice"
-						share="stage-banner-static"
-						default="none"
-					>
-						<ScreenNotice screenLegal={screenLegal} />
-					</ViewTransition>
-				) : null}
+				<div
+					className={clsx(styles.backdropImage, {
+						[styles.backdropImageSwapped]: isSwapped,
+					})}
+					style={{
+						"--stage-img": `url(${stageBannerImageUrl(stageId)})`,
+					}}
+				/>
 			</div>
-		</ViewTransition>
+			<div
+				className={clsx(styles.map, styles.thickText, {
+					[styles.textSwapped]: isSwapped,
+				})}
+				data-testid={`banner-map-${mode}-${stageId}`}
+			>
+				<ModeImage mode={mode} size={24} />
+				{t(`common:modes.short.${mode}`)} {t(`game-misc:STAGE_${stageId}`)}
+			</div>
+			<div
+				className={clsx(styles.info, styles.thickText, {
+					[styles.textSwapped]: isSwapped,
+				})}
+			>
+				{children}
+			</div>
+
+			{joinPool ? (
+				<JoinInfo pool={joinPool} pass={joinPass} host={host} />
+			) : null}
+			{screenLegal !== undefined ? (
+				<ScreenNotice screenLegal={screenLegal} />
+			) : null}
+		</div>
 	);
 }
 
@@ -140,7 +138,7 @@ export function MultiMatchBanner({ stageIds }: { stageIds: StageId[] }) {
 
 interface IconBannerProps {
 	icon: React.ReactNode;
-	header: string;
+	header: React.ReactNode;
 	subtitle?: string;
 	screenLegal?: boolean;
 	joinPool?: string | null;
@@ -274,5 +272,38 @@ export function MatchBannerInfoBadge({
 		<SendouButton variant="minimal" className={styles.infoBadge} {...rest}>
 			{children}
 		</SendouButton>
+	);
+}
+
+/** How many players voted for the map being played, listing them in a popover. Nothing when no one did. */
+export function MatchBannerVotersBadge({
+	voters,
+}: {
+	voters: Array<Pick<CommonUser, "id" | "username" | "avatar">>;
+}) {
+	const { t } = useTranslation(["q"]);
+
+	if (voters.length === 0) return null;
+
+	return (
+		<SendouPopover
+			trigger={
+				<MatchBannerInfoBadge testId="map-voters-badge">
+					{voters.length} <Vote />
+				</MatchBannerInfoBadge>
+			}
+		>
+			<div className="stack sm">
+				<div className="text-sm text-lighter font-semi-bold">
+					{t("q:match.mapVoters.header")}
+				</div>
+				{voters.map((voter) => (
+					<div key={voter.id} className="stack sm horizontal items-center xs">
+						<Avatar user={voter} size="xxs" />
+						{voter.username}
+					</div>
+				))}
+			</div>
+		</SendouPopover>
 	);
 }

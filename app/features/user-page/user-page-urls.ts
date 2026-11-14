@@ -59,13 +59,16 @@ export const userNewBuildPage = (
 			})
 		: `${userBuildsPage(user)}/new`;
 
+export const userEditBuildPage = (user: UserLinkArgs, buildId: number) =>
+	userBuildsNewSearchParams.href(`${userBuildsPage(user)}/new`, { buildId });
+
 /**
  * Path the given user page URL should redirect to, or `null` if it already uses the user's
- * preferred identifier (custom URL, falling back to their Discord id).
+ * preferred identifier (custom URL, falling back to their user id).
  */
 export function userPageRedirectPath(url: URL, user: UserLinkArgs) {
 	const segments = url.pathname.split("/");
-	const preferredIdentifier = user.customUrl ?? user.discordId;
+	const preferredIdentifier = user.customUrl ?? String(user.id);
 
 	if (segments[2] === preferredIdentifier) return null;
 

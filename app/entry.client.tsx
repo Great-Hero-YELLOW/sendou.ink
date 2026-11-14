@@ -2,6 +2,7 @@ import i18next from "i18next";
 import { hydrateRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { HydratedRouter } from "react-router/dom";
+import * as ConsoleCapture from "~/features/dev-tools/core/ConsoleCapture";
 import type { LanguageCode } from "~/modules/i18n/config";
 import { writeViewerTimezoneCookie } from "./features/timezone/timezone-cookie";
 import { i18nLoader } from "./modules/i18n/loader";
@@ -12,6 +13,10 @@ import { getSessionId } from "./utils/session-id";
 const FETCH_RETRY_DELAYS_MS = [0, 5000, 15000];
 /** avoids a thundering herd against a struggling server */
 const FETCH_RETRY_JITTER_MS = 1000;
+const DATA_GENERATION_COOKIE = "dataGeneration";
+
+// before hydration so the dev toolbar sees hydration mismatches too
+if (import.meta.env.DEV) ConsoleCapture.install();
 
 writeViewerTimezoneCookie();
 
@@ -31,12 +36,30 @@ window.fetch = (input, init) => {
 		return originalFetch(input, init);
 	}
 
+	const method =
+		init?.method ?? (input instanceof Request ? input.method : "GET");
+	if (!isRetryableMethod(method)) {
+		invalidatePrefetchedLoaderData();
+	}
+
 	const sessionId = getSessionId();
-	const headers = new Headers(init?.headers);
+	const headers = new Headers(
+		init?.headers ?? (input instanceof Request ? input.headers : undefined),
+	);
 	headers.set("Sendou-Session-Id", sessionId);
 
 	return fetchWithRetry(input, { ...init, headers });
 };
+
+/**
+ * Hover-prefetched loader responses stay in the HTTP cache for a few seconds, varying by cookie
+ * (`handleDataRequest` in entry.server.tsx). A mutation outdates them, so changing this cookie
+ * keeps the revalidation that follows it, and the visits after, from being served one.
+ */
+function invalidatePrefetchedLoaderData() {
+	// biome-ignore lint/suspicious/noDocumentCookie: has to be in place synchronously, before the mutation's revalidation requests go out
+	document.cookie = `${DATA_GENERATION_COOKIE}=${Date.now()}; path=/; samesite=lax`;
+}
 
 const isRetryableMethod = (method: string) => {
 	const normalized = method.toUpperCase();

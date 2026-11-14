@@ -1,54 +1,16 @@
 import { describe, expect, test } from "vitest";
-import { diff, flatZip } from "./arrays";
+import { truncateWithOverflow } from "./arrays";
 
-describe("diff", () => {
+describe("truncateWithOverflow", () => {
 	test.each([
-		[
-			[1, 2, 3],
-			[2, 3, 4, 4],
-			[4, 4],
-		],
-		[[1, 2, 3], [], []],
-		[[], [1, 2, 3], [1, 2, 3]],
-		[
-			[1, 2, 2, 3],
-			[2, 2, 3, 3, 4],
-			[3, 4],
-		],
-		[[1, 2, 3], [1, 2, 3], []],
-	])("%j vs %j leaves %j", (arr1, arr2, expected) => {
-		expect(diff(arr1, arr2)).toEqual(expected);
-	});
+		{ why: "under max", length: 3, shown: 3, hiddenCount: 0 },
+		{ why: "at max", length: 4, shown: 4, hiddenCount: 0 },
+		{ why: "one over max shows all", length: 5, shown: 5, hiddenCount: 0 },
+		{ why: "two over max", length: 6, shown: 4, hiddenCount: 2 },
+	])("$why", ({ length, shown, hiddenCount }) => {
+		const result = truncateWithOverflow(Array.from({ length }), 4);
 
-	test("does not overflow the stack for very large counts", () => {
-		const arr2 = new Array(200_000).fill(1);
-
-		expect(diff([], arr2)).toHaveLength(200_000);
-	});
-});
-
-describe("flatZip", () => {
-	test.each([
-		[
-			[1, 2, 3],
-			["a", "b", "c"],
-			[1, "a", 2, "b", 3, "c"],
-		],
-		[
-			[1, 2],
-			["a", "b", "c"],
-			[1, "a", 2, "b", "c"],
-		],
-		[
-			[1, 2, 3, 4],
-			["a", "b"],
-			[1, "a", 2, "b", 3, 4],
-		],
-		[[], ["a", "b"], ["a", "b"]],
-		[[1, 2], [], [1, 2]],
-		[[], [], []],
-		[[1], ["a"], [1, "a"]],
-	])("zips %j and %j into %j", (arr1, arr2, expected) => {
-		expect(flatZip(arr1, arr2)).toEqual(expected);
+		expect(result.shown).toHaveLength(shown);
+		expect(result.hiddenCount).toBe(hiddenCount);
 	});
 });

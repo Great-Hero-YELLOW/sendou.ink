@@ -1,31 +1,36 @@
-import type { ActionFunction } from "react-router";
+import type { Params } from "react-router";
 import * as TournamentRepository from "~/features/tournament/TournamentRepository.server";
 import {
 	clearTournamentDataCache,
 	tournamentFromParams,
 } from "~/features/tournament-bracket/core/Tournament.server";
-import { parseFormData } from "~/form/parse.server";
-import { adminStreamFormSchema } from "../tournament-admin-staff-schemas";
+import { defineAction } from "~/form/define-action.server";
+import { adminStreamFormSchemaServer } from "../tournament-admin-staff-schemas.server";
 
-export const action: ActionFunction = async ({ request, params }) => {
-	const { tournament, tournamentId } = await tournamentFromParams(params, {
+export const action = defineAction(
+	{ body: streamBodySchema },
+	async ({ params, body }) => {
+		const { tournament, tournamentId } = await tournamentFromParams(params, {
+			for: "organizer",
+		});
+
+		await TournamentRepository.updateCastAccounts({
+			tournamentId: tournament.ctx.id,
+			castAccounts: body.castAccounts,
+		});
+
+		clearTournamentDataCache(tournamentId);
+
+		return null;
+	},
+);
+
+async function streamBodySchema({ params }: { params: Params<string> }) {
+	const { tournament } = await tournamentFromParams(params, {
 		for: "organizer",
 	});
 
-	const result = await parseFormData({
-		request,
-		schema: adminStreamFormSchema,
+	return adminStreamFormSchemaServer({
+		currentCastAccounts: tournament.ctx.castAccounts ?? [],
 	});
-	if (!result.success) {
-		return { fieldErrors: result.fieldErrors };
-	}
-
-	await TournamentRepository.updateCastTwitchAccounts({
-		tournamentId: tournament.ctx.id,
-		castTwitchAccounts: result.data.castTwitchAccounts,
-	});
-
-	clearTournamentDataCache(tournamentId);
-
-	return null;
-};
+}

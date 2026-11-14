@@ -5,20 +5,28 @@ import type { Tables } from "~/db/tables";
 import * as Availability from "~/features/availability/core/Availability";
 import * as ChatRepository from "~/features/chat/ChatRepository.server";
 import type { ChatRoomType } from "~/features/chat/chat-types";
+import type * as FeedRepository from "~/features/feed/FeedRepository.server";
+import { FEED_EVENT_MAX_RETENTION_DAYS } from "~/features/feed/feed-constants";
+import { LFG } from "~/features/lfg/lfg-constants";
 import type { SkillTeamIdentifier } from "~/features/mmr/mmr-utils";
+import * as TournamentMatchRepository from "~/features/tournament-match/TournamentMatchRepository.server";
 import type {
 	MainWeaponId,
 	ModeShort,
 	StageId,
 } from "~/modules/in-game-lists/types";
-import { databaseTimestampNow, databaseTimestampToDate } from "~/utils/dates";
+import {
+	databaseTimestampNow,
+	databaseTimestampToDate,
+	dateToDatabaseTimestamp,
+} from "~/utils/dates";
 import { logger } from "~/utils/logger";
 
 export interface Fixtures {
 	heavyUser: { id: number; identifier: string } | null;
 	userCustomUrl: string | null;
 	friendCode: string | null;
-	twitchUsernames: string[] | null;
+	streamAccounts: { twitchNames: string[]; youtubeIds: string[] } | null;
 	heavyBuildUserId: number | null;
 	buildId: number | null;
 	heavyWeaponSplId: MainWeaponId | null;
@@ -41,14 +49,16 @@ export interface Fixtures {
 	/** Newest proposal of the match with the most schedule proposals. */
 	scheduleProposal: { id: number; matchId: number } | null;
 	heavyTournamentTeamId: number | null;
+	/** Ids of every match `heavyTournamentTeamId` played. */
+	heavyTournamentTeamMatchIds: number[] | null;
 	tournamentTeamPair: [number, number] | null;
 	tournamentTeamInviteCode: string | null;
 	recentTournamentIds: number[] | null;
 	heavyTeam: { id: number; customUrl: string; memberUserId: number } | null;
 	heavyCalendarEventId: number | null;
-	/** Chat room with the most messages. Null until the prod copy has chat data (`pnpm run bench:db:seed-chat`). */
+	/** Chat room with the most messages. Null when the DB has no chat data. */
 	heavyChatRoomId: number | null;
-	/** Newest chat message. Null until the prod copy has chat data. */
+	/** Newest chat message. Null when the DB has no chat data. */
 	heavyChatMessageId: number | null;
 	/** The two users the chat room list is heaviest for; the open-room lookup and the fan-out over the result peak on different ones. */
 	heavyChatUsers: {
@@ -105,6 +115,15 @@ export interface Fixtures {
 		inviteCode: string;
 	} | null;
 	lfgAuthorId: number | null;
+	/** The lobby with the most sets, its latest set and a player of it */
+	heavyLobby: {
+		id: number;
+		setId: number;
+		userId: number;
+		atMs: number;
+		sinceTimestamp: number;
+	} | null;
+	lfgPostId: number | null;
 	lfgTournament: { tournamentId: number; teamId: number } | null;
 	auditTournamentId: number | null;
 	xrank: {
@@ -136,6 +155,26 @@ export interface Fixtures {
 		sinceTimestamp: number;
 	} | null;
 	castedTournamentId: number | null;
+	/** The feed test page's "now": shortly after the latest SendouQ match, so the feed's look-back windows have data. */
+	feedNow: number | null;
+	/** The latest season with SendouQ sets and its most active player, the feed's current season. */
+	feedSq: { userId: number; season: number } | null;
+	/** Most SendouQ teammate rows. */
+	topTeammatesUserId: number | null;
+	/** The users with the most feed events, as many as a viewer's friends and teammates. */
+	feedEventUserIds: number[] | null;
+	/** Row id the tournament feed indexer starts from when indexing the whole retention window. */
+	feedIndexerTournamentResultRowId: number | null;
+	/** Teams with the most current members. */
+	manyTeamIds: number[] | null;
+	/** Leaderboard series of the organization with the most events. */
+	heavySeries: { organizationId: number; substringMatches: string[] } | null;
+	scannedMatchId: number | null;
+	siteTotalCounts: Record<FeedRepository.SiteTotal, number> | null;
+	/** Posts with the most comments, the heaviest first. Null until users have commented. */
+	feedCommentItemIds: string[] | null;
+	/** Posts with the most reactions. Null until users have reacted. */
+	feedReactionItemIds: string[] | null;
 }
 
 /**
@@ -147,12 +186,15 @@ export async function resolveFixtures(): Promise<Fixtures> {
 	const heavyTournamentId = await resolveHeavyTournamentId();
 	const heavyGroupMatchId = await resolveHeavyGroupMatchId();
 	const heavyScrimPostId = await resolveHeavyScrimPostId();
+	const feedNow = await resolveFeedNow();
+	const heavyTournamentTeamId =
+		await resolveHeavyTournamentTeamId(heavyTournamentId);
 
 	const fixtures: Fixtures = {
 		heavyUser,
 		userCustomUrl: await resolveUserCustomUrl(),
 		friendCode: await resolveFriendCode(),
-		twitchUsernames: await resolveTwitchUsernames(),
+		streamAccounts: await resolveStreamAccounts(),
 		heavyBuildUserId: await resolveHeavyBuildUserId(),
 		buildId: await resolveBuildId(),
 		heavyWeaponSplId: await resolveHeavyWeaponSplId(),
@@ -167,8 +209,10 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		heavyTournamentMatchId: await resolveHeavyTournamentMatchId(),
 		tournamentMatchGameResultId: await resolveTournamentMatchGameResultId(),
 		scheduleProposal: await resolveScheduleProposal(),
-		heavyTournamentTeamId:
-			await resolveHeavyTournamentTeamId(heavyTournamentId),
+		heavyTournamentTeamId,
+		heavyTournamentTeamMatchIds: await resolveHeavyTournamentTeamMatchIds(
+			heavyTournamentTeamId,
+		),
 		tournamentTeamPair: await resolveTournamentTeamPair(heavyTournamentId),
 		tournamentTeamInviteCode:
 			await resolveTournamentTeamInviteCode(heavyTournamentId),
@@ -204,6 +248,8 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		notification: await resolveNotification(),
 		heavyAssociation: await resolveHeavyAssociation(),
 		lfgAuthorId: await resolveLfgAuthorId(),
+		heavyLobby: await resolveHeavyLobby(),
+		lfgPostId: await resolveLfgPostId(),
 		lfgTournament: await resolveLfgTournament(),
 		auditTournamentId: (await resolveAuditTournamentId()) ?? heavyTournamentId,
 		xrank: await resolveXRank(),
@@ -219,6 +265,18 @@ export async function resolveFixtures(): Promise<Fixtures> {
 		scannerIngest: await resolveScannerIngest(),
 		scannerIngestSendouq: await resolveScannerIngestSendouq(),
 		castedTournamentId: await resolveCastedTournamentId(),
+		feedNow,
+		feedSq: await resolveFeedSq(),
+		topTeammatesUserId: await resolveTopTeammatesUserId(),
+		feedEventUserIds: await resolveFeedEventUserIds(),
+		feedIndexerTournamentResultRowId:
+			await resolveFeedIndexerTournamentResultRowId(feedNow),
+		manyTeamIds: await resolveManyTeamIds(),
+		heavySeries: await resolveHeavySeries(),
+		scannedMatchId: await resolveScannedMatchId(),
+		siteTotalCounts: await resolveSiteTotalCounts(),
+		feedCommentItemIds: await resolveFeedCommentItemIds(),
+		feedReactionItemIds: await resolveFeedReactionItemIds(),
 	};
 
 	const nullFixtures = Object.entries(fixtures)
@@ -276,16 +334,23 @@ async function resolveFriendCode() {
 	return row?.friendCode ?? null;
 }
 
-async function resolveTwitchUsernames() {
+async function resolveStreamAccounts() {
 	const rows = await db
 		.selectFrom("User")
-		.select("twitch")
-		.where("twitch", "is not", null)
-		.limit(20)
+		.select(["twitch", "youtubeId"])
+		.where((eb) =>
+			eb.or([eb("twitch", "is not", null), eb("youtubeId", "is not", null)]),
+		)
+		.limit(40)
 		.execute();
-	const usernames = rows.flatMap((row) => (row.twitch ? [row.twitch] : []));
+	const twitchNames = rows.flatMap((row) => (row.twitch ? [row.twitch] : []));
+	const youtubeIds = rows.flatMap((row) =>
+		row.youtubeId ? [row.youtubeId] : [],
+	);
 
-	return usernames.length > 0 ? usernames : null;
+	return twitchNames.length > 0 || youtubeIds.length > 0
+		? { twitchNames, youtubeIds }
+		: null;
 }
 
 async function resolveHeavyBuildUserId() {
@@ -539,6 +604,19 @@ async function resolveHeavyTournamentTeamId(heavyTournamentId: number | null) {
 	return row?.tournamentTeamId ?? null;
 }
 
+async function resolveHeavyTournamentTeamMatchIds(
+	heavyTournamentTeamId: number | null,
+) {
+	if (heavyTournamentTeamId === null) return null;
+
+	const sets = await TournamentMatchRepository.findByTournamentTeamId(
+		heavyTournamentTeamId,
+	);
+	if (sets.length === 0) return null;
+
+	return sets.map((set) => set.tournamentMatchId);
+}
+
 async function resolveTournamentTeamPair(
 	heavyTournamentId: number | null,
 ): Promise<[number, number] | null> {
@@ -672,13 +750,13 @@ async function resolveHeavyChatUsers() {
 			.where("ChatRoom.closedAt", "is", null)
 			.where("ChatRoom.expiresAt", ">", databaseTimestampNow());
 
-	const participations = await Promise.all([
-		openRooms()
+	const participations = [
+		await openRooms()
 			.innerJoin("Group", "Group.chatRoomId", "ChatRoom.id")
 			.innerJoin("GroupMember", "GroupMember.groupId", "Group.id")
 			.select("GroupMember.userId")
 			.execute(),
-		openRooms()
+		await openRooms()
 			.innerJoin("GroupMatch", "GroupMatch.chatRoomId", "ChatRoom.id")
 			.innerJoin("GroupMember", (join) =>
 				join.on((eb) =>
@@ -690,7 +768,7 @@ async function resolveHeavyChatUsers() {
 			)
 			.select("GroupMember.userId")
 			.execute(),
-		openRooms()
+		await openRooms()
 			.innerJoin("TournamentTeam", "TournamentTeam.chatRoomId", "ChatRoom.id")
 			.innerJoin(
 				"TournamentTeamMember",
@@ -699,12 +777,12 @@ async function resolveHeavyChatUsers() {
 			)
 			.select("TournamentTeamMember.userId")
 			.execute(),
-		openRooms()
+		await openRooms()
 			.innerJoin("ScrimPost", "ScrimPost.chatRoomId", "ChatRoom.id")
 			.innerJoin("ScrimPostUser", "ScrimPostUser.scrimPostId", "ScrimPost.id")
 			.select("ScrimPostUser.userId")
 			.execute(),
-	]);
+	];
 
 	const roomCountByUserId = new Map<number, number>();
 	for (const row of participations.flat()) {
@@ -736,14 +814,17 @@ async function resolveHeavyChatUsers() {
 
 /** The longest membership history the open-room lookup has to walk, open rooms or not. */
 async function resolveMostConnectedUserId() {
-	const memberships = await Promise.all([
-		db.selectFrom("GroupMember").select("GroupMember.userId").execute(),
-		db
+	const memberships = [
+		await db.selectFrom("GroupMember").select("GroupMember.userId").execute(),
+		await db
 			.selectFrom("TournamentTeamMember")
 			.select("TournamentTeamMember.userId")
 			.execute(),
-		db.selectFrom("ScrimPostUser").select("ScrimPostUser.userId").execute(),
-	]);
+		await db
+			.selectFrom("ScrimPostUser")
+			.select("ScrimPostUser.userId")
+			.execute(),
+	];
 
 	const countByUserId = new Map<number, number>();
 	for (const row of memberships.flat()) {
@@ -1168,6 +1249,26 @@ async function resolveLfgAuthorId() {
 	return row?.authorId ?? null;
 }
 
+/** The least recently bumped post still on the board, the furthest page from its start. */
+async function resolveLfgPostId() {
+	const row = await db
+		.selectFrom("LFGPost")
+		.select("id")
+		.where(
+			"updatedAt",
+			">",
+			dateToDatabaseTimestamp(
+				sub(new Date(), { days: LFG.POST_FRESHNESS_DAYS }),
+			),
+		)
+		.where("plusTierVisibility", "is", null)
+		.orderBy("updatedAt", "asc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.id ?? null;
+}
+
 async function resolveLfgTournament() {
 	const row = await db
 		.selectFrom("TournamentTeam")
@@ -1482,4 +1583,239 @@ async function resolveCastedTournamentId() {
 		.executeTakeFirst();
 
 	return row?.id ?? null;
+}
+
+async function resolveHeavyLobby() {
+	const row = await db
+		.selectFrom("LobbySet")
+		.select(({ fn }) => [
+			"LobbySet.lobbyId",
+			fn.max("LobbySet.id").as("setId"),
+			fn.max("LobbySet.createdAt").as("createdAt"),
+			fn.countAll<number>().as("count"),
+		])
+		.groupBy("LobbySet.lobbyId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+	if (!row) return null;
+
+	const player = await db
+		.selectFrom("LobbySetParticipant")
+		.select("LobbySetParticipant.userId")
+		.where("LobbySetParticipant.setId", "=", row.setId)
+		.where("LobbySetParticipant.side", "is not", null)
+		.limit(1)
+		.executeTakeFirst();
+	if (!player) return null;
+
+	return {
+		id: row.lobbyId,
+		setId: row.setId,
+		userId: player.userId,
+		atMs: row.createdAt * 1000,
+		sinceTimestamp: row.createdAt - 7 * 24 * 60 * 60,
+	};
+}
+
+const FEED_TEST_NOW_AFTER_LATEST_MATCH_SECONDS = 30 * 60;
+const FEED_EVENT_USER_COUNT = 100;
+const MANY_TEAM_COUNT = 25;
+const FEED_ITEM_COUNT = 100;
+
+async function resolveFeedNow() {
+	const row = await db
+		.selectFrom("GroupMatch")
+		.select(({ fn }) => fn.max("createdAt").as("createdAt"))
+		.executeTakeFirst();
+	if (typeof row?.createdAt !== "number") return null;
+
+	return Math.min(
+		databaseTimestampNow(),
+		row.createdAt + FEED_TEST_NOW_AFTER_LATEST_MATCH_SECONDS,
+	);
+}
+
+async function resolveFeedSq() {
+	const seasonRow = await db
+		.selectFrom("Skill")
+		.select(({ fn }) => fn.max("season").as("season"))
+		.where("groupMatchId", "is not", null)
+		.executeTakeFirst();
+	if (typeof seasonRow?.season !== "number") return null;
+
+	const userRow = await db
+		.selectFrom("Skill")
+		.select(({ fn }) => ["userId", fn.countAll<number>().as("count")])
+		.where("season", "=", seasonRow.season)
+		.where("groupMatchId", "is not", null)
+		.where("userId", "is not", null)
+		.groupBy("userId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+	if (typeof userRow?.userId !== "number") return null;
+
+	return { userId: userRow.userId, season: seasonRow.season };
+}
+
+async function resolveTopTeammatesUserId() {
+	const row = await db
+		.selectFrom("PlayerResult")
+		.select(({ fn }) => ["ownerUserId", fn.countAll<number>().as("count")])
+		.where("type", "=", "MATE")
+		.groupBy("ownerUserId")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.ownerUserId ?? null;
+}
+
+async function resolveFeedEventUserIds() {
+	const rows = await db
+		.selectFrom("FeedEvent")
+		.select(({ fn }) => ["userId", fn.countAll<number>().as("count")])
+		.groupBy("userId")
+		.orderBy("count", "desc")
+		.limit(FEED_EVENT_USER_COUNT)
+		.execute();
+
+	return rows.length > 0 ? rows.map((row) => row.userId) : null;
+}
+
+async function resolveFeedIndexerTournamentResultRowId(feedNow: number | null) {
+	if (feedNow === null) return null;
+
+	const row = await db
+		.selectFrom("TournamentResult")
+		.innerJoin(
+			"CalendarEvent",
+			"CalendarEvent.tournamentId",
+			"TournamentResult.tournamentId",
+		)
+		.innerJoin(
+			"CalendarEventDate",
+			"CalendarEventDate.eventId",
+			"CalendarEvent.id",
+		)
+		.select(sql<number | null>`min("TournamentResult"."rowid")`.as("rowId"))
+		.where(
+			"CalendarEventDate.startsAt",
+			">=",
+			feedNow - FEED_EVENT_MAX_RETENTION_DAYS * 24 * 60 * 60,
+		)
+		.executeTakeFirst();
+
+	return typeof row?.rowId === "number" ? row.rowId - 1 : null;
+}
+
+async function resolveManyTeamIds() {
+	const rows = await db
+		.selectFrom("AllTeamMember")
+		.innerJoin("AllTeam", "AllTeam.id", "AllTeamMember.teamId")
+		.select(({ fn }) => [
+			"AllTeamMember.teamId",
+			fn.countAll<number>().as("count"),
+		])
+		.where("AllTeamMember.leftAt", "is", null)
+		.where("AllTeam.deletedAt", "is", null)
+		.groupBy("AllTeamMember.teamId")
+		.orderBy("count", "desc")
+		.limit(MANY_TEAM_COUNT)
+		.execute();
+
+	return rows.length > 0 ? rows.map((row) => row.teamId) : null;
+}
+
+async function resolveHeavySeries() {
+	const row = await db
+		.selectFrom("TournamentOrganizationSeries")
+		.innerJoin(
+			"CalendarEvent",
+			"CalendarEvent.organizationId",
+			"TournamentOrganizationSeries.organizationId",
+		)
+		.select(({ fn }) => [
+			"TournamentOrganizationSeries.organizationId",
+			"TournamentOrganizationSeries.substringMatches",
+			fn.countAll<number>().as("count"),
+		])
+		.where("TournamentOrganizationSeries.showLeaderboard", "=", 1)
+		.groupBy("TournamentOrganizationSeries.id")
+		.orderBy("count", "desc")
+		.limit(1)
+		.executeTakeFirst();
+	if (!row) return null;
+
+	return {
+		organizationId: row.organizationId,
+		substringMatches: row.substringMatches,
+	};
+}
+
+async function resolveScannedMatchId() {
+	const row = await db
+		.selectFrom("IngestedMatch")
+		.select("id")
+		.orderBy(sql`length("data")`, "desc")
+		.limit(1)
+		.executeTakeFirst();
+
+	return row?.id ?? null;
+}
+
+async function resolveSiteTotalCounts(): Promise<Record<
+	FeedRepository.SiteTotal,
+	number
+> | null> {
+	const users = await db
+		.selectFrom("User")
+		.select(({ fn }) => fn.countAll<number>().as("count"))
+		.executeTakeFirst();
+	const sqSets = await db
+		.selectFrom("GroupMatch")
+		.select(({ fn }) => fn.countAll<number>().as("count"))
+		.executeTakeFirst();
+	const tournaments = await db
+		.selectFrom("CalendarEvent")
+		.select(({ fn }) => fn.countAll<number>().as("count"))
+		.where("tournamentId", "is not", null)
+		.executeTakeFirst();
+	const art = await db
+		.selectFrom("Art")
+		.select(({ fn }) => fn.countAll<number>().as("count"))
+		.executeTakeFirst();
+	if (!users?.count) return null;
+
+	return {
+		USERS: users.count,
+		SQ_SETS: sqSets?.count ?? 0,
+		TOURNAMENTS: tournaments?.count ?? 0,
+		ART: art?.count ?? 0,
+	};
+}
+
+async function resolveFeedCommentItemIds() {
+	const rows = await db
+		.selectFrom("FeedComment")
+		.select(({ fn }) => ["itemId", fn.countAll<number>().as("count")])
+		.groupBy("itemId")
+		.orderBy("count", "desc")
+		.limit(FEED_ITEM_COUNT)
+		.execute();
+
+	return rows.length > 0 ? rows.map((row) => row.itemId) : null;
+}
+
+async function resolveFeedReactionItemIds() {
+	const rows = await db
+		.selectFrom("FeedReaction")
+		.select(({ fn }) => ["itemId", fn.countAll<number>().as("count")])
+		.groupBy("itemId")
+		.orderBy("count", "desc")
+		.limit(FEED_ITEM_COUNT)
+		.execute();
+
+	return rows.length > 0 ? rows.map((row) => row.itemId) : null;
 }

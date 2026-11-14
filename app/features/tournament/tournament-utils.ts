@@ -1,5 +1,7 @@
 import * as R from "remeda";
 import type { CastedMatchesInfo, TeamPickSettings } from "~/db/tables-json";
+import * as LiveStream from "~/features/live-streams/core/LiveStream";
+import type { StreamAccount } from "~/features/live-streams/live-streams-constants";
 import { modesShort, rankedModesShort } from "~/modules/in-game-lists/modes";
 import type { ModeShort } from "~/modules/in-game-lists/types";
 import { SHORT_NANOID_LENGTH } from "~/utils/id";
@@ -148,6 +150,7 @@ export type TeamForOrdering = {
 /**
  * Pairwise team comparison. Not a strict weak order when only one team has a seed (skill is
  * compared instead), so never a raw `sort` comparator over a mixed field — see {@link sortTeamsBySeeding}.
+ * @internal
  */
 export function compareTeamsForOrdering(
 	a: TeamForOrdering,
@@ -281,24 +284,32 @@ export function seedsByStartingBracket(
 	);
 }
 
-export function findTeamInsertPosition<T extends TeamForOrdering>(
-	existingOrder: number[],
-	newTeam: T,
-	teamMap: Map<number, T>,
-	minMembersPerTeam: number,
-): number {
-	for (let i = 0; i < existingOrder.length; i++) {
-		const existingTeam = teamMap.get(existingOrder[i]);
-		if (!existingTeam) continue;
+/**
+ * Division label of a starting bracket: the shared leading characters of the bracket names reachable
+ * from it, or the deepest one's name when they share none. When several starting brackets end up with
+ * the same label, each gets its ordinal among them appended (e.g. "S 1" and "S 2").
+ */
+export function getBracketProgressionLabel(
+	startingBracketIdx: number,
+	progression: ParsedBracket[],
+): string {
+	const label = sharedBracketNamesLabel(startingBracketIdx, progression);
 
-		if (compareTeamsForOrdering(newTeam, existingTeam, minMembersPerTeam) < 0) {
-			return i;
-		}
-	}
-	return existingOrder.length;
+	const startingBracketIdxsWithSameLabel = Progression.startingBrackets(
+		progression,
+	).filter(
+		(bracketIdx) => sharedBracketNamesLabel(bracketIdx, progression) === label,
+	);
+
+	if (startingBracketIdxsWithSameLabel.length <= 1) return label;
+
+	const ordinal = startingBracketIdxsWithSameLabel.indexOf(startingBracketIdx);
+	if (ordinal === -1) return label;
+
+	return `${label} ${ordinal + 1}`;
 }
 
-export function getBracketProgressionLabel(
+function sharedBracketNamesLabel(
 	startingBracketIdx: number,
 	progression: ParsedBracket[],
 ): string {
@@ -350,6 +361,7 @@ const LEADING_SEPARATOR_REGEX = /^[\s_-]+/;
  * // series: [{ name: "In The Zone" }]
  * splitTournamentName("In The Zone 54", series) // { name: "In The Zone", subtext: "54" }
  * splitTournamentName("Picnic Weekly", series)  // { name: "Picnic Weekly" }
+ * @internal
  */
 export function splitTournamentName(
 	tournamentName: string,
@@ -456,11 +468,15 @@ function labeledBracketIdxs(progression: ParsedBracket[]) {
  */
 export function updatedCastedMatchesInfo(
 	current: CastedMatchesInfo,
-	args: { matchId: number; twitchAccount: string | null; timestamp: number },
+	args: {
+		matchId: number;
+		castAccount: StreamAccount | null;
+		timestamp: number;
+	},
 ): CastedMatchesInfo {
-	const { matchId, twitchAccount, timestamp } = args;
+	const { matchId, castAccount, timestamp } = args;
 
-	if (twitchAccount === null) {
+	if (castAccount === null) {
 		return {
 			...current,
 			castedMatches: current.castedMatches.filter(
@@ -473,6 +489,7 @@ export function updatedCastedMatchesInfo(
 	}
 
 	const existingHistory = current.castedMatchHistory ?? [];
+	const { platform, account } = castAccount;
 
 	return {
 		...current,
@@ -480,12 +497,12 @@ export function updatedCastedMatchesInfo(
 			.filter(
 				(cm) =>
 					// for now one account per match and one match per account at a time
-					cm.matchId !== matchId && cm.twitchAccount !== twitchAccount,
+					cm.matchId !== matchId && !LiveStream.isSameAccount(cm, castAccount),
 			)
-			.concat([{ twitchAccount, matchId }]),
+			.concat([{ platform, account, matchId }]),
 		lockedMatches: current.lockedMatches.filter((lm) => lm.matchId !== matchId),
 		castedMatchHistory: existingHistory
 			.filter((entry) => entry.matchId !== matchId)
-			.concat([{ twitchAccount, matchId, timestamp }]),
+			.concat([{ platform, account, matchId, timestamp }]),
 	};
 }

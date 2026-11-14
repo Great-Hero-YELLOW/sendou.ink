@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import * as R from "remeda";
@@ -16,7 +17,6 @@ import {
 	useTranslatedTexts,
 } from "~/form/fields/FormFieldWrapper";
 import { errorMessageId } from "~/form/utils";
-import { nullFilledArray } from "~/utils/arrays";
 import type { CommonUser } from "~/utils/kysely.server";
 import type { fromSchema } from "../scrims-schemas";
 import styles from "./WithFormField.module.css";
@@ -93,8 +93,9 @@ export function WithFormField({
 					: t("scrims:forms.with.pick-up"),
 			value: {
 				mode: "PICKUP" as const,
-				users: nullFilledArray(
+				users: R.times(
 					SCRIM.MAX_PICKUP_SIZE_EXCLUDING_OWNER,
+					() => null,
 				) as unknown as number[],
 			},
 		},
@@ -169,7 +170,9 @@ export function WithFormField({
 						<div className={styles.option}>
 							{option.label}
 							{option.users ? (
-								<span className={styles.optionUsers}>{option.users}</span>
+								<span className={clsx(styles.optionUsers, "truncate")}>
+									{option.users}
+								</span>
 							) : null}
 						</div>
 					</SendouSelectItem>
@@ -231,8 +234,9 @@ function truncateUsername(username: string) {
 function rosterUsers(roster: PickupRoster) {
 	return [
 		...roster.users.map((user) => user.id),
-		...nullFilledArray(
+		...R.times(
 			SCRIM.MAX_PICKUP_SIZE_EXCLUDING_OWNER - roster.users.length,
+			() => null,
 		),
 	] as unknown as number[];
 }

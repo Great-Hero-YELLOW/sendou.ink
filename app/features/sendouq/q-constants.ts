@@ -8,11 +8,13 @@ export const SENDOUQ = {
 	PRIVATE_USER_NOTE_MAX_LENGTH: 280,
 	CANCEL_REASON_MAX_LENGTH: 500,
 	/** How long the members of two matched up groups have to confirm they are ready to play */
-	READY_CHECK_MINUTES: 7,
+	READY_CHECK_MINUTES: 6,
 } as const;
 
 const FRIEND_CODE_REGEXP_PATTERN = "^(SW-)?[0-9]{4}-?[0-9]{4}-?[0-9]{4}$";
 export const FRIEND_CODE_REGEXP = new RegExp(FRIEND_CODE_REGEXP_PATTERN);
+
+export const FRIEND_CODE_DIGIT_COUNT = 12;
 
 /** Length of a friend code with the optional "SW-" prefix included */
 export const FRIEND_CODE_MAX_LENGTH = 17;
@@ -32,6 +34,3 @@ export const sqGroupChannel = (groupId: number) =>
 	`${CHANNEL_PREFIX.sqGroup}${groupId}`;
 
 export const USER_SKILLS_CACHE_KEY = "user-skills";
-
-/** Main container width (px) below which the 3-column layout switches to tabs */
-export const IS_Q_LOOKING_MOBILE_BREAKPOINT = 700;

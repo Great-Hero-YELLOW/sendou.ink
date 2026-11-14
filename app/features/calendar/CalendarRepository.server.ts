@@ -10,7 +10,11 @@ import * as R from "remeda";
 import { db } from "~/db/sql";
 import type { DB, Tables } from "~/db/tables";
 import type { TeamPickSettings, TournamentSettings } from "~/db/tables-json";
-import { EXCLUDED_TAGS } from "~/features/calendar/calendar-constants";
+import {
+	CALENDAR_EVENT,
+	EXCLUDED_TAGS,
+} from "~/features/calendar/calendar-constants";
+import * as CalendarEvent from "~/features/calendar/core/CalendarEvent";
 import { MapPool } from "~/features/map-list-generator/core/map-pool";
 import * as TeamPick from "~/features/tournament/core/TeamPick";
 import * as Progression from "~/features/tournament-bracket/core/Progression";
@@ -30,17 +34,21 @@ import {
 	concatUserSubmittedImagePrefix,
 	jsonArrayFrom,
 	jsonObjectFrom,
+	tournamentActiveTeamCount,
 	tournamentLogoWithDefault,
 	tournamentMembersCount,
-	tournamentTeamsCount,
 } from "~/utils/kysely.server";
+import { toDBBoolean } from "~/utils/sql";
 import { calendarEventPage, tournamentPage } from "~/utils/urls";
 import {
 	modesIncluded,
 	normalizedTeamCount,
 	tournamentIsRanked,
 } from "../tournament/tournament-utils";
-import type { CalendarEvent, CalendarEventTag } from "./calendar-types";
+import type {
+	CalendarEventTag,
+	CalendarEvent as CalendarEventType,
+} from "./calendar-types";
 import { calendarEventSorter } from "./calendar-utils";
 
 const RECENT_TOURNAMENTS_SHOWN = 10;
@@ -162,7 +170,7 @@ function findAllBetweenTwoTimestampsQuery({
 				"normalizedStartsAt",
 			),
 			withOrganization(eb).as("organization"),
-			tournamentTeamsCount(eb).as("teamsCount"),
+			tournamentActiveTeamCount(eb).as("teamsCount"),
 			tournamentMembersCount(eb).as("membersCount"),
 			tournamentLogoWithDefault(eb).as("logoUrl"),
 			jsonArrayFrom(
@@ -183,12 +191,7 @@ function findAllBetweenTwoTimestampsQuery({
 					)
 					.orderBy("Badge.id", "asc"),
 			).as("badges"),
-			jsonObjectFrom(
-				eb
-					.selectFrom("Trophy")
-					.select(["Trophy.model"])
-					.whereRef("Trophy.id", "=", "CalendarEvent.trophyId"),
-			).as("trophy"),
+			"CalendarEvent.trophyId",
 		])
 		.where("CalendarEvent.hidden", "=", 0)
 		.where(
@@ -201,18 +204,38 @@ function findAllBetweenTwoTimestampsQuery({
 		.execute();
 }
 
+// virtual tags: leagues and team sizes of tournaments are told apart by their settings, not by anything the organizer picks
+function calendarEventTags({
+	tags,
+	tournamentSettings,
+}: Pick<
+	Awaited<ReturnType<typeof findAllBetweenTwoTimestampsQuery>>[number],
+	"tags" | "tournamentSettings"
+>): Array<CalendarEventTag> {
+	const versusTag = tournamentSettings
+		? CalendarEvent.versusTag(tournamentSettings.minMembersPerTeam ?? 4)
+		: null;
+	const withVersusTag = versusTag
+		? [...(tags ?? []), versusTag].toSorted(
+				(a, b) =>
+					CALENDAR_EVENT.TAGS.indexOf(a) - CALENDAR_EVENT.TAGS.indexOf(b),
+			)
+		: (tags ?? []);
+
+	return tournamentSettings?.isLeague
+		? ["LEAGUE", ...withVersusTag]
+		: withVersusTag;
+}
+
 function findAllBetweenTwoTimestampsMapped(
 	rows: Awaited<ReturnType<typeof findAllBetweenTwoTimestampsQuery>>,
 ): Array<{
 	at: number;
-	events: Array<CalendarEvent>;
+	events: Array<CalendarEventType>;
 }> {
-	const mapped: Array<CalendarEvent & { startsAt: number }> = rows.map(
+	const mapped: Array<CalendarEventType & { startsAt: number }> = rows.map(
 		(row) => {
-			// a virtual tag: leagues are told apart by their setting, not by anything the organizer picks
-			const tags: Array<CalendarEventTag> = row.tournamentSettings?.isLeague
-				? ["LEAGUE", ...(row.tags ?? [])]
-				: (row.tags ?? []);
+			const tags = calendarEventTags(row);
 
 			const isPastEvent =
 				databaseTimestampToDate(row.startsAt) < sub(new Date(), { days: 1 });
@@ -253,7 +276,7 @@ function findAllBetweenTwoTimestampsMapped(
 								)
 							: null,
 				badges: row.badges,
-				trophy: row.trophy,
+				trophyId: row.trophyId,
 				logoUrl: row.logoUrl,
 				startsAt: row.normalizedStartsAt,
 				isRanked: row.tournamentSettings
@@ -543,7 +566,6 @@ type CreateArgs = Pick<
 	teamsPerGroup?: number;
 	thirdPlaceMatch?: boolean;
 	requireInGameNames?: boolean;
-	requireSendouQParticipation?: boolean;
 	isRanked?: boolean;
 	isTest?: boolean;
 	isLeague?: boolean;
@@ -589,7 +611,6 @@ export async function insert(args: CreateArgs) {
 				autonomousSubs: args.autonomousSubs,
 				regClosesAt: args.regClosesAt,
 				requireInGameNames: args.requireInGameNames,
-				requireSendouQParticipation: args.requireSendouQParticipation,
 				minMembersPerTeam: args.minMembersPerTeam,
 				maxMembersPerTeam: args.maxMembersPerTeam,
 				swiss:
@@ -622,6 +643,7 @@ export async function insert(args: CreateArgs) {
 						role: staff.role,
 						userId: staff.userId,
 						tournamentId: tournamentId!,
+						createdAt: databaseTimestampNow(),
 					})),
 				)
 				.execute();
@@ -645,9 +667,10 @@ export async function insert(args: CreateArgs) {
 				bracketUrl: args.bracketUrl,
 				avatarImgId: args.avatarImgId ?? avatarImgId,
 				organizationId: args.organizationId,
-				hidden: args.isTest || args.isDraft ? 1 : 0,
+				hidden: toDBBoolean(Boolean(args.isTest || args.isDraft)),
 				tournamentId,
 				trophyId: args.trophyId ?? null,
+				createdAt: databaseTimestampNow(),
 			})
 			.returning("id")
 			.executeTakeFirstOrThrow();
@@ -717,7 +740,9 @@ export async function update(args: UpdateArgs) {
 				.where("id", "=", tournamentId)
 				.executeTakeFirstOrThrow();
 
-			const hidden = existingSettings.isTest || args.isDraft ? 1 : 0;
+			const hidden = toDBBoolean(
+				Boolean(existingSettings.isTest || args.isDraft),
+			);
 			await trx
 				.updateTable("CalendarEvent")
 				.set({ hidden })
@@ -777,7 +802,6 @@ async function updateTournamentTables(
 		autonomousSubs: args.autonomousSubs,
 		regClosesAt: args.regClosesAt,
 		requireInGameNames: args.requireInGameNames,
-		requireSendouQParticipation: args.requireSendouQParticipation,
 		minMembersPerTeam: args.minMembersPerTeam,
 		maxMembersPerTeam: args.maxMembersPerTeam,
 		swiss:

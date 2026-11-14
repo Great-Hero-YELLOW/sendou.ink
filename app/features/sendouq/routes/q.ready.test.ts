@@ -1,5 +1,5 @@
 import { subMinutes } from "date-fns";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { backdate } from "~/db/seed/core/backdate";
 import * as SQGroupFactory from "~/db/seed/factories/SQGroupFactory";
 import * as UserFactory from "~/db/seed/factories/UserFactory";
@@ -14,12 +14,6 @@ import type { readySchema } from "../q-action-schemas";
 import { FULL_GROUP_SIZE, SENDOUQ } from "../q-constants";
 import { pinClockInsideSeason } from "../tests/season-clock";
 import { action as rawReadyAction, loader as rawReadyLoader } from "./q.ready";
-
-vi.mock("~/features/chat/ChatSystemMessage.server", () => ({
-	send: vi.fn(),
-	notifyStatusChanged: vi.fn(),
-	notifyNotificationsChanged: vi.fn(),
-}));
 
 const readyLoader = wrappedLoader<Awaited<ReturnType<typeof rawReadyLoader>>>({
 	loader: rawReadyLoader,
@@ -78,7 +72,7 @@ describe("SendouQ ready check page", () => {
 			readyCount: 1,
 		});
 		// so that a field carrying more about them can't be added unnoticed
-		expect(Object.keys(data).sort()).toEqual([
+		expect(Object.keys(data).sort((a, b) => a.localeCompare(b))).toEqual([
 			"expiresAt",
 			"group",
 			"readyUserIds",
@@ -89,7 +83,7 @@ describe("SendouQ ready check page", () => {
 		const shownUserIds = [
 			...data.group.members.map((member) => member.id),
 			...data.readyUserIds,
-			...data.userCards.keys(),
+			...Object.keys(data.userCards).map(Number),
 		];
 		for (const member of theirMembers) {
 			expect(shownUserIds).not.toContain(member.id);

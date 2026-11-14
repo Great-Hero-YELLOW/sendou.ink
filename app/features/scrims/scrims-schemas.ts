@@ -5,6 +5,7 @@ import {
 	datetime,
 	dualSelectOptional,
 	idConstant,
+	mapPoolOptional,
 	radioGroupDynamic,
 	select,
 	selectDynamicOptional,
@@ -13,7 +14,6 @@ import {
 	stringConstant,
 	textArea,
 	textAreaOptional,
-	textFieldOptional,
 	toggle,
 	tournamentSearchOptional,
 } from "~/form/fields";
@@ -30,9 +30,12 @@ import {
 	superRefine,
 	timeString,
 } from "~/utils/schema";
-import { associationIdentifierSchema } from "../associations/associations-schemas";
+import {
+	baseVisibilityField,
+	notFoundVisibilityField,
+	visibilityIssues,
+} from "../associations/associations-schemas";
 import { LUTI_DIVS, SCRIM } from "./scrims-constants";
-import { parseMapPoolInput } from "./scrims-utils";
 
 const deletePostSchema = v.object({
 	_action: _action("DELETE_POST"),
@@ -109,6 +112,7 @@ const divsBaseSchema = v.pipe(
 	}, "forms:errors.divBothOrNeither"),
 );
 
+/** @internal */
 export const divsSchema = v.pipe(divsBaseSchema, v.transform(normalizeDivs));
 
 function normalizeDivs<T extends { min: string | null; max: string | null }>(
@@ -194,15 +198,7 @@ export const submitMapListFormSchema = v.pipe(
 		source: radioGroupDynamic({
 			label: "labels.scrimMapSource",
 		}),
-		serializedPool: textFieldOptional({
-			label: "labels.scrimMapPool",
-			placeholder: "placeholders.scrimMapPool",
-			maxLength: 500,
-			validate: {
-				func: (val) => parseMapPoolInput(val) !== null,
-				message: "forms:errors.invalidMapPool",
-			},
-		}),
+		serializedPool: mapPoolOptional({ label: "labels.scrimMapPool" }),
 		tournamentId: tournamentSearchOptional({
 			label: "labels.scrimMapsTournament",
 		}),
@@ -318,24 +314,8 @@ export const scrimsNewFormSchema = v.pipe(
 			bottomText: "bottomTexts.scrimStartFlexibility",
 			items: [...rangeEndItems],
 		}),
-		baseVisibility: customField(
-			{ initialValue: "PUBLIC" },
-			associationIdentifierSchema,
-		),
-		notFoundVisibility: customField(
-			{ initialValue: { at: null, forAssociation: "PUBLIC" } },
-			v.object({
-				at: v.pipe(
-					v.nullish(preprocess(date, v.date())),
-					v.check((at) => {
-						if (!at) return true;
-						if (at < sub(new Date(), { days: 1 })) return false;
-						return true;
-					}, "errors.dateInPast"),
-				),
-				forAssociation: associationIdentifierSchema,
-			}),
-		),
+		baseVisibility: baseVisibilityField,
+		notFoundVisibility: notFoundVisibilityField,
 		divs: divsFormField,
 		from: customField({ initialValue: null }, fromSchema),
 		postText: textAreaOptional({
@@ -369,35 +349,8 @@ export const scrimsNewFormSchema = v.pipe(
 			});
 		}
 
-		if (
-			post.notFoundVisibility.at &&
-			post.notFoundVisibility.forAssociation === post.baseVisibility
-		) {
-			ctx.addIssue({
-				path: ["notFoundVisibility"],
-				message: "forms:errors.visibilityMustBeDifferent",
-			});
-		}
-
-		if (post.baseVisibility === "PUBLIC" && post.notFoundVisibility.at) {
-			ctx.addIssue({
-				path: ["notFoundVisibility"],
-				message: "forms:errors.visibilityNotAllowedWhenPublic",
-			});
-		}
-
-		if (post.notFoundVisibility.at && post.notFoundVisibility.at > post.at) {
-			ctx.addIssue({
-				path: ["notFoundVisibility"],
-				message: "forms:errors.dateAfterScrimDate",
-			});
-		}
-
-		if (post.notFoundVisibility.at && post.at < new Date()) {
-			ctx.addIssue({
-				path: ["notFoundVisibility"],
-				message: "forms:errors.canNotSetIfLookingNow",
-			});
+		for (const issue of visibilityIssues(post, { startsAt: post.at })) {
+			ctx.addIssue(issue);
 		}
 	}),
 );

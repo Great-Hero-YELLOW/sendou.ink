@@ -1,5 +1,4 @@
-import clsx from "clsx";
-import { Mic, Trash } from "lucide-react";
+import { Trash } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useLoaderData } from "react-router";
@@ -9,18 +8,19 @@ import { EmptyState } from "~/components/EmptyState";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouDialog } from "~/components/elements/Dialog";
 import { SendouPopover } from "~/components/elements/Popover";
-import {
-	SendouTab,
-	SendouTabList,
-	SendouTabPanel,
-	SendouTabs,
-} from "~/components/elements/Tabs";
 import { FormWithConfirm } from "~/components/FormWithConfirm";
 import { WeaponImage } from "~/components/Image";
 import { NoteAvatar } from "~/components/NoteAvatar";
-import { Placeholder } from "~/components/Placeholder";
 import { useUser } from "~/features/auth/core/user";
-import { IS_Q_LOOKING_MOBILE_BREAKPOINT } from "~/features/sendouq/q-constants";
+import { useTopicRevalidation } from "~/features/chat/chat-hooks";
+import {
+	MatchProfileSummary,
+	VcStatus,
+} from "~/features/match-profile/components/MatchProfileSummary";
+import {
+	LookingColumns,
+	SortedCard,
+} from "~/features/sendouq/components/LookingColumns";
 import { useTournament } from "~/features/tournament/tournament-context";
 import {
 	UserCard,
@@ -28,10 +28,9 @@ import {
 } from "~/features/user-card/components/UserCard";
 import { privateNoteSentimentScore } from "~/features/user-card/user-card-utils";
 import { SendouForm } from "~/form/SendouForm";
-import { useHydrated } from "~/hooks/useHydrated";
-import { useMainContentWidth } from "~/hooks/useMainContentWidth";
 import type { SendouRouteHandle } from "~/utils/remix.server";
 import { LFGGroupCard } from "../components/LFGGroupCard";
+import * as TournamentLFG from "../core/TournamentLFG";
 import {
 	type LookingLoaderData,
 	loader,
@@ -42,6 +41,10 @@ import {
 	joinQueueFormSchema,
 	lookingSchema,
 } from "../tournament-lfg-schemas";
+import {
+	tournamentLFGChannel,
+	tournamentLFGGroupChannel,
+} from "../tournament-lfg-utils";
 import styles from "./to.$id.looking.module.css";
 
 export { action } from "../actions/to.$id.looking.server";
@@ -52,16 +55,13 @@ export const handle: SendouRouteHandle = {
 	i18n: ["q", "tournament", "forms", "common", "user"],
 };
 
-export default function TournamentLFGShell() {
-	const isHydrated = useHydrated();
-
-	if (!isHydrated) return <Placeholder />;
-
-	return <TournamentLFGPage />;
-}
-
-function TournamentLFGPage() {
+export default function TournamentLFGPage() {
 	const data = useLoaderData<typeof loader>();
+	const tournament = useTournament();
+
+	// queue-shape changes (a group joining/leaving, a merge, a note edit, a sub post)
+	useTopicRevalidation(tournamentLFGChannel(tournament.ctx.id));
+
 	if (data.mode === "subs") {
 		return <SubsView data={data} />;
 	}
@@ -74,11 +74,18 @@ function GroupsView({
 }: {
 	data: Extract<LookingLoaderData, { mode: "looking" }>;
 }) {
-	const { t } = useTranslation(["q"]);
 	const tournament = useTournament();
-	const width = useMainContentWidth();
 
-	const isMobile = width < IS_Q_LOOKING_MOBILE_BREAKPOINT;
+	// group-specific updates (e.g. a received invitation)
+	useTopicRevalidation(
+		data.ownGroup
+			? tournamentLFGGroupChannel({
+					tournamentId: tournament.ctx.id,
+					groupId: data.ownGroup.id,
+				})
+			: "",
+		Boolean(data.ownGroup),
+	);
 
 	const ownMemberCount =
 		data.ownGroup?.members.length ?? data.ownTeam?.members.length ?? 0;
@@ -91,144 +98,73 @@ function GroupsView({
 				privateNoteSentimentScore(b.members, data.userCards) -
 				privateNoteSentimentScore(a.members, data.userCards),
 		);
+	const sortIndexes = new Map(
+		compatibleGroups.map((group, index) => [group.id, index]),
+	);
+
+	const likedGroupIds = new Set(data.likes.given.map((like) => like.teamId));
+	const receivedLikeGroupIds = new Set(
+		data.likes.received.map((like) => like.teamId),
+	);
 
 	const neutralGroups = compatibleGroups.filter(
 		(group) =>
-			!data.likes.given.some((like) => like.teamId === group.id) &&
-			!data.likes.received.some((like) => like.teamId === group.id),
+			!likedGroupIds.has(group.id) && !receivedLikeGroupIds.has(group.id),
 	);
-	const likedGroups = compatibleGroups.filter((group) =>
-		data.likes.given.some((like) => like.teamId === group.id),
+	const likedGroups = compatibleGroups.filter(
+		(group) =>
+			likedGroupIds.has(group.id) && !receivedLikeGroupIds.has(group.id),
 	);
 	const groupsReceivedLikesFrom = compatibleGroups.filter((group) =>
-		data.likes.received.some((like) => like.teamId === group.id),
+		receivedLikeGroupIds.has(group.id),
 	);
 
-	const invitedGroupsDesktop = (
-		<div className="stack sm">
-			<ColumnHeader>{t("q:looking.columns.invited")}</ColumnHeader>
-			{likedGroups.map((group) => (
-				<LFGGroupCard
-					key={group.id}
-					group={group}
-					action="UNLIKE"
-					ownGroup={data.ownGroup ?? undefined}
-				/>
-			))}
-		</div>
-	);
-
-	const ownTabMemberCount = data.ownGroup
-		? data.ownGroup.members.length
-		: data.ownTeam
-			? data.ownTeam.members.length
-			: 0;
-
-	const ownGroupElement = data.ownGroup ? (
-		<div className="stack md">
-			<LFGGroupCard group={data.ownGroup} ownGroup={data.ownGroup} />
-			<LFGGroupLeaver />
-			{!isMobile ? invitedGroupsDesktop : null}
-		</div>
-	) : null;
-
-	const leftColumnContent = data.ownGroup ? (
-		ownGroupElement
-	) : data.ownTeam ? (
-		<TeamQueueSection />
-	) : (
-		<JoinQueueForm />
+	const sortedGroupCard = (
+		group: (typeof compatibleGroups)[number],
+		action: "LIKE" | "UNLIKE",
+	) => (
+		<SortedCard key={group.id} sortIndex={sortIndexes.get(group.id)!}>
+			<LFGGroupCard
+				group={group}
+				action={action}
+				ownGroup={data.ownGroup ?? undefined}
+			/>
+		</SortedCard>
 	);
 
 	return (
-		<div
-			className={clsx(styles.container, {
-				[styles.containerMobile]: isMobile,
-			})}
-		>
-			{!isMobile ? (
-				<div>
-					<SendouTabs>
-						<SendouTabList>
-							<SendouTab id="own" number={ownTabMemberCount}>
-								{t("q:looking.columns.myGroup")}
-							</SendouTab>
-						</SendouTabList>
-						<SendouTabPanel id="own">{leftColumnContent}</SendouTabPanel>
-					</SendouTabs>
-				</div>
-			) : null}
-			<div className={styles.innerContainer}>
-				<SendouTabs>
-					<SendouTabList>
-						<SendouTab id="groups" number={neutralGroups.length}>
-							{t("q:looking.columns.groups")}
-						</SendouTab>
-						{isMobile ? (
-							<SendouTab id="received" number={groupsReceivedLikesFrom.length}>
-								{t("q:looking.columns.invitations")}
-							</SendouTab>
-						) : null}
-						{isMobile ? (
-							<SendouTab id="own" number={ownTabMemberCount}>
-								{t("q:looking.columns.myGroup")}
-							</SendouTab>
-						) : null}
-					</SendouTabList>
-					<SendouTabPanel id="groups">
-						<div className="stack sm">
-							<ColumnHeader>{t("q:looking.columns.available")}</ColumnHeader>
-							{(isMobile
-								? compatibleGroups.filter(
-										(group) =>
-											!data.likes.received.some(
-												(like) => like.teamId === group.id,
-											),
-									)
-								: neutralGroups
-							).map((group) => (
-								<LFGGroupCard
-									key={group.id}
-									group={group}
-									action={
-										data.likes.given.some((like) => like.teamId === group.id)
-											? "UNLIKE"
-											: "LIKE"
-									}
-									ownGroup={data.ownGroup ?? undefined}
-								/>
-							))}
-						</div>
-					</SendouTabPanel>
-					<SendouTabPanel id="received">
-						<div className="stack sm">
-							{groupsReceivedLikesFrom.map((group) => (
-								<LFGGroupCard
-									key={group.id}
-									group={group}
-									action="ACCEPT"
-									ownGroup={data.ownGroup ?? undefined}
-								/>
-							))}
-						</div>
-					</SendouTabPanel>
-					<SendouTabPanel id="own">{leftColumnContent}</SendouTabPanel>
-				</SendouTabs>
-			</div>
-			{!isMobile ? (
-				<div className="stack sm">
-					<ColumnHeader>{t("q:looking.columns.invitations")}</ColumnHeader>
-					{groupsReceivedLikesFrom.map((group) => (
-						<LFGGroupCard
-							key={group.id}
-							group={group}
-							action="ACCEPT"
-							ownGroup={data.ownGroup ?? undefined}
-						/>
-					))}
-				</div>
-			) : null}
-		</div>
+		<LookingColumns
+			flipKey={data}
+			own={{
+				memberCount: ownMemberCount,
+				content: data.ownGroup ? (
+					<div className="stack md">
+						<LFGGroupCard group={data.ownGroup} ownGroup={data.ownGroup} />
+						<LFGGroupLeaver />
+					</div>
+				) : data.ownTeam ? (
+					<TeamQueueSection />
+				) : (
+					<JoinQueueForm />
+				),
+			}}
+			invited={
+				data.ownGroup
+					? likedGroups.map((group) => sortedGroupCard(group, "UNLIKE"))
+					: null
+			}
+			available={neutralGroups.map((group) => sortedGroupCard(group, "LIKE"))}
+			availableCount={neutralGroups.length}
+			received={groupsReceivedLikesFrom.map((group) => (
+				<LFGGroupCard
+					key={group.id}
+					group={group}
+					action="ACCEPT"
+					ownGroup={data.ownGroup ?? undefined}
+				/>
+			))}
+			receivedCount={groupsReceivedLikesFrom.length}
+		/>
 	);
 }
 
@@ -275,7 +211,12 @@ function AddSubForm() {
 				}
 			>
 				<SendouForm schema={addSubFormSchema}>
-					{({ FormField }) => <FormField name="message" />}
+					{({ FormField }) => (
+						<>
+							<OwnMatchProfileSummary />
+							<FormField name="message" />
+						</>
+					)}
 				</SendouForm>
 			</SendouDialog>
 		</div>
@@ -288,24 +229,7 @@ function SubCard({ sub }: { sub: SubEntry }) {
 	const tournament = useTournament();
 	const cardData = useUserCardData(sub.userId);
 
-	const infos = [
-		<div key="vc" className={styles.subsInfoVc}>
-			<Mic
-				className={
-					sub.vc === "YES"
-						? "text-success"
-						: sub.vc === "LISTEN_ONLY"
-							? "text-warning"
-							: "text-error"
-				}
-			/>
-			{sub.vc === "YES"
-				? t("tournament:subs.canVC")
-				: sub.vc === "LISTEN_ONLY"
-					? t("tournament:subs.listenOnlyVC")
-					: t("tournament:subs.noVC")}
-		</div>,
-	];
+	const infos = [<VcStatus key="vc" vc={sub.vc} />];
 	if (sub.plusTier) {
 		infos.push(
 			<React.Fragment key="dot-1">{"\u00B7"}</React.Fragment>,
@@ -327,7 +251,7 @@ function SubCard({ sub }: { sub: SubEntry }) {
 				<div className={styles.subsSectionAvatar}>
 					<UserCard userId={sub.userId} withMutualFriends>
 						<NoteAvatar sentiment={cardData?.privateNote?.sentiment} size="sm">
-							<Avatar user={sub} size="sm" />
+							<Avatar user={{ ...sub, id: sub.userId }} size="sm" />
 						</NoteAvatar>
 					</UserCard>
 				</div>
@@ -386,16 +310,6 @@ function SubCard({ sub }: { sub: SubEntry }) {
 	);
 }
 
-function ColumnHeader({ children }: { children: React.ReactNode }) {
-	const width = useMainContentWidth();
-
-	const isMobile = width < IS_Q_LOOKING_MOBILE_BREAKPOINT;
-
-	if (isMobile) return null;
-
-	return <div className={styles.header}>{children}</div>;
-}
-
 function JoinQueueForm() {
 	const { t } = useTranslation(["q"]);
 
@@ -406,12 +320,21 @@ function JoinQueueForm() {
 		>
 			{({ FormField }) => (
 				<>
+					<OwnMatchProfileSummary />
 					<FormField name="note" />
 					<FormField name="stayAsSub" />
 				</>
 			)}
 		</SendouForm>
 	);
+}
+
+function OwnMatchProfileSummary() {
+	const data = useLoaderData<typeof loader>();
+
+	if (!data.matchProfile) return null;
+
+	return <MatchProfileSummary {...data.matchProfile} />;
 }
 
 function TeamQueueSection() {
@@ -426,8 +349,7 @@ function TeamQueueSection() {
 
 	const isAtMaxMembers =
 		data.ownTeam.members.length >= tournament.maxMembersPerTeam;
-	const canJoinQueue =
-		data.ownTeam.usersRole === "OWNER" || data.ownTeam.usersRole === "MANAGER";
+	const canJoinQueue = TournamentLFG.canPutTeamInQueue(data.ownTeam.usersRole);
 
 	return (
 		<div className="stack md">

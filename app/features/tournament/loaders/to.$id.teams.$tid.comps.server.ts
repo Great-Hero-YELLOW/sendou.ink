@@ -1,4 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
+import * as R from "remeda";
 import { requireUser } from "~/features/auth/core/user.server";
 import * as RunComps from "~/features/img-export/core/RunComps";
 import * as ScannerIngestRepository from "~/features/scanner-ingest/ScannerIngestRepository.server";
@@ -10,7 +11,11 @@ import * as Series from "~/features/tournament-organization/core/Series";
 import * as TournamentOrganizationRepository from "~/features/tournament-organization/TournamentOrganizationRepository.server";
 import type { MainWeaponId } from "~/modules/in-game-lists/types";
 import type { SerializeFrom } from "~/utils/remix";
-import { forbidden, parseParams } from "~/utils/remix.server";
+import {
+	forbidden,
+	notFoundIfNullish,
+	parseParams,
+} from "~/utils/remix.server";
 
 export type TournamentTeamCompsLoaderData = SerializeFrom<typeof loader>;
 
@@ -22,15 +27,12 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	});
 
 	const tournament = await tournamentDataCached(tournamentId);
-	const team = tournament?.ctx.teams.find(
-		(candidate) => candidate.id === tournamentTeamId,
+	const team = notFoundIfNullish(
+		tournament.ctx.teams.find((candidate) => candidate.id === tournamentTeamId),
 	);
-	if (!tournament || !team) {
-		throw new Response(null, { status: 404 });
-	}
 
 	if (!team.memberUserIds.includes(user.id)) {
-		throw forbidden();
+		forbidden();
 	}
 
 	const minMembersPerTeam = tournament.ctx.settings.minMembersPerTeam ?? 4;
@@ -44,6 +46,17 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 
 	const sets =
 		await TournamentMatchRepository.findByTournamentTeamId(tournamentTeamId);
+	const tournamentMatchIds = sets.map((set) => set.tournamentMatchId);
+	const reportedByMatchId = R.groupBy(
+		await ReportedWeaponRepository.findByTournamentMatchIds(tournamentMatchIds),
+		(row) => row.tournamentMatchId,
+	);
+	const scoreboardsByMatchId = R.groupBy(
+		await ScannerIngestRepository.findScoreboardsByTournamentMatchIds(
+			tournamentMatchIds,
+		),
+		(scoreboard) => scoreboard.tournamentMatchId,
+	);
 
 	const ownObservations: RunComps.CompObservation[] = [];
 	const opponentComps: Array<{
@@ -53,14 +66,8 @@ export const loader = async ({ params }: LoaderFunctionArgs) => {
 	let mapOrderOffset = 0;
 
 	for (const set of sets) {
-		const reported =
-			(await ReportedWeaponRepository.findByTournamentMatchId(
-				set.tournamentMatchId,
-			)) ?? [];
-		const scoreboards =
-			await ScannerIngestRepository.findScoreboardsByTournamentMatchId(
-				set.tournamentMatchId,
-			);
+		const reported = reportedByMatchId[set.tournamentMatchId] ?? [];
+		const scoreboards = scoreboardsByMatchId[set.tournamentMatchId] ?? [];
 
 		const opponentObservations: RunComps.CompObservation[] = [];
 

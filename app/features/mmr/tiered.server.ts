@@ -1,15 +1,16 @@
 import { cachified } from "@epic-web/cachified";
+import { minutesToMilliseconds } from "date-fns";
 import type { Tables } from "~/db/tables";
-import { cache, IN_MILLISECONDS, ttl } from "~/utils/cache.server";
+import { cache, ttl } from "~/utils/cache.server";
 import { MATCHES_COUNT_NEEDED_FOR_LEADERBOARD } from "../leaderboards/leaderboards-constants";
 import { USER_SKILLS_CACHE_KEY } from "../sendouq/q-constants";
 import {
-	TEAM_LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN,
 	TIERS,
 	TIERS_BEFORE_LEVIATHAN,
 	type TierName,
 	USER_LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN,
 } from "./mmr-constants";
+import { tierOfOrdinal } from "./mmr-utils";
 import * as SkillRepository from "./SkillRepository.server";
 
 export interface TieredSkill {
@@ -30,21 +31,18 @@ export async function freshUserSkills(season: number): Promise<{
 }> {
 	const points = await SkillRepository.findOrderedUserOrdinalsBySeason(season);
 
-	const { intervals, isAccurateTiers } = skillTierIntervals(points, "user");
+	const { intervals, isAccurateTiers } = skillTierIntervals(points);
 
 	return {
 		intervals,
 		isAccurateTiers,
 		userSkills: Object.fromEntries(
 			points.map((p) => {
-				const { name, isPlus } = intervals.find(
-					(t) => t.neededOrdinal! <= p.ordinal,
-				) ?? { name: "IRON", isPlus: false };
 				return [
 					p.userId as number,
 					{
 						ordinal: p.ordinal,
-						tier: { name, isPlus },
+						tier: tierOfOrdinal(intervals, p.ordinal),
 						approximate: p.matchesCount < MATCHES_COUNT_NEEDED_FOR_LEADERBOARD,
 					},
 				];
@@ -68,7 +66,7 @@ export function userSkills(season: number, { forceFresh = false } = {}) {
 			const value = await freshUserSkills(season);
 
 			if (Object.keys(value.userSkills).length === 0) {
-				context.metadata.ttl = ttl(IN_MILLISECONDS.HALF_HOUR);
+				context.metadata.ttl = ttl(minutesToMilliseconds(30));
 			}
 
 			return value;
@@ -102,16 +100,12 @@ export type SkillTierInterval = ReturnType<
 
 function skillTierIntervals(
 	orderedPoints: Array<Pick<Tables["Skill"], "ordinal" | "matchesCount">>,
-	type: "user" | "team",
 ) {
-	const LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN =
-		type === "user"
-			? USER_LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN
-			: TEAM_LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN;
 	let points = orderedPoints.filter(
 		(p) => p.matchesCount >= MATCHES_COUNT_NEEDED_FOR_LEADERBOARD,
 	);
-	const hasLeviathan = points.length >= LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN;
+	const hasLeviathan =
+		points.length >= USER_LEADERBOARD_MIN_ENTRIES_FOR_LEVIATHAN;
 	if (!hasLeviathan) {
 		// tiers from all entries, whether or not they have enough to be on the leaderboard
 		points = orderedPoints;

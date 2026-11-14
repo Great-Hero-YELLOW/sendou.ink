@@ -146,8 +146,27 @@ function StandingsTable({
 	canEditDestination: boolean;
 	allMatchesFinished: boolean;
 }) {
-	let qualifiedRowRendered = false;
-	let eliminatedRowRendered = false;
+	const advanceThreshold = bracket.settings?.advanceThreshold;
+	const qualifiedDividerIdx = advanceThreshold
+		? standings.findIndex((s) => s.stats && s.stats.setWins < advanceThreshold)
+		: -1;
+	const eliminatedDividerIdx = advanceThreshold
+		? standings.findIndex(
+				(s) =>
+					s.stats &&
+					Swiss.calculateTeamStatus({
+						advanceThreshold,
+						losses: s.stats.setLosses,
+						wins: s.stats.setWins,
+						roundCount: bracket.swissRoundCount,
+					}) === "eliminated",
+			)
+		: -1;
+	const teamSeedAndDestinationColumnCount = 3;
+	const columnCount =
+		bracket.tiebreakers.length +
+		teamSeedAndDestinationColumnCount +
+		(canEditDestination ? 1 : 0);
 
 	return (
 		<table
@@ -158,37 +177,11 @@ function StandingsTable({
 			<thead>
 				<tr>
 					<th>Team</th>
-					<th>
-						<abbr title="Set wins and losses">W/L</abbr>
-					</th>
-					{bracket.type === "round_robin" ? (
-						<th>
-							<abbr title="Wins against tied opponents">TB</abbr>
+					{bracket.tiebreakers.map((tiebreaker) => (
+						<th key={tiebreaker.label}>
+							<abbr title={tiebreaker.description}>{tiebreaker.label}</abbr>
 						</th>
-					) : null}
-					{bracket.type === "swiss" ? (
-						<th>
-							<abbr title="Losses against tied opponents">TB</abbr>
-						</th>
-					) : null}
-					{bracket.type === "swiss" ? (
-						<th>
-							<abbr title="Opponents' set win percentage average">OW%</abbr>
-						</th>
-					) : null}
-					<th>
-						<abbr title="Map wins and losses">W/L (M)</abbr>
-					</th>
-					{bracket.type === "swiss" ? (
-						<th>
-							<abbr title="Opponents' map win percentage average">OW% (M)</abbr>
-						</th>
-					) : null}
-					{bracket.type === "round_robin" ? (
-						<th>
-							<abbr title="Number of maps knocked out">KOs</abbr>
-						</th>
-					) : null}
+					))}
 					<th>Seed</th>
 					<th />
 					{canEditDestination ? <th /> : null}
@@ -226,24 +219,8 @@ function StandingsTable({
 						return `${s.team.id}-${overridenDestinationBracket?.idx}`;
 					};
 
-					const renderQualifiedRow =
-						!qualifiedRowRendered &&
-						bracket.settings?.advanceThreshold &&
-						s.stats &&
-						s.stats.setWins < bracket.settings.advanceThreshold;
-					const renderEliminatedRow =
-						!eliminatedRowRendered &&
-						bracket.settings?.advanceThreshold &&
-						s.stats &&
-						Swiss.calculateTeamStatus({
-							advanceThreshold: bracket.settings.advanceThreshold,
-							losses: s.stats.setLosses,
-							wins: s.stats.setWins,
-							roundCount: bracket.swissRoundCount,
-						}) === "eliminated";
-
-					if (renderQualifiedRow) qualifiedRowRendered = true;
-					if (renderEliminatedRow) eliminatedRowRendered = true;
+					const renderQualifiedRow = i === qualifiedDividerIdx;
+					const renderEliminatedRow = i === eliminatedDividerIdx;
 
 					return (
 						<React.Fragment key={s.team.id}>
@@ -252,8 +229,7 @@ function StandingsTable({
 									key="qualified"
 									type="qualified"
 									threshold={bracket.settings!.advanceThreshold!}
-									// TODO: get columns from the tiebreakers array
-									columnCount={8 + (canEditDestination ? 1 : 0)}
+									columnCount={columnCount}
 								/>
 							) : null}
 							{renderEliminatedRow ? (
@@ -261,8 +237,7 @@ function StandingsTable({
 									key="eliminated"
 									type="eliminated"
 									threshold={bracket.settings!.advanceThreshold!}
-									// TODO: get columns from the tiebreakers array
-									columnCount={8 + (canEditDestination ? 1 : 0)}
+									columnCount={columnCount}
 								/>
 							) : null}
 							<tr>
@@ -281,41 +256,11 @@ function StandingsTable({
 										{s.team.droppedOut ? <DroppedOutPopover /> : null}
 									</div>
 								</td>
-								<td>
-									<span>
-										{stats.setWins}/{stats.setLosses}
-									</span>
-								</td>
-								{bracket.type === "round_robin" ? (
-									<td>
-										<span>{stats.winsAgainstTied}</span>
+								{bracket.tiebreakers.map((tiebreaker) => (
+									<td key={tiebreaker.label}>
+										<span>{tiebreaker.format(stats)}</span>
 									</td>
-								) : null}
-								{bracket.type === "swiss" ? (
-									<td>
-										<span>{(stats.lossesAgainstTied ?? 0) * -1}</span>
-									</td>
-								) : null}
-								{bracket.type === "swiss" ? (
-									<td>
-										<span>{stats.opponentSetWinPercentage?.toFixed(2)}</span>
-									</td>
-								) : null}
-								<td>
-									<span>
-										{stats.mapWins}/{stats.mapLosses}
-									</span>
-								</td>
-								{bracket.type === "swiss" ? (
-									<td>
-										<span>{stats.opponentMapWinPercentage?.toFixed(2)}</span>
-									</td>
-								) : null}
-								{bracket.type === "round_robin" ? (
-									<td>
-										<span>{stats.koCount ?? 0}</span>
-									</td>
-								) : null}
+								))}
 								<td>{team?.seed}</td>
 								<EditableDestination
 									key={key()}
@@ -329,15 +274,14 @@ function StandingsTable({
 									droppedOut={Boolean(s.team.droppedOut)}
 								/>
 							</tr>
-							{!eliminatedRowRendered &&
+							{eliminatedDividerIdx === -1 &&
 							i === standings.length - 1 &&
 							bracket.settings?.advanceThreshold ? (
 								<SwissDividerRow
 									key="eliminated"
 									type="eliminated"
 									threshold={bracket.settings.advanceThreshold}
-									// TODO: get columns from the tiebreakers array
-									columnCount={8 + (canEditDestination ? 1 : 0)}
+									columnCount={columnCount}
 								/>
 							) : null}
 						</React.Fragment>

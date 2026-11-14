@@ -13,6 +13,12 @@ export interface InitRequest {
 	suppressSteadyFrames?: boolean;
 	/** accumulate scan telemetry counters and time the detectors; default false (VoD telemetry panel opts in) */
 	collectTelemetry?: boolean;
+	/** match templates (and upscale sub-1080p frames) on WebGPU when an adapter exists; default false */
+	webgpu?: boolean;
+	/** encode the analyzed frame onto results whose events fired; default true */
+	attachFrames?: boolean;
+	/** downscale every frame of a map open onto the minimap's results (`minimapSnapshot`); default false */
+	snapshotMinimaps?: boolean;
 }
 
 export interface AnalyzeRequest {
@@ -37,7 +43,7 @@ export interface ScanChunkRequest {
 	tEnd: number;
 }
 
-export interface AbortChunkRequest {
+interface AbortChunkRequest {
 	kind: "abortChunk";
 }
 
@@ -48,16 +54,24 @@ export type WorkerRequest =
 	| AbortChunkRequest;
 
 export type WorkerResponse =
-	| { kind: "ready" }
+	| {
+			kind: "ready";
+			/** glyph/planner atlases that failed to load: names, digits, lobbies, stages… read as null, so results must not be uploaded */
+			missingAtlases: string[];
+	  }
 	| {
 			kind: "result";
 			detector: string;
 			t: number;
 			gate: GateResult;
 			events: DetectedEvent<unknown>[];
-			/** lossless PNG of the exact frame that was analyzed; present when events fired */
+			/** lossless image of the exact frame that was analyzed; present when events fired */
 			frame?: Blob;
+			/** downscaled image of the frame, on every minimap gate pass of an open a read of it was kept from (`snapshotMinimaps`) */
+			minimapSnapshot?: Blob;
 	  }
+	/** frame t threw mid-analysis; the worker is still usable and a "done" follows */
+	| { kind: "frameError"; t: number; message: string }
 	/** all due detectors have reported for frame t (per-frame path only) */
 	| {
 			kind: "done";

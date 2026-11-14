@@ -13,6 +13,7 @@ type TabsOrientation = "horizontal" | "vertical";
 interface TabsContextValue {
 	selectedKey: string | null;
 	orientation: TabsOrientation;
+	keepPanelsMounted: boolean;
 	select: (key: string) => void;
 	registerTab: (key: string, element: HTMLElement) => () => void;
 	moveFocus: (
@@ -40,6 +41,8 @@ interface SendouTabsProps {
 	disappearing?: boolean;
 	/** Vertical orientation switches to horizontal below this main content width (px). */
 	horizontalBelow?: number;
+	/** Hidden panels stay mounted via `<Activity>`: pre-rendered in the background once the page is idle and state kept across switches, making tab switches instant. Default false. */
+	keepPanelsMounted?: boolean;
 	className?: string;
 	children: React.ReactNode;
 }
@@ -68,6 +71,7 @@ export function SendouTabs({
 	padded = true,
 	disappearing = true,
 	horizontalBelow,
+	keepPanelsMounted = false,
 	className,
 	orientation = "horizontal",
 	children,
@@ -112,6 +116,7 @@ export function SendouTabs({
 	const context: TabsContextValue = {
 		selectedKey: currentKey,
 		orientation: effectiveOrientation,
+		keepPanelsMounted,
 		select,
 		registerTab: (key, element) => {
 			tabsRef.current.set(key, element);
@@ -286,9 +291,20 @@ export function SendouTabList({
 	children,
 }: SendouTabListProps) {
 	const tabs = useTabsContext();
+	const containerRef = React.useRef<HTMLDivElement>(null);
+
+	React.useEffect(() => {
+		const container = containerRef.current;
+		if (!container || tabs.orientation === "vertical") return;
+
+		const selectedTab = container.querySelector<HTMLElement>(
+			'[role="tab"][aria-selected="true"]',
+		);
+		if (selectedTab) scrollTabIntoView(container, selectedTab);
+	}, [tabs.selectedKey, tabs.orientation]);
 
 	const tabList = (
-		<div className={clsx(styles.tabListContainer, "scrollbar")}>
+		<div ref={containerRef} className={styles.tabListContainer}>
 			<div
 				className={clsx(styles.tabList, {
 					[styles.sticky]: sticky,
@@ -313,6 +329,17 @@ export function SendouTabList({
 	);
 }
 
+function scrollTabIntoView(container: HTMLElement, tab: HTMLElement) {
+	const containerRect = container.getBoundingClientRect();
+	const tabRect = tab.getBoundingClientRect();
+
+	if (tabRect.left < containerRect.left) {
+		container.scrollLeft -= containerRect.left - tabRect.left;
+	} else if (tabRect.right > containerRect.right) {
+		container.scrollLeft += tabRect.right - containerRect.right;
+	}
+}
+
 interface SendouTabPanelProps {
 	id: string;
 	className?: string;
@@ -326,9 +353,10 @@ export function SendouTabPanel({
 }: SendouTabPanelProps) {
 	const tabs = useTabsContext();
 
-	if (tabs.selectedKey !== id) return null;
+	const selected = tabs.selectedKey === id;
+	if (!selected && !tabs.keepPanelsMounted) return null;
 
-	return (
+	const panel = (
 		<div
 			className={clsx(className, styles.tabPanel)}
 			role="tabpanel"
@@ -337,5 +365,13 @@ export function SendouTabPanel({
 		>
 			{children}
 		</div>
+	);
+
+	if (!tabs.keepPanelsMounted) return panel;
+
+	return (
+		<React.Activity mode={selected ? "visible" : "hidden"}>
+			{panel}
+		</React.Activity>
 	);
 }

@@ -14,9 +14,12 @@ const outsiderId = () => users.id(4);
 describe("TopicAccess.canSubscribeToAll", () => {
 	test.each([
 		{ topic: "sq-looking", allowed: true },
+		{ topic: "scrims", allowed: true },
+		{ topic: "lobbies", allowed: true },
 		{ topic: "tournament__5", allowed: true },
 		{ topic: "match__123", allowed: true },
 		{ topic: "sq-group__7", allowed: true },
+		{ topic: "lobby__3", allowed: true },
 		{ topic: "user__5", allowed: false },
 		{ topic: "chat-room__abc", allowed: false },
 		{ topic: "chat-room__999", allowed: false },

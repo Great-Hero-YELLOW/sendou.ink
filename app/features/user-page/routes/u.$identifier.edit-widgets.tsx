@@ -15,7 +15,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Search as SearchIcon, Trash } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Link, useFetcher, useLoaderData } from "react-router";
@@ -39,6 +39,7 @@ import type { WidgetId } from "~/features/user-page/core/widgets/types";
 import { getWidgetFormSchema } from "~/features/user-page/core/widgets/widget-form-schemas";
 import { USER } from "~/features/user-page/user-page-constants";
 import { useUnsavedChangesChecker } from "~/form/UnsavedChangesGuard";
+import { RENDERS_FIELD_ERRORS_KEY } from "~/form/utils";
 import { useHydrated } from "~/hooks/useHydrated";
 import { useHasRole } from "~/modules/permissions/hooks";
 import { navIconUrl, SUPPORT_PAGE } from "~/utils/urls";
@@ -64,19 +65,19 @@ export default function EditWidgetsPage() {
 	const isSupporter = useHasRole("SUPPORTER");
 	const maxWidgets = maxWidgetsPerSlot(isSupporter);
 
-	const [selectedWidgets, setSelectedWidgets] = useState<
-		Array<Tables["UserWidget"]["widget"]>
-	>(data.currentWidgets);
+	// countdown dates are ISO strings in the db, typed as the form's Date output
+	const currentWidgets = data.currentWidgets as unknown as Array<
+		Tables["UserWidget"]["widget"]
+	>;
+	const [selectedWidgets, setSelectedWidgets] = useState(currentWidgets);
 	const [expandedWidgetId, setExpandedWidgetId] = useState<string | null>(null);
-	const [emptySaveAttempted, setEmptySaveAttempted] = useState(false);
+	const [saveAttempted, setSaveAttempted] = useState(false);
 
-	const hasUnsavedChangesRef = useRef<
-		Parameters<typeof useUnsavedChangesChecker>[0]["current"]
-	>(() => false);
-	hasUnsavedChangesRef.current = () =>
-		fetcher.state === "idle" &&
-		!R.isDeepEqual(selectedWidgets, data.currentWidgets);
-	useUnsavedChangesChecker(hasUnsavedChangesRef);
+	useUnsavedChangesChecker(
+		() =>
+			fetcher.state === "idle" &&
+			!R.isDeepEqual(selectedWidgets, currentWidgets),
+	);
 
 	const mainWidgets = selectedWidgets.filter((w) => {
 		const def = findWidgetById(w.id);
@@ -137,6 +138,7 @@ export default function EditWidgetsPage() {
 
 		const widgetDef = findWidgetById(widgetId);
 		if (widgetDef && "schema" in widgetDef) {
+			setSaveAttempted(false);
 			setExpandedWidgetId(widgetId);
 		}
 	};
@@ -147,10 +149,8 @@ export default function EditWidgetsPage() {
 	};
 
 	const handleSubmit = () => {
-		if (selectedWidgets.length === 0) {
-			setEmptySaveAttempted(true);
-			return;
-		}
+		setSaveAttempted(true);
+		if (selectedWidgets.length === 0) return;
 
 		const invalidWidgetIds = computeInvalidWidgetIds(selectedWidgets);
 		const firstInvalid = selectedWidgets.find((w) =>
@@ -167,7 +167,10 @@ export default function EditWidgetsPage() {
 		}
 
 		fetcher.submit(
-			{ widgets: selectedWidgets } as unknown as Record<string, string>,
+			{
+				widgets: selectedWidgets,
+				[RENDERS_FIELD_ERRORS_KEY]: true,
+			} as unknown as Record<string, string>,
 			{ method: "post", encType: "application/json" },
 		);
 	};
@@ -201,7 +204,7 @@ export default function EditWidgetsPage() {
 					<SendouButton onClick={handleSubmit}>
 						{t("common:actions.save")}
 					</SendouButton>
-					{emptySaveAttempted && selectedWidgets.length === 0 ? (
+					{saveAttempted && selectedWidgets.length === 0 ? (
 						<FormMessage type="error" spaced={false}>
 							{t("user:widgets.emptyError")}
 						</FormMessage>
@@ -229,6 +232,7 @@ export default function EditWidgetsPage() {
 								onSettingsChange={handleSettingsChange}
 								expandedWidgetId={expandedWidgetId}
 								onToggleExpanded={toggleExpanded}
+								saveAttempted={saveAttempted}
 							/>
 						</DndContext>
 					</section>
@@ -296,6 +300,7 @@ function AvailableWidgetsList({
 	return (
 		<div>
 			<Input
+				type="search"
 				className={styles.searchInput}
 				icon={<SearchIcon className={styles.searchIcon} />}
 				value={searchValue}
@@ -397,6 +402,7 @@ interface SelectedWidgetsListProps {
 	onSettingsChange: (widgetId: string, settings: any) => void;
 	expandedWidgetId: string | null;
 	onToggleExpanded: (widgetId: string) => void;
+	saveAttempted: boolean;
 }
 
 function SelectedWidgetsList({
@@ -407,6 +413,7 @@ function SelectedWidgetsList({
 	onSettingsChange,
 	expandedWidgetId,
 	onToggleExpanded,
+	saveAttempted,
 }: SelectedWidgetsListProps) {
 	const { t } = useTranslation(["user"]);
 
@@ -438,6 +445,7 @@ function SelectedWidgetsList({
 									onSettingsChange={onSettingsChange}
 									isExpanded={expandedWidgetId === widget.id}
 									onToggleExpanded={onToggleExpanded}
+									saveAttempted={saveAttempted}
 								/>
 							))
 						)}
@@ -471,6 +479,7 @@ function SelectedWidgetsList({
 									onSettingsChange={onSettingsChange}
 									isExpanded={expandedWidgetId === widget.id}
 									onToggleExpanded={onToggleExpanded}
+									saveAttempted={saveAttempted}
 								/>
 							))
 						)}
@@ -510,6 +519,7 @@ interface DraggableWidgetItemProps {
 	onSettingsChange: (widgetId: string, settings: any) => void;
 	isExpanded: boolean;
 	onToggleExpanded: (widgetId: string) => void;
+	saveAttempted: boolean;
 }
 
 function DraggableWidgetItem({
@@ -518,6 +528,7 @@ function DraggableWidgetItem({
 	onSettingsChange,
 	isExpanded,
 	onToggleExpanded,
+	saveAttempted,
 }: DraggableWidgetItemProps) {
 	const { t } = useTranslation(["user", "common"]);
 
@@ -581,6 +592,7 @@ function DraggableWidgetItem({
 					<WidgetSettingsForm
 						widget={widget}
 						onSettingsChange={onSettingsChange}
+						saveAttempted={saveAttempted}
 					/>
 				</div>
 			) : null}

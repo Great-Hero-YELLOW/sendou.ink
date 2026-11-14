@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type {
 	AbilityWithUnknown,
 	MainWeaponId,
@@ -12,20 +13,29 @@ import type {
 	MinimapEnemy,
 	MinimapTeammate,
 } from "../../core/detectors/minimap/index";
-import type { ObjectiveData } from "../../core/detectors/objective/index";
+import type {
+	ObjectiveData,
+	TrackObjectiveData,
+} from "../../core/detectors/objective/index";
 import type { PlayerStatusData } from "../../core/detectors/objective/player-status";
 import type { StripWeaponsData } from "../../core/detectors/objective/strip-weapons";
 import type { ScoreboardData } from "../../core/detectors/scoreboard/index";
 import type { ScoreboardBattleLogData } from "../../core/detectors/scoreboard-battle-log/index";
 import type { ScoreboardBattleLogReplayData } from "../../core/detectors/scoreboard-battle-log-replay/index";
+import type { ScoreboardOwnData } from "../../core/detectors/scoreboard-own/index";
 import type { DetectedEvent } from "../../core/detectors/types";
+import type { XRankPositionData } from "../../core/detectors/x-rank/position";
+import type { XSetCountData } from "../../core/detectors/x-rank/set-count";
+import type { XSetResultData } from "../../core/detectors/x-rank/set-result";
 import {
 	buildScannerMatches,
 	ingestSkipReasons,
 	invalidObjectiveEvents,
+	isHistoryOnly,
+	type MatchBuildCache,
 } from "../../core/match-builder";
+import { xBattleCards } from "../../core/x-battle";
 import type { ScannerLobby } from "../../scanner-types";
-import { test } from "../node-test-compat";
 
 const NAMES = ["w1", "w2", "w3", "w4", "l1", "l2", "l3", "l4"];
 const ALPHA: MainWeaponId[] = [40, 1001, 2010, 3030];
@@ -61,7 +71,7 @@ function objective(
 		time = (300 - Math.round(t)) as number | null,
 		score = [95, 53] as [number | null, number | null],
 		penalty = [null, null] as [number | null, number | null],
-		control = [true, false] as [boolean, boolean],
+		control = 0 as ObjectiveData["control"],
 		teamColor = [null, null] as ObjectiveData["teamColor"],
 	} = {},
 ): DetectedEvent {
@@ -76,6 +86,28 @@ function objective(
 	return { type: "Objective", t, confidence: 0.9, data };
 }
 
+function trackObjective(
+	t: number,
+	{
+		mode = "TC" as TrackObjectiveData["mode"],
+		time = (300 - Math.round(t)) as number | null,
+		score = [80, 100] as [number | null, number | null],
+		control = 0 as TrackObjectiveData["control"],
+		position = 30 as number | null,
+		teamColor = [null, null] as ObjectiveData["teamColor"],
+	} = {},
+): DetectedEvent {
+	const data: TrackObjectiveData = {
+		mode,
+		time,
+		score,
+		control,
+		position,
+		teamColor,
+	};
+	return { type: "Objective", t, confidence: 0.9, data };
+}
+
 function scoreboard(
 	t: number,
 	{
@@ -85,6 +117,9 @@ function scoreboard(
 		weapons: weaponIds = ALL as (MainWeaponId | null)[],
 		povIndex = 0 as number | null,
 		matchScores = [100, 47] as [number | null, number | null],
+		paints = [] as (number | null)[],
+		names = NAMES,
+		noContest = false,
 	} = {},
 ): DetectedEvent {
 	const data: ScoreboardData = {
@@ -92,10 +127,11 @@ function scoreboard(
 		mode,
 		stage,
 		matchScores,
+		noContest,
 		players: weaponIds.map((weaponId, i) => ({
-			name: NAMES[i] ?? `p${i}`,
+			name: names[i] ?? `p${i}`,
 			weaponId,
-			paint: 1000,
+			paint: paints.length > 0 ? (paints[i] ?? null) : 1000 + t,
 			ka: 10,
 			d: 5,
 			s: 2,
@@ -110,9 +146,12 @@ function replayScoreboard(
 	{
 		timestamp = null as string | null,
 		replayCode = "RABC-DEFG-HIJK-LMNO" as string | null,
+		stage = 0 as StageId | null,
+		mode = "SZ" as ModeShort | null,
+		paints = [] as (number | null)[],
 	} = {},
 ): DetectedEvent & { detectedAt?: number } {
-	const base = scoreboard(t).data as ScoreboardData;
+	const base = scoreboard(t, { stage, mode, paints }).data as ScoreboardData;
 	const data: ScoreboardBattleLogReplayData = {
 		...base,
 		timestamp,
@@ -124,11 +163,20 @@ function replayScoreboard(
 
 function battleLogScoreboard(
 	t: number,
-	{ timestamp = null as string | null } = {},
+	{
+		timestamp = null as string | null,
+		paints = [] as (number | null)[],
+		stage = 0 as StageId | null,
+		mode = "SZ" as ModeShort | null,
+		names = NAMES,
+		ka = 10 as number | null,
+	} = {},
 ): DetectedEvent & { detectedAt?: number } {
-	const base = scoreboard(t).data as ScoreboardData;
+	const base = scoreboard(t, { paints, stage, mode, names })
+		.data as ScoreboardData;
 	const data: ScoreboardBattleLogData = {
 		...base,
+		players: base.players.map((player) => ({ ...player, ka })),
 		timestamp,
 		matchScores: [100, 0],
 	};
@@ -166,6 +214,7 @@ function minimap(
 		teamColors = [null, null] as MinimapData["teamColors"],
 		dead = [[], []] as [number[], number[]],
 		specialReady = [[], []] as [number[], number[]],
+		confidence = 0.8,
 	} = {},
 ): DetectedEvent {
 	const data: MinimapData = {
@@ -183,7 +232,7 @@ function minimap(
 		})),
 		teamColors,
 	};
-	return { type: "Minimap", t, confidence: 0.8, data };
+	return { type: "Minimap", t, confidence, data };
 }
 
 function weapons(match: {
@@ -258,14 +307,14 @@ test("objective reads become teams-order samples on the match", () => {
 				time: 215,
 				score: [95, 53],
 				penalty: [4, null],
-				control: [true, false],
+				control: 0,
 			},
 			{
 				t: 180,
 				time: 155,
 				score: [80, 53],
 				penalty: [null, null],
-				control: [true, false],
+				control: 0,
 			},
 		],
 	});
@@ -281,20 +330,181 @@ test("a losing-side pov swaps objective samples into teams order", () => {
 		time: 180,
 		score: [53, 95],
 		penalty: [null, 4],
-		control: [false, true],
+		control: 1,
 	});
 });
 
-test("a known non-SZ match drops its objective reads", () => {
+test("track reads become samples with the objective's position", () => {
+	const built = buildScannerMatches([
+		mapStart(0, { mode: "RM" }),
+		trackObjective(120, { control: null, position: 0, score: [null, null] }),
+		trackObjective(130, { control: 1, position: -40, score: [null, 60] }),
+		scoreboard(300, { mode: "RM" }),
+	]);
+	assert.deepEqual(built[0]!.match.objective, {
+		mode: "RM",
+		samples: [
+			{
+				t: 120,
+				time: 180,
+				score: [null, null],
+				penalty: [null, null],
+				control: null,
+				position: 0,
+			},
+			{
+				t: 130,
+				time: 170,
+				score: [null, 60],
+				penalty: [null, null],
+				control: 1,
+				position: -40,
+			},
+		],
+	});
+});
+
+test("a losing-side pov flips the track position with the sides", () => {
+	const built = buildScannerMatches([
+		mapStart(0, { mode: "TC" }),
+		trackObjective(120, { control: 0, position: 30, score: [80, 100] }),
+		scoreboard(300, { mode: "TC", povIndex: 6 }),
+	]);
+	assert.deepEqual(built[0]!.match.objective!.samples[0], {
+		t: 120,
+		time: 180,
+		score: [100, 80],
+		penalty: [null, null],
+		control: 1,
+		position: -30,
+	});
+});
+
+test("casted track swaps flip the position with the sides", () => {
+	const built = buildScannerMatches([
+		minimap(0, { teamColors: [GREEN_INK, PURPLE_INK] }),
+		trackObjective(60, {
+			control: 0,
+			position: 20,
+			teamColor: [GREEN_INK, PURPLE_INK],
+		}),
+		// the caster specs a purple player: purple's side moves left
+		trackObjective(61, {
+			control: 1,
+			position: -25,
+			teamColor: [PURPLE_INK, GREEN_INK],
+		}),
+		minimap(90, { teamColors: [GREEN_INK, PURPLE_INK] }),
+	]);
+	assert.deepEqual(
+		built[0]!.match.objective!.samples.map((sample) => [
+			sample.control,
+			sample.position,
+		]),
+		[
+			[0, 20],
+			[0, 25],
+		],
+	);
+});
+
+test("an unknown-mode track match takes its mode from the checkpoint markers", () => {
+	const built = buildScannerMatches([
+		mapStart(0, { mode: null }),
+		trackObjective(60, { mode: "RM" }),
+		trackObjective(61, { mode: null, position: 31 }),
+		trackObjective(62, { mode: "RM", position: 32 }),
+		scoreboard(300, { mode: null }),
+	]);
+	assert.equal(built[0]!.match.objective!.mode, "RM");
+});
+
+test("a known TC/RM match drops SZ lookalike reads, and an SZ match track ones", () => {
+	const track = [
+		mapStart(0, { mode: "TC" }),
+		objective(60),
+		trackObjective(61),
+		scoreboard(300, { mode: "TC" }),
+	];
+	const trackBuilt = buildScannerMatches(track);
+	assert.equal(trackBuilt[0]!.match.objective!.samples[0]!.t, 61);
+	assert.deepEqual(invalidObjectiveEvents(trackBuilt), [track[1]]);
+
+	const zones = [
+		mapStart(0),
+		objective(60),
+		trackObjective(61),
+		scoreboard(300),
+	];
+	const zonesBuilt = buildScannerMatches(zones);
+	assert.equal(zonesBuilt[0]!.match.objective!.samples[0]!.t, 60);
+	assert.deepEqual(invalidObjectiveEvents(zonesBuilt), [zones[2]]);
+});
+
+test("an unknown-mode match builds from its majority overlay and deletes nothing", () => {
 	const events = [
-		mapStart(0, { mode: "CB" }),
+		mapStart(0, { mode: null }),
+		objective(60),
+		trackObjective(61),
+		trackObjective(62, { position: 35 }),
+		scoreboard(300, { mode: null }),
+	];
+	const built = buildScannerMatches(events);
+	assert.deepEqual(
+		built[0]!.match.objective!.samples.map((sample) => sample.t),
+		[61, 62],
+	);
+	assert.deepEqual(invalidObjectiveEvents(built), []);
+});
+
+test("an intro and results screen disagreeing on the mode leave it unknown and delete nothing", () => {
+	const events = [
+		mapStart(0),
+		objective(60),
+		playerStatus(61),
+		scoreboard(300, { mode: "CB" }),
+	];
+	const built = buildScannerMatches(events);
+	assert.equal(built[0]!.match.mode, null);
+	assert.equal(built[0]!.match.objective!.samples.length, 1);
+	assert.equal(built[0]!.match.playerStatus!.samples.length, 1);
+	assert.deepEqual(invalidObjectiveEvents(built), []);
+});
+
+test("a Turf War match drops its objective reads", () => {
+	const events = [
+		mapStart(0, { mode: "TW" }),
 		objective(60),
 		objective(120),
-		scoreboard(300, { mode: "CB" }),
+		scoreboard(300, { mode: "TW" }),
 	];
 	const built = buildScannerMatches(events);
 	assert.equal(built[0]!.match.objective, null);
 	assert.deepEqual(invalidObjectiveEvents(built), [events[1], events[2]]);
+});
+
+test("a Clam Blitz match keeps its plates reads", () => {
+	const events = [
+		mapStart(0, { mode: "CB" }),
+		objective(60, { score: [100, 80], penalty: [null, 10], control: null }),
+		playerStatus(61),
+		scoreboard(300, { mode: "CB" }),
+	];
+	const built = buildScannerMatches(events);
+	assert.deepEqual(built[0]!.match.objective, {
+		mode: "CB",
+		samples: [
+			{
+				t: 60,
+				time: 240,
+				score: [100, 80],
+				penalty: [null, 10],
+				control: null,
+			},
+		],
+	});
+	assert.equal(built[0]!.match.playerStatus!.samples.length, 1);
+	assert.deepEqual(invalidObjectiveEvents(built), []);
 });
 
 test("an unknown-mode match keeps its objective reads", () => {
@@ -304,6 +514,7 @@ test("an unknown-mode match keeps its objective reads", () => {
 		scoreboard(300, { mode: null }),
 	]);
 	assert.equal(built[0]!.match.objective!.samples.length, 1);
+	assert.equal(built[0]!.match.objective!.mode, null);
 	assert.deepEqual(invalidObjectiveEvents(built), []);
 });
 
@@ -315,20 +526,20 @@ test("casted plate swaps are reoriented by team ink color", () => {
 		minimap(0, { teamColors: [GREEN_INK, PURPLE_INK] }),
 		objective(60, {
 			score: [80, 90],
-			control: [true, false],
+			control: 0,
 			teamColor: [GREEN_INK, PURPLE_INK],
 		}),
 		// the caster specs a purple player: purple's plate moves left
 		objective(120, {
 			score: [90, 75],
 			penalty: [4, null],
-			control: [true, false],
+			control: 0,
 			teamColor: [PURPLE_INK, GREEN_INK],
 		}),
 		// colors unreadable: the previous arrangement carries over
 		objective(125, {
 			score: [85, 75],
-			control: [true, false],
+			control: 0,
 			teamColor: [null, null],
 		}),
 		minimap(180),
@@ -353,11 +564,7 @@ test("casted plate swaps are reoriented by team ink color", () => {
 	);
 	assert.deepEqual(
 		samples.map((sample) => sample.control),
-		[
-			[true, false],
-			[false, true],
-			[false, true],
-		],
+		[0, 1, 1],
 	);
 });
 
@@ -367,14 +574,14 @@ test("minimap ink colors anchor a bravo-first cluster into teams order", () => {
 		// every read had purple (bravo) on the left plate
 		objective(60, {
 			score: [90, 80],
-			control: [false, true],
+			control: 1,
 			teamColor: [PURPLE_INK, GREEN_INK],
 		}),
 		minimap(120),
 	]);
 	const samples = built[0]!.match.objective!.samples;
 	assert.deepEqual(samples[0]!.score, [80, 90]);
-	assert.deepEqual(samples[0]!.control, [true, false]);
+	assert.equal(samples[0]!.control, 0);
 });
 
 test("without a pov the side whose count got lower is the winner side", () => {
@@ -478,6 +685,214 @@ test("a stray full-count blip is voided against the surrounding countdown", () =
 	);
 });
 
+const OWN_BUILD: AbilityWithUnknown[][] = [
+	["SCU", "ISM", "ISM", "ISS"],
+	["QR", "RSU", "RSU", "QSJ"],
+	["SJ", "SSU", "SSU", "IRU"],
+];
+
+function ownResults(
+	t: number,
+	{
+		lobby = "PRIVATE" as ScoreboardOwnData["lobby"],
+		stage = 0 as StageId | null,
+		weaponId = 40 as MainWeaponId | null,
+	} = {},
+): DetectedEvent {
+	const data: ScoreboardOwnData = {
+		lobby,
+		mode: "SZ",
+		stage,
+		weaponId,
+		abilities: OWN_BUILD,
+	};
+	return { type: "ScoreboardOwn", t, confidence: 0.9, data };
+}
+
+test("the personal results screen completes the POV player's build", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		scoreboard(300, { povIndex: 5 }),
+		ownResults(320),
+	]);
+	assert.deepEqual(built!.match.teams[1].players[1]!.abilities, OWN_BUILD);
+	assert.equal(built!.sources.length, 3);
+});
+
+test("a personal results screen shown before the results screen completes the POV player's build", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		ownResults(300),
+		scoreboard(320, { povIndex: 5 }),
+	]);
+	assert.deepEqual(built!.match.teams[1].players[1]!.abilities, OWN_BUILD);
+	assert.equal(built!.sources.length, 3);
+});
+
+test("a personal results screen with no results screen after it names the game's lobby and stage", () => {
+	const built = buildScannerMatches([
+		mapStart(0, { stage: null }),
+		...counterReads(10, 200),
+		ownResults(230, { lobby: "SERIES", stage: 3 }),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.match.lobby, "SERIES");
+	assert.equal(built[0]!.match.mode, "SZ");
+	assert.equal(built[0]!.match.stage, 3);
+	assert.equal(built[0]!.sources.at(-1)!.type, "ScoreboardOwn");
+});
+
+test("a personal results screen backs a game with neither intro nor map read", () => {
+	const built = buildScannerMatches([
+		...counterReads(10, 200),
+		ownResults(230, { lobby: "X" }),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.match.lobby, "X");
+	assert.equal(built[0]!.match.startsAt, 10);
+	assert.equal(built[0]!.match.endsAt, 230);
+});
+
+test("a minimap-grouped match puts the personal results' weapon and build on the POV's card", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		povMinimapWithHiddenCards(60),
+		...counterReads(70, 200),
+		ownResults(230, { weaponId: ALPHA[3]! }),
+	]);
+	const pov = built!.match.teams[0].players[3]!;
+	assert.equal(pov.weaponId, ALPHA[3]);
+	assert.deepEqual(pov.abilities, OWN_BUILD);
+});
+
+test("a personal results screen long after the scoreboard is left alone", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		scoreboard(300),
+		ownResults(600),
+	]);
+	assert.equal(built!.match.teams[0].players[0]!.abilities, undefined);
+	assert.equal(built!.sources.length, 2);
+});
+
+const SET_COUNT: XSetCountData = { mode: "TC", wins: 1, losses: 2 };
+const SET_RESULT: XSetResultData = {
+	mode: "TC",
+	results: ["LOSE", "LOSE", "WIN", "WIN", "LOSE"],
+	powerChange: -29.2,
+	power: 2723.2,
+};
+const RANK_POSITION: XRankPositionData = {
+	mode: "TC",
+	position: 259,
+	direction: "DOWN",
+};
+
+function xCard(
+	t: number,
+	type: "XSetCount" | "XSetResult" | "XRankPosition",
+): DetectedEvent {
+	const data = {
+		XSetCount: SET_COUNT,
+		XSetResult: SET_RESULT,
+		XRankPosition: RANK_POSITION,
+	}[type];
+	return { type, t, confidence: 0.95, data };
+}
+
+test("an X Battle set count shown before the results screen joins that game", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		ownResults(300),
+		xCard(305, "XSetCount"),
+		scoreboard(320, { lobby: "X" }),
+	]);
+	assert.deepEqual(xBattleCards(built!.sources), {
+		count: SET_COUNT,
+		result: null,
+		position: null,
+	});
+});
+
+test("the X Battle set result and position join the deciding game, not the next one", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		xCard(300, "XSetResult"),
+		xCard(303, "XRankPosition"),
+		scoreboard(320, { lobby: "X" }),
+		mapStart(450, { stage: 1 }),
+		scoreboard(750, { lobby: "X", stage: 1 }),
+	]);
+	assert.deepEqual(
+		built.map((b) => xBattleCards(b.sources)),
+		[
+			{ count: null, result: SET_RESULT, position: RANK_POSITION },
+			{ count: null, result: null, position: null },
+		],
+	);
+});
+
+test("an X Battle card after the game's results screen joins that game", () => {
+	const [built] = buildScannerMatches([
+		mapStart(0),
+		scoreboard(300, { lobby: "X" }),
+		xCard(330, "XSetCount"),
+	]);
+	assert.deepEqual(xBattleCards(built!.sources).count, SET_COUNT);
+});
+
+test("an X Battle card with no game open is claimed by the results screen after it", () => {
+	const [built] = buildScannerMatches([
+		xCard(300, "XSetCount"),
+		scoreboard(320, { lobby: "X" }),
+	]);
+	assert.deepEqual(xBattleCards(built!.sources).count, SET_COUNT);
+});
+
+test.each([
+	{
+		why: "no results screen",
+		events: () => [mapStart(0), minimap(120), xCard(330, "XSetCount")],
+	},
+	{
+		why: "an unread results header, card before it",
+		events: () => [
+			mapStart(0),
+			xCard(300, "XSetCount"),
+			scoreboard(320, { lobby: null }),
+		],
+	},
+	{
+		why: "an unread results header, card after it",
+		events: () => [
+			mapStart(0),
+			scoreboard(300, { lobby: null }),
+			xCard(330, "XSetCount"),
+		],
+	},
+])(
+	"a game carrying an X Battle card is an X Battle game: $why",
+	({ events }) => {
+		const [built] = buildScannerMatches(events());
+		assert.equal(built!.match.lobby, "X");
+	},
+);
+
+test("an X Battle card joins no game of another lobby, nor one closed long before", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		scoreboard(300, { lobby: "PRIVATE" }),
+		xCard(330, "XSetCount"),
+		mapStart(450, { stage: 1 }),
+		scoreboard(750, { lobby: "X", stage: 1 }),
+		xCard(900, "XSetCount"),
+	]);
+	assert.deepEqual(
+		built.map((b) => b.sources.length),
+		[2, 2],
+	);
+});
+
 test("enriches players with abilities from the match's deaths", () => {
 	const build: AbilityWithUnknown[][] = [
 		["ISM", "ISS", "ISS", "ISS"],
@@ -569,18 +984,24 @@ test("the fallback window does not reach past the previous scoreboard", () => {
 	);
 });
 
-test("non-private lobbies are recorded and skipped on ingest", () => {
+test("lobbies other than private and X battle are recorded and skipped on ingest", () => {
 	const built = buildScannerMatches([
 		mapStart(0),
-		scoreboard(300, { lobby: "X" }),
+		scoreboard(300, { lobby: "REGULAR" }),
 		mapStart(400),
-		scoreboard(700),
+		scoreboard(700, { lobby: "SERIES" }),
+		mapStart(800),
+		scoreboard(1100, { lobby: "X" }),
+		mapStart(1200),
+		scoreboard(1500),
 	]);
 	const skipped = ingestSkipReasons(built);
-	assert.equal(built.length, 2);
-	assert.equal(built[0]!.match.lobby, "X");
+	assert.equal(built.length, 4);
+	assert.equal(built[0]!.match.lobby, "REGULAR");
 	assert.equal(skipped.get(built[0]!), "lobby");
-	assert.equal(skipped.get(built[1]!), undefined);
+	assert.equal(skipped.get(built[1]!), "lobby");
+	assert.equal(skipped.get(built[2]!), undefined);
+	assert.equal(skipped.get(built[3]!), undefined);
 });
 
 test("a scoreless match whose counters had no time to run out is a disconnect", () => {
@@ -606,14 +1027,73 @@ test("a scoreless match a knockout could have ended is kept", () => {
 test("a scoreless match replayed on the same map is a disconnect", () => {
 	const built = buildScannerMatches([
 		mapStart(0),
-		scoreboard(300, { matchScores: [null, null] }),
-		mapStart(400),
-		scoreboard(700),
+		scoreboard(150, { matchScores: [null, null] }),
+		mapStart(250),
+		scoreboard(550),
 	]);
 	const skipped = ingestSkipReasons(built);
 	assert.equal(built.length, 2);
 	assert.equal(skipped.get(built[0]!), "disconnect");
 	assert.equal(skipped.get(built[1]!), undefined);
+});
+
+test("a game ended as a no contest builds no match", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		objective(13, { time: 287, score: [100, 100] }),
+		death(14, "l1"),
+		scoreboard(35, { matchScores: [null, null], noContest: true }),
+		scoreboard(38, { matchScores: [null, null], noContest: true }),
+		mapStart(140),
+		scoreboard(440),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.match.startsAt, 140);
+	assert.deepEqual(built[0]!.match.matchScores, [100, 47]);
+});
+
+test("a full-length match whose score went unread is kept when the same map follows", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		scoreboard(320, { matchScores: [null, null] }),
+		mapStart(400),
+		scoreboard(720),
+	]);
+	assert.equal(built.length, 2);
+	assert.equal(ingestSkipReasons(built).size, 0);
+});
+
+test("a scoreless match whose counters ran down the clock is kept when the same map follows", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		objective(140, { time: 5, score: [40, 60], penalty: [0, 0] }),
+		scoreboard(160, { matchScores: [null, null] }),
+		mapStart(250),
+		scoreboard(550),
+	]);
+	assert.equal(built.length, 2);
+	assert.equal(ingestSkipReasons(built).size, 0);
+});
+
+test("a match whose results screen went unread is kept when the same map follows", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		minimap(60),
+		mapStart(150),
+		scoreboard(450),
+	]);
+	assert.equal(built.length, 2);
+	assert.equal(ingestSkipReasons(built).size, 0);
+});
+
+test("a battle log view of another game on the same map is no replay", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		scoreboard(150, { matchScores: [null, null], paints: GAME_PAINTS }),
+		battleLogScoreboard(200, { paints: OTHER_GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 2);
+	assert.equal(ingestSkipReasons(built).size, 0);
 });
 
 test("a scoreless match the next map moves on from is kept", () => {
@@ -700,6 +1180,502 @@ test("without a replay timestamp, playedAt falls back to the scoreboard's detect
 	assert.equal(built[0]!.match.playedAt, 1_700_000_000_000);
 });
 
+const GAME_PAINTS = [1204, 987, 1530, 842, 1102, 765, 1311, 690];
+const OTHER_GAME_PAINTS = [1188, 1003, 1421, 901, 1250, 612, 1377, 745];
+const PLAYED_AT = new Date(2025, 11, 25, 21, 34).getTime();
+
+function playedGame(): DetectedEvent[] {
+	const results = scoreboard(300, { paints: GAME_PAINTS }) as DetectedEvent & {
+		detectedAt?: number;
+	};
+	results.detectedAt = PLAYED_AT;
+	return [mapStart(0), death(100, "l1"), results];
+}
+
+test("a battle log view of an already built game joins its match", () => {
+	const view = battleLogScoreboard(900, {
+		timestamp: "25.12.2025 21:30",
+		paints: GAME_PAINTS,
+	});
+	const built = buildScannerMatches([...playedGame(), view]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.sources.at(-1), view);
+	assert.equal(built[0]!.match.playedAt, PLAYED_AT);
+});
+
+test("a battle log view with the winner panel misplaced still joins its match", () => {
+	const swapped = [...GAME_PAINTS.slice(4), ...GAME_PAINTS.slice(0, 4)];
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints: swapped }),
+	]);
+	assert.equal(built.length, 1);
+});
+
+test.each([
+	{
+		why: "a paint total misread",
+		paints: GAME_PAINTS.map((paint, i) => (i === 2 ? paint + 5 : paint)),
+	},
+	{
+		why: "a paint total unread",
+		paints: GAME_PAINTS.map((paint, i) => (i === 6 ? null : paint)),
+	},
+	{
+		why: "two paint totals misread",
+		paints: GAME_PAINTS.map((paint, i) => (i < 2 ? paint + 1 : paint)),
+	},
+])("a battle log view with $why still joins its match", ({ paints }) => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints }),
+	]);
+	assert.equal(built.length, 1);
+});
+
+test("a battle log view sharing too few paint totals forms its own match", () => {
+	const paints = GAME_PAINTS.map((paint, i) => (i < 3 ? paint + 1 : paint));
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints }),
+	]);
+	assert.equal(built.length, 2);
+});
+
+test("a battle log view of the same paint totals on another stage forms its own match", () => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints: GAME_PAINTS, stage: 1 as StageId }),
+	]);
+	assert.equal(built.length, 2);
+});
+
+test("a match only battle history screens back is history only", () => {
+	const [played, browsed, replay] = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints: GAME_PAINTS }),
+		battleLogScoreboard(950, { paints: OTHER_GAME_PAINTS }),
+		replayScoreboard(1000),
+	]);
+	assert.equal(isHistoryOnly(played!), false);
+	assert.equal(isHistoryOnly(browsed!), true);
+	assert.equal(isHistoryOnly(replay!), true);
+});
+
+test("with a cache, a rebuild reuses each match whose events are unchanged", () => {
+	const cache: MatchBuildCache<DetectedEvent> = new WeakMap();
+	const first = [mapStart(0), death(100, "l1"), scoreboard(300)];
+	const second = [mapStart(400), death(450, "l2")];
+	const before = buildScannerMatches(
+		[...first, ...second, minimap(460)],
+		cache,
+	);
+	const after = buildScannerMatches(
+		[...first, ...second, minimap(460), scoreboard(700)],
+		cache,
+	);
+	assert.equal(after[0], before[0]);
+	assert.notEqual(after[1], before[1]);
+	assert.deepEqual(
+		after,
+		buildScannerMatches([...first, ...second, minimap(460), scoreboard(700)]),
+	);
+});
+
+test("with a cache, a battle log view joining a match leaves the cached match as it was", () => {
+	const cache: MatchBuildCache<DetectedEvent> = new WeakMap();
+	const game = playedGame();
+	const [before] = buildScannerMatches(game, cache);
+	const view = battleLogScoreboard(900, { paints: GAME_PAINTS });
+	const [after] = buildScannerMatches([...game, view], cache);
+	assert.equal(before!.sources.length, 3);
+	assert.equal(after!.sources.at(-1), view);
+	assert.equal(
+		buildScannerMatches([...game, view], cache)[0]!.sources.length,
+		4,
+	);
+});
+
+test("with a cache, a personal results screen leaves the cached match as it was", () => {
+	const cache: MatchBuildCache<DetectedEvent> = new WeakMap();
+	const game = [mapStart(0), scoreboard(300, { povIndex: 5 })];
+	const [before] = buildScannerMatches(game, cache);
+	const [after] = buildScannerMatches([...game, ownResults(320)], cache);
+	assert.equal(before!.match.teams[1].players[1]!.abilities, undefined);
+	assert.deepEqual(after!.match.teams[1].players[1]!.abilities, OWN_BUILD);
+	assert.equal(after!.match.teams[0], before!.match.teams[0]);
+});
+
+test("a battle log view of another game forms its own match", () => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, { paints: OTHER_GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 2);
+});
+
+test("a battle log view with its stage unread forms no match of its own", () => {
+	const view = battleLogScoreboard(900, {
+		paints: OTHER_GAME_PAINTS,
+		stage: null,
+	});
+	const built = buildScannerMatches([...playedGame(), view]);
+	assert.equal(built.length, 1);
+	assert.ok(!built[0]!.sources.includes(view));
+});
+
+test("a battle log view with its stage unread still joins its already built match", () => {
+	const view = battleLogScoreboard(900, { paints: GAME_PAINTS, stage: null });
+	const built = buildScannerMatches([...playedGame(), view]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.sources.at(-1), view);
+});
+
+test("a battle log view with its stage unread does not close the match still gathering events", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		death(100, "l1"),
+		battleLogScoreboard(150, { paints: OTHER_GAME_PAINTS, stage: null }),
+		scoreboard(300, { paints: GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 1);
+	assert.deepEqual(
+		built[0]!.sources.map((e) => e.t),
+		[0, 100, 300],
+	);
+});
+
+test("a battle log view sharing only paint totals whose recording time contradicts the earlier read forms its own match", () => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		battleLogScoreboard(900, {
+			timestamp: "25.12.2025 19:30",
+			paints: GAME_PAINTS,
+			ka: null,
+		}),
+	]);
+	assert.equal(built.length, 2);
+});
+
+test("a battle log view sharing whole stat lines joins its match though its recording time is hours off", () => {
+	const view = battleLogScoreboard(900, {
+		timestamp: "25.12.2025 9:30",
+		paints: GAME_PAINTS,
+	});
+	const built = buildScannerMatches([...playedGame(), view]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.sources.at(-1), view);
+});
+
+const ALIASES = [
+	"Mesh Cap",
+	"Slugger",
+	"Sunshield",
+	"Bandana",
+	"Headband",
+	"Capped",
+	"Headphones",
+	"Now or Never Seven",
+];
+
+function xBattleGame(): DetectedEvent[] {
+	return [
+		mapStart(0),
+		kill(60, ["Headband"]),
+		kill(90, ["Capped"]),
+		scoreboard(300, { lobby: "X", paints: GAME_PAINTS, names: ALIASES }),
+	];
+}
+
+test("a battle log view revealing an X Battle's real names puts them on its match", () => {
+	const built = buildScannerMatches([
+		...xBattleGame(),
+		battleLogScoreboard(900, { paints: GAME_PAINTS, names: ALIASES }),
+		battleLogScoreboard(905, { paints: GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 1);
+	assert.deepEqual(
+		built[0]!.match.teams.flatMap((team) =>
+			team.players.map((player) => player.name),
+		),
+		NAMES,
+	);
+	assert.deepEqual(
+		built[0]!.match.kills!.map((read) => read.name),
+		["l1", "l2"],
+	);
+});
+
+test("an X Battle's revealed names stay when the battle log shows the aliases again", () => {
+	const built = buildScannerMatches([
+		...xBattleGame(),
+		battleLogScoreboard(900, { paints: GAME_PAINTS }),
+		battleLogScoreboard(905, { paints: GAME_PAINTS, names: ALIASES }),
+	]);
+	assert.equal(built[0]!.match.teams[0].players[0]!.name, NAMES[0]);
+});
+
+test("a battle log view with other names keeps the names of a match a history screen closed", () => {
+	const built = buildScannerMatches([
+		battleLogScoreboard(900, { paints: GAME_PAINTS, names: ALIASES }),
+		battleLogScoreboard(905, { paints: GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.sources.length, 2);
+	assert.equal(built[0]!.match.teams[0].players[0]!.name, ALIASES[0]);
+});
+
+test("a battle log view with too few paint totals read forms its own match", () => {
+	const sparse = GAME_PAINTS.map((paint, i) => (i < 5 ? paint : null));
+	const results = scoreboard(300, { paints: sparse });
+	const built = buildScannerMatches([
+		mapStart(0),
+		results,
+		battleLogScoreboard(900, { paints: sparse }),
+	]);
+	assert.equal(built.length, 2);
+});
+
+test("a battle log view does not close the match still gathering events", () => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		mapStart(1000),
+		death(1100, "l2"),
+		battleLogScoreboard(1150, { paints: GAME_PAINTS }),
+		scoreboard(1300, { paints: OTHER_GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 2);
+	assert.deepEqual(
+		built[1]!.sources.map((e) => e.t),
+		[1000, 1100, 1300],
+	);
+});
+
+test.each([
+	{ why: "an open match", intro: [mapStart(0)] },
+	{ why: "orphan reads", intro: [] },
+])(
+	"a battle log view stands in for a missed results screen of $why",
+	({ intro }) => {
+		const view = battleLogScoreboard(400, {
+			timestamp: "25.12.2025 21:30",
+			paints: OTHER_GAME_PAINTS,
+		});
+		const reads = [...intro, death(100, "l1")];
+		for (const read of reads) {
+			(read as DetectedEvent & { detectedAt?: number }).detectedAt = PLAYED_AT;
+		}
+		const built = buildScannerMatches([...reads, view]);
+		assert.equal(built.length, 1);
+		assert.deepEqual(built[0]!.sources, [...reads, view]);
+	},
+);
+
+test.each([
+	{
+		why: "on another stage",
+		view: () => battleLogScoreboard(200, { stage: 5 as StageId }),
+	},
+	{
+		why: "of another mode",
+		view: () => {
+			const view = battleLogScoreboard(200);
+			(view.data as ScoreboardData).mode = "CB";
+			return view;
+		},
+	},
+	{
+		why: "recorded long before the game",
+		view: () => battleLogScoreboard(200, { timestamp: "25.12.2025 19:30" }),
+	},
+])(
+	"a battle log view $why leaves the match being gathered open",
+	({ view: makeView }) => {
+		const start = mapStart(0) as DetectedEvent & { detectedAt?: number };
+		start.detectedAt = PLAYED_AT;
+		const view = makeView();
+		const built = buildScannerMatches([
+			start,
+			objective(60),
+			death(100, "l1"),
+			view,
+			scoreboard(300, { paints: GAME_PAINTS }),
+		]);
+		assert.deepEqual(
+			built.map((b) => b.sources.map((e) => e.t)),
+			[[0, 60, 100, 300], [200]],
+		);
+		assert.deepEqual(invalidObjectiveEvents(built), []);
+	},
+);
+
+const MINUTE_MS = 60 * 1000;
+
+function seenAt<T extends DetectedEvent>(event: T, detectedAt: number): T {
+	return Object.assign(event, { detectedAt });
+}
+
+/** A game whose results screen was missed: minimaps back it, nothing closes it. */
+function gameMissingResults(t: number, detectedAt?: number): DetectedEvent[] {
+	const reads = [mapStart(t), minimap(t + 60), death(t + 100, "l1")];
+	if (detectedAt === undefined) return reads;
+	return reads.map((read) => seenAt(read, detectedAt));
+}
+
+function laterGameOnStage1(t: number, detectedAt?: number): DetectedEvent[] {
+	const reads = [
+		mapStart(t, { stage: 1 as StageId }),
+		minimap(t + 60, { stage: 1 as StageId }),
+	];
+	if (detectedAt === undefined) return reads;
+	return reads.map((read) => seenAt(read, detectedAt));
+}
+
+test.each([
+	{ why: "later game complete", closesLater: true },
+	{ why: "later game still open", closesLater: false },
+])(
+	"a battle log view completes an earlier match missing its results screen ($why)",
+	({ closesLater }) => {
+		const missed = gameMissingResults(0, PLAYED_AT);
+		const later = laterGameOnStage1(400, PLAYED_AT + 7 * MINUTE_MS);
+		const laterResults = scoreboard(700, {
+			stage: 1 as StageId,
+			paints: OTHER_GAME_PAINTS,
+		});
+		const view = battleLogScoreboard(900, {
+			timestamp: "25.12.2025 21:30",
+			paints: GAME_PAINTS,
+		});
+
+		const built = buildScannerMatches(
+			closesLater
+				? [...missed, ...later, laterResults, view]
+				: [
+						...missed,
+						...later,
+						view,
+						scoreboard(1000, { stage: 1 as StageId }),
+					],
+		);
+
+		assert.equal(built.length, 2);
+		assert.deepEqual(built[0]!.sources, [...missed, view]);
+		assert.deepEqual(built[0]!.match.matchScores, [100, 0]);
+		assert.equal(built[0]!.match.winner, 0);
+		assert.equal(built[0]!.match.playedAt, PLAYED_AT - 4 * MINUTE_MS);
+		assert.deepEqual(
+			built[1]!.sources.map((e) => e.t),
+			[400, 460, closesLater ? 700 : 1000],
+		);
+	},
+);
+
+test("a battle log view recorded long before an earlier match missing its results screen forms its own match", () => {
+	const built = buildScannerMatches([
+		...gameMissingResults(0, PLAYED_AT),
+		...laterGameOnStage1(400, PLAYED_AT + 7 * MINUTE_MS),
+		scoreboard(700, { stage: 1 as StageId }),
+		battleLogScoreboard(900, { timestamp: "25.12.2025 19:30" }),
+	]);
+	assert.deepEqual(
+		built.map((b) => b.sources.map((e) => e.t)),
+		[[0, 60, 100], [400, 460, 700], [900]],
+	);
+});
+
+test("a battle log view completes the earlier match missing its results screen closest to its recording time", () => {
+	const view = battleLogScoreboard(1300, { timestamp: "25.12.2025 21:40" });
+	const built = buildScannerMatches([
+		...gameMissingResults(0, PLAYED_AT),
+		...gameMissingResults(400, PLAYED_AT + 7 * MINUTE_MS),
+		...laterGameOnStage1(800, PLAYED_AT + 14 * MINUTE_MS),
+		scoreboard(1100, { stage: 1 as StageId }),
+		view,
+	]);
+	assert.equal(built.length, 3);
+	assert.equal(built[1]!.sources.at(-1), view);
+});
+
+test("without a wall clock a battle log view completes the sole earlier match missing its results screen", () => {
+	const view = battleLogScoreboard(900);
+	const built = buildScannerMatches([
+		...gameMissingResults(0),
+		...laterGameOnStage1(400),
+		scoreboard(700, { stage: 1 as StageId }),
+		view,
+	]);
+	assert.equal(built.length, 2);
+	assert.equal(built[0]!.sources.at(-1), view);
+});
+
+test("without a wall clock a battle log view fitting several earlier matches missing their results screens forms its own match", () => {
+	const built = buildScannerMatches([
+		...gameMissingResults(0),
+		...gameMissingResults(400),
+		...laterGameOnStage1(800),
+		scoreboard(1100, { stage: 1 as StageId }),
+		battleLogScoreboard(1300),
+	]);
+	assert.equal(built.length, 4);
+	assert.deepEqual(
+		built.at(-1)!.sources.map((e) => e.t),
+		[1300],
+	);
+});
+
+test("with a cache, an earlier match completed from the battle log keeps its identity across rebuilds", () => {
+	const cache: MatchBuildCache<DetectedEvent> = new WeakMap();
+	const played = [
+		...gameMissingResults(0),
+		...laterGameOnStage1(400),
+		scoreboard(700, { stage: 1 as StageId }),
+	];
+	const view = battleLogScoreboard(900);
+	const [missed] = buildScannerMatches(played, cache);
+	const [completed] = buildScannerMatches([...played, view], cache);
+	const [completedAgain] = buildScannerMatches([...played, view], cache);
+	assert.notEqual(completed, missed);
+	assert.equal(completedAgain, completed);
+	assert.equal(buildScannerMatches(played, cache)[0], missed);
+});
+
+test("a battle log view recorded long before the orphan reads leaves them unclaimed", () => {
+	const read = death(100, "l1") as DetectedEvent & { detectedAt?: number };
+	read.detectedAt = PLAYED_AT;
+	const view = battleLogScoreboard(200, { timestamp: "25.12.2025 19:30" });
+	const built = buildScannerMatches([read, view, scoreboard(300)]);
+	assert.deepEqual(
+		built.map((b) => b.sources.map((e) => e.t)),
+		[[100, 300], [200]],
+	);
+});
+
+test("a results screen read again with no match opened since joins its match", () => {
+	const reread = scoreboard(345, { paints: GAME_PAINTS });
+	const built = buildScannerMatches([...playedGame(), reread]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.sources.at(-1), reread);
+});
+
+test("a results screen read again with a paint total misread joins its match", () => {
+	const paints = GAME_PAINTS.map((paint, i) => (i === 0 ? paint + 10 : paint));
+	const built = buildScannerMatches([
+		...playedGame(),
+		scoreboard(345, { paints }),
+	]);
+	assert.equal(built.length, 1);
+});
+
+test("a results screen repeating an earlier board is a new game", () => {
+	const built = buildScannerMatches([
+		...playedGame(),
+		mapStart(1000),
+		scoreboard(1300, { paints: GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 2);
+});
+
 test("a minimap-only match has no playedAt and no winner", () => {
 	const built = buildScannerMatches([minimap(70), minimap(120)]);
 	const match = built[0]!.match;
@@ -721,25 +1697,24 @@ test("a spectator map's minimaps become one cast match: weapons + stage from the
 	assert.deepEqual(weapons(match), ALL);
 });
 
-test("a pov overlay minimap is not flagged as cast", () => {
-	const built = buildScannerMatches([minimap(70, { spectator: false })]);
-	assert.equal(built[0]!.match.cast, false);
+test("a cast match's players come from its most confident minimap read first", () => {
+	const midWipe = [3010, ...ALPHA.slice(1)] as MainWeaponId[];
+	const built = buildScannerMatches([
+		minimap(70, { alpha: midWipe, confidence: 0.65 }),
+		minimap(71, { confidence: 0.78 }),
+	]);
+	assert.deepEqual(weapons(built[0]!.match), ALL);
 });
 
-test("a narrow-left strip layout alone is not flagged as cast", () => {
-	const built = buildScannerMatches([
-		minimap(70, { spectator: false }),
-		playerStatus(75, { layout: "narrow-left" }),
-		playerStatus(76, { layout: "narrow-left" }),
-		minimap(120, { spectator: false }),
-	]);
+test("a pov overlay minimap is not flagged as cast", () => {
+	const built = buildScannerMatches([minimap(70, { spectator: false })]);
 	assert.equal(built[0]!.match.cast, false);
 });
 
 test("a badge-proven strip read flags the match as cast", () => {
 	const built = buildScannerMatches([
 		minimap(70, { spectator: false }),
-		playerStatus(75, { layout: "narrow-left", cast: true }),
+		playerStatus(75, { cast: true }),
 		minimap(120, { spectator: false }),
 	]);
 	assert.equal(built[0]!.match.cast, true);
@@ -781,6 +1756,52 @@ test("a confirmed stage change splits even when the misread-looking frame is mid
 	assert.deepEqual(
 		built.map((b) => b.match.startsAt),
 		[70, 90],
+	);
+});
+
+test("consistent minimap misreads do not split a match from its intro's stage", () => {
+	const built = buildScannerMatches([
+		mapStart(30, { stage: 0 }),
+		minimap(70, { stage: 0 }),
+		minimap(90, { stage: 1 }),
+		minimap(110, { stage: 1 }),
+		minimap(130, { stage: 1 }),
+		minimap(150, { stage: 0 }),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.match.stage, 0);
+});
+
+test("a stage change the intro's stage never returns from splits off the next game", () => {
+	const built = buildScannerMatches([
+		mapStart(30, { stage: 0 }),
+		minimap(70, { stage: 0 }),
+		minimap(90, { stage: 0 }),
+		minimap(300, { stage: 1 }),
+		minimap(320, { stage: 1 }),
+	]);
+	assert.deepEqual(
+		built.map((b) => [b.match.stage, b.match.startsAt]),
+		[
+			[0, 30],
+			[1, 300],
+		],
+	);
+});
+
+test("the intro's stage read again only in the next game does not hold the split back", () => {
+	const built = buildScannerMatches([
+		mapStart(30, { stage: 0 }),
+		minimap(70, { stage: 0 }),
+		minimap(300, { stage: 1 }),
+		minimap(320, { stage: 1 }),
+		scoreboard(400, { stage: 1 }),
+		mapStart(450, { stage: 0 }),
+		minimap(490, { stage: 0 }),
+	]);
+	assert.deepEqual(
+		built.map((b) => b.match.startsAt),
+		[30, 300, 450],
 	);
 });
 
@@ -878,25 +1899,31 @@ function playerStatus(
 		time = (300 - Math.round(t)) as number | null,
 		special = ALL_FALSE,
 		dead = ALL_FALSE,
-		layout = "even" as PlayerStatusData["layout"],
 		cast = null as true | null,
 	} = {},
 ): DetectedEvent {
-	const data: PlayerStatusData = { time, special, dead, layout, cast };
+	const data: PlayerStatusData = { time, special, dead, cast };
 	return { type: "PlayerStatus", t, confidence: 0.9, data };
 }
+
+/** Each read slot ranks its weapon at `score` over a runner-up no row plays at FLOOR_SCORE. */
+const FLOOR_SCORE = 0.5;
 
 function stripWeaponsEvent(
 	t: number,
 	slots: [(MainWeaponId | null)[], (MainWeaponId | null)[]],
-	{ score = 0.6, time = (300 - Math.round(t)) as number | null } = {},
+	{ score = 0.9, time = (300 - Math.round(t)) as number | null } = {},
 ): DetectedEvent {
 	const data: StripWeaponsData = {
 		time,
-		layout: "narrow-right",
 		slots: slots.map((side) =>
 			side.map((weaponId) =>
-				weaponId === null ? null : [{ weaponId, score }],
+				weaponId === null
+					? null
+					: [
+							{ weaponId, score },
+							{ weaponId: 7010 as MainWeaponId, score: FLOOR_SCORE },
+						],
 			),
 		) as StripWeaponsData["slots"],
 	};
@@ -959,7 +1986,6 @@ test("status reads inherit the nearest counter read's cast orientation", () => {
 				[true, false, false, false],
 				[false, false, false, false],
 			],
-			layout: "narrow-right",
 		}),
 		// the caster specs a purple player: sides swap
 		objective(120, {
@@ -971,7 +1997,6 @@ test("status reads inherit the nearest counter read's cast orientation", () => {
 				[true, false, false, false],
 				[false, false, false, false],
 			],
-			layout: "narrow-right",
 		}),
 		minimap(180),
 	]);
@@ -1067,6 +2092,40 @@ test("a sub-10s not-ready gap between ready reads with no death bridges to ready
 	assert.deepEqual(slot0Specials, [true, true, true, true, false]);
 });
 
+test("ready reads before a special could charge are dropped, not bridged into the first real one", () => {
+	const specialAt = (on: boolean) =>
+		[
+			[on, false, false, false],
+			[false, false, false, false],
+		] as PlayerStatusData["special"];
+	const built = buildScannerMatches([
+		mapStart(0),
+		playerStatus(11, { time: 300, special: specialAt(true) }),
+		playerStatus(15, { time: 296, special: specialAt(true) }),
+		playerStatus(16, { time: 295, special: specialAt(false) }),
+		playerStatus(20, { time: 291, special: specialAt(true) }),
+		playerStatus(26, { time: 285, special: specialAt(true) }),
+		playerStatus(28, { time: 283, special: specialAt(false) }),
+		scoreboard(300),
+	]);
+	const slot0Specials = built[0]!.match.playerStatus!.samples.map(
+		(sample) => sample.special[0][0],
+	);
+	assert.deepEqual(slot0Specials, [false, false, false, true, true, false]);
+});
+
+test("a timerless minimap read before the clock starts carries no special", () => {
+	const built = buildScannerMatches([
+		minimap(10, { specialReady: [[], [0]] }),
+		playerStatus(20, { time: 292 }),
+		playerStatus(25, { time: 287 }),
+	]);
+	const anySpecial = built[0]!.match.playerStatus!.samples.map((sample) =>
+		sample.special.flat().some(Boolean),
+	);
+	assert.deepEqual(anySpecial, [false, false, false]);
+});
+
 test("a not-ready gap explained by a death inside it is kept", () => {
 	const read = (special: boolean, dead: boolean) => ({
 		special: [
@@ -1112,16 +2171,39 @@ test("a not-ready gap wide enough to regain a special is kept", () => {
 	assert.deepEqual(slot0Specials, [true, false, false, true]);
 });
 
-test("a known non-SZ match drops its player-status reads too", () => {
+test("a Turf War match keeps its player-status reads", () => {
 	const events = [
-		mapStart(0, { mode: "CB" }),
+		mapStart(0, { mode: "TW" }),
 		objective(60),
-		playerStatus(61),
-		scoreboard(300, { mode: "CB" }),
+		playerStatus(61, { time: 119 }),
+		scoreboard(300, { mode: "TW" }),
 	];
 	const built = buildScannerMatches(events);
-	assert.equal(built[0]!.match.playerStatus, null);
-	assert.deepEqual(invalidObjectiveEvents(built), [events[1], events[2]]);
+	assert.equal(built[0]!.match.objective, null);
+	assert.deepEqual(
+		built[0]!.match.playerStatus!.samples.map((sample) => sample.time),
+		[119],
+	);
+	assert.deepEqual(invalidObjectiveEvents(built), [events[1]]);
+});
+
+test("a Turf War match drops ready reads before a special could charge on its 3:00 clock", () => {
+	const specialAt = (on: boolean) =>
+		[
+			[on, false, false, false],
+			[false, false, false, false],
+		] as PlayerStatusData["special"];
+	const built = buildScannerMatches([
+		mapStart(0, { mode: "TW" }),
+		playerStatus(15, { time: 176, special: specialAt(true) }),
+		playerStatus(16, { time: 175, special: specialAt(false) }),
+		playerStatus(40, { time: 150, special: specialAt(true) }),
+		scoreboard(200, { mode: "TW" }),
+	]);
+	const slot0Specials = built[0]!.match.playerStatus!.samples.map(
+		(sample) => sample.special[0][0],
+	);
+	assert.deepEqual(slot0Specials, [false, false, true]);
 });
 
 test("replay wipes drop status reads by the shared clock projection", () => {
@@ -1170,26 +2252,23 @@ test("minimap card states become timerless player-status samples", () => {
 	});
 });
 
-test("a known non-SZ match still gets its minimap-sourced status samples", () => {
+test("a Turf War match interleaves minimap-sourced status samples", () => {
 	const events = [
-		mapStart(0, { mode: "CB" }),
-		objective(60),
-		playerStatus(61),
+		mapStart(0, { mode: "TW" }),
+		playerStatus(61, { time: 119 }),
 		minimap(90, { spectator: false, dead: [[0], []] }),
-		scoreboard(300, { mode: "CB" }),
+		scoreboard(300, { mode: "TW" }),
 	];
 	const built = buildScannerMatches(events);
-	assert.equal(built[0]!.match.objective, null);
 	const samples = built[0]!.match.playerStatus!.samples;
 	assert.deepEqual(
 		samples.map((sample) => sample.t),
-		[90],
+		[61, 90],
 	);
-	assert.deepEqual(samples[0]!.dead, [
+	assert.deepEqual(samples[1]!.dead, [
 		[true, false, false, false],
 		[false, false, false, false],
 	]);
-	assert.deepEqual(invalidObjectiveEvents(built), [events[1], events[2]]);
 });
 
 test("a losing-side pov swaps minimap-sourced samples into teams order", () => {
@@ -1243,7 +2322,7 @@ test("weapon evidence below the assignment floor keeps the as-drawn order", () =
 				[null, null, null, null],
 			],
 			{
-				score: 0.5,
+				score: 0.6,
 			},
 		),
 		scoreboard(300),
@@ -1274,6 +2353,82 @@ test("minimap enemy-card weapons vote the strip assignment too", () => {
 	]);
 });
 
+/** One strip read with the given (side, slot) pairs splatted or special-ready. */
+function stripRead(
+	t: number,
+	{ dead = [] as [0 | 1, number][], special = [] as [0 | 1, number][] } = {},
+): DetectedEvent {
+	const flags = (marked: [0 | 1, number][]) =>
+		[0, 1].map((side) =>
+			[0, 1, 2, 3].map((slot) =>
+				marked.some(([s, k]) => s === side && k === slot),
+			),
+		) as PlayerStatusData["dead"];
+	return playerStatus(t, { dead: flags(dead), special: flags(special) });
+}
+
+test("a named card's state tells apart two rows sharing a weapon", () => {
+	// rows w1 and w2 both play 40; the strip seats w2 first
+	const card = (name: string, dead: boolean): MinimapTeammate => ({
+		...teammate(40),
+		name,
+		dead,
+	});
+	const built = buildScannerMatches([
+		mapStart(0),
+		stripWeaponsEvent(90, [
+			[40, 40, 2010, 3030],
+			[null, null, null, null],
+		]),
+		stripRead(100, { dead: [[0, 0]] }),
+		{
+			type: "Minimap",
+			t: 100,
+			confidence: 0.8,
+			data: {
+				stage: 0 as StageId,
+				spectator: false,
+				teammates: [card("w2", true), card("w1", false)],
+				enemies: [],
+				teamColors: [null, null],
+			},
+		} as DetectedEvent,
+		stripRead(150, { special: [[0, 0]] }),
+		scoreboard(300, { weapons: [40, 40, 2010, 3030, ...BRAVO] }),
+	]);
+	const sample = built[0]!.match.playerStatus!.samples.at(-1)!;
+	assert.equal(sample.t, 150);
+	assert.deepEqual(sample.special[0], [false, true, false, false]);
+});
+
+test("the pov's death screens place its strip slot", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		stripRead(100, { dead: [[0, 2]] }),
+		death(100, "l1"),
+		stripRead(150, { dead: [[0, 2]] }),
+		death(150, "l2"),
+		stripRead(200, { special: [[0, 2]] }),
+		scoreboard(300, { povIndex: 0 }),
+	]);
+	const sample = built[0]!.match.playerStatus!.samples.at(-1)!;
+	assert.deepEqual(sample.special[0], [true, false, false, false]);
+});
+
+test("kill-feed victims place the enemy strip slots", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		kill(100, ["l3"]),
+		stripRead(101, { dead: [[1, 0]] }),
+		kill(180, ["l3"]),
+		stripRead(181, { dead: [[1, 0]] }),
+		stripRead(220, { special: [[1, 0]] }),
+		scoreboard(300, { povIndex: 0 }),
+	]);
+	const sample = built[0]!.match.playerStatus!.samples.at(-1)!;
+	assert.deepEqual(sample.special[1], [false, false, true, false]);
+});
+
 test("pov diamond cards map to scoreboard rows by name", () => {
 	const cards = [
 		{ ...teammate(ALPHA[1]!), name: "w2", dead: true },
@@ -1297,6 +2452,112 @@ test("pov diamond cards map to scoreboard rows by name", () => {
 	assert.deepEqual(sample.dead, [
 		[false, true, false, false],
 		[false, false, false, false],
+	]);
+});
+
+test("pov diamond cards match OCR-garbled names to their scoreboard rows", () => {
+	// attested (六兆年… VoD, Hagglefish TC): the scoreboard reads サンバイザー as
+	// サンバイザ_ and the first readable card name carries trailing noise, so no
+	// exact match placed either and the leftovers swapped by drawn order
+	const names = [
+		"ロブ",
+		"サンバイザ_",
+		"バンダナ",
+		"スウェット",
+		"l1",
+		"l2",
+		"l3",
+		"l4",
+	];
+	const diamond = (
+		t: number,
+		cards: { name: string | null; dead?: boolean; self?: boolean }[],
+	): DetectedEvent => {
+		const data: MinimapData = {
+			stage: 0 as StageId,
+			spectator: false,
+			teammates: cards.map((card) => ({
+				...teammate(null),
+				name: card.name,
+				dead: card.dead ?? false,
+				self: card.self ?? false,
+			})),
+			enemies: BRAVO.map((id) => enemy(id)),
+			teamColors: [null, null],
+		};
+		return { type: "Minimap", t, confidence: 0.8, data };
+	};
+	const built = buildScannerMatches([
+		mapStart(0),
+		diamond(90, [
+			{ name: null, dead: true },
+			{ name: "サンバイザー" },
+			{ name: "ロブ" },
+			{ name: null, dead: true, self: true },
+		]),
+		diamond(120, [
+			{ name: "スウェット ‘" },
+			{ name: "サンバイザー" },
+			{ name: "ロブ" },
+			{ name: "バンダナ", self: true },
+		]),
+		scoreboard(300, { names, povIndex: 2 }),
+	]);
+	const sample = built[0]!.match.playerStatus!.samples[0]!;
+	assert.deepEqual(sample.dead, [
+		[false, false, true, true],
+		[false, false, false, false],
+	]);
+});
+
+/** A POV minimap read whose ally2 card (under a streamer's overlay) and own card show no weapon. */
+function povMinimapWithHiddenCards(t: number): DetectedEvent {
+	const data: MinimapData = {
+		stage: 0 as StageId,
+		spectator: false,
+		teammates: [
+			{ ...teammate(ALPHA[0]!), name: "w1" },
+			{ ...teammate(null), name: "w2" },
+			{ ...teammate(ALPHA[2]!), name: "w3" },
+			{ ...teammate(null), self: true },
+		],
+		enemies: BRAVO.map((id) => enemy(id)),
+		teamColors: [null, null],
+	};
+	return { type: "Minimap", t, confidence: 0.8, data };
+}
+
+// the strip seats the hidden ally (1001) first and the POV (3030) last
+const STRIP_SEATING: [MainWeaponId[], MainWeaponId[]] = [
+	[ALPHA[1]!, ALPHA[0]!, ALPHA[2]!, ALPHA[3]!],
+	BRAVO,
+];
+
+test("a minimap-grouped match takes unread cards' weapons from their strip slots", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		povMinimapWithHiddenCards(60),
+		...[90, 120, 150, 180].map((t) => stripWeaponsEvent(t, STRIP_SEATING)),
+		stripRead(200, { dead: [[0, 3]] }),
+		death(200, "l1"),
+		stripRead(230, { dead: [[0, 3]] }),
+		death(230, "l2"),
+	]);
+	assert.deepEqual(weapons(built[0]!.match), ALL);
+});
+
+test("an unread card's weapon stays unread while its strip slot is a toss-up", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		povMinimapWithHiddenCards(60),
+		...[90, 120, 150, 180].map((t) => stripWeaponsEvent(t, STRIP_SEATING)),
+	]);
+	assert.deepEqual(weapons(built[0]!.match), [
+		ALPHA[0],
+		null,
+		ALPHA[2],
+		null,
+		...BRAVO,
 	]);
 });
 
@@ -1422,4 +2683,207 @@ test("a same-name stack seen again inside the row lifetime is the same row", () 
 		scoreboard(300),
 	]);
 	assert.equal(built[0]!.match.kills!.length, 1);
+});
+
+test("a row entering unread does not take the place of the named row above it", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		kill(10, ["A"]),
+		kill(12, [null, "A"]),
+		kill(13, ["C", "A"]),
+		scoreboard(300),
+	]);
+	assert.deepEqual(
+		built[0]!.match.kills!.map((k) => [k.t, k.name]),
+		[
+			[10, "A"],
+			[12, "C"],
+		],
+	);
+});
+
+test("an unread row keeps its kill when a later read cannot name it either", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		kill(10, ["A"]),
+		kill(12, [null, "A"]),
+		kill(13, [null, "A"]),
+		scoreboard(300),
+	]);
+	assert.deepEqual(
+		built[0]!.match.kills!.map((k) => [k.t, k.name]),
+		[
+			[10, "A"],
+			[12, null],
+		],
+	);
+});
+
+test("unbacked matches are left out by default", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		kill(60, ["A"]),
+		mapStart(400),
+		kill(460, ["B"]),
+	]);
+	assert.deepEqual(built, []);
+});
+
+test("unbacked matches are emitted flagged on request, map intro opened or orphaned", () => {
+	const built = buildScannerMatches(
+		[
+			kill(20, ["Z"]),
+			mapStart(30),
+			kill(60, ["A"]),
+			mapStart(400),
+			kill(460, ["B"]),
+			scoreboard(700),
+			kill(800, ["C"]),
+		],
+		undefined,
+		{ unbacked: true },
+	);
+	assert.deepEqual(
+		built.map((b) => [b.unbacked ?? false, b.match.kills?.map((k) => k.name)]),
+		[
+			[true, ["Z"]],
+			[true, ["A"]],
+			[false, ["B"]],
+			[true, ["C"]],
+		],
+	);
+});
+
+test("unbacked matches without kill reads are not emitted", () => {
+	const built = buildScannerMatches([mapStart(0), mapStart(400)], undefined, {
+		unbacked: true,
+	});
+	assert.deepEqual(built, []);
+});
+
+test("the personal results' weapon seats the POV, so an unread teammate takes the other strip slot", () => {
+	const built = buildScannerMatches([
+		mapStart(0),
+		povMinimapWithHiddenCards(60),
+		...[90, 120, 150, 180].map((t) => stripWeaponsEvent(t, STRIP_SEATING)),
+		ownResults(230, { weaponId: ALPHA[3]! }),
+	]);
+	assert.deepEqual(weapons(built[0]!.match), ALL);
+});
+
+// the hidden ally's slot (STRIP_SEATING slot 0) reads two kits of one weapon close together
+function kitTieStripRead(
+	t: number,
+	leader: MainWeaponId,
+	runnerUp: MainWeaponId,
+): DetectedEvent {
+	const event = stripWeaponsEvent(t, STRIP_SEATING);
+	const data = event.data as StripWeaponsData;
+	data.slots[0][0] = [
+		{ weaponId: leader, score: 0.9 },
+		{ weaponId: runnerUp, score: 0.85 },
+		{ weaponId: 7010 as MainWeaponId, score: FLOOR_SCORE },
+	];
+	return event;
+}
+
+function hiddenAllyKitTieGame(
+	reads: [MainWeaponId, MainWeaponId][],
+): DetectedEvent[] {
+	return [
+		mapStart(0),
+		povMinimapWithHiddenCards(60),
+		...reads.map(([leader, runnerUp], i) =>
+			kitTieStripRead(90 + i * 10, leader, runnerUp),
+		),
+		ownResults(230, { weaponId: ALPHA[3]! }),
+	];
+}
+
+test("an unread card takes the kit its strip slot ranks first read after read", () => {
+	const [built] = buildScannerMatches(
+		hiddenAllyKitTieGame(Array(6).fill([1001, 1000])),
+	);
+	assert.equal(built!.match.teams[0].players[1]!.weaponId, 1001);
+});
+
+test("an unread card whose strip slot splits between two kits takes the base weapon", () => {
+	const [built] = buildScannerMatches(
+		hiddenAllyKitTieGame([
+			[1001, 1000],
+			[1000, 1001],
+			[1001, 1000],
+			[1000, 1001],
+			[1001, 1000],
+			[1000, 1001],
+		]),
+	);
+	assert.equal(built!.match.teams[0].players[1]!.weaponId, 1000);
+});
+
+function counterReads(from: number, to: number): DetectedEvent[] {
+	const reads: DetectedEvent[] = [];
+	for (let t = from; t <= to; t += 10) {
+		reads.push(objective(t, { time: 300 - (t - from) }));
+	}
+	return reads;
+}
+
+test("a map intro with a minute of counter reads backs a match without a results screen", () => {
+	const built = buildScannerMatches([mapStart(0), ...counterReads(10, 200)]);
+	assert.equal(built.length, 1);
+	assert.equal(built[0]!.match.winner, null);
+	assert.equal(built[0]!.match.endsAt, 200);
+	assert.equal(ingestSkipReasons(built).get(built[0]!), "noPlayers");
+});
+
+test("a map intro with under a minute of counter reads backs no match", () => {
+	assert.deepEqual(
+		buildScannerMatches([mapStart(0), ...counterReads(10, 60)]),
+		[],
+	);
+});
+
+test("a map intro right after a replay-browser entry plays that replay back", () => {
+	const built = buildScannerMatches([
+		replayScoreboard(0, { paints: GAME_PAINTS }),
+		mapStart(8),
+		...counterReads(20, 280),
+		replayScoreboard(290, { paints: GAME_PAINTS }),
+	]);
+	assert.equal(built.length, 1);
+	assert.equal(isHistoryOnly(built[0]!), false);
+	assert.equal(built[0]!.match.lobby, "PRIVATE");
+	assert.equal(built[0]!.match.replayCode, "RABC-DEFG-HIJK-LMNO");
+	assert.equal(built[0]!.match.endsAt, 290);
+	assert.ok(built[0]!.match.objective);
+});
+
+test("replays played back one after another each join their own entry", () => {
+	const built = buildScannerMatches([
+		replayScoreboard(0, { paints: GAME_PAINTS }),
+		mapStart(8),
+		...counterReads(20, 280),
+		replayScoreboard(290, { paints: OTHER_GAME_PAINTS, stage: 1 }),
+		mapStart(297, { stage: 1 }),
+		...counterReads(310, 570),
+	]);
+	assert.deepEqual(
+		built.map((b) => [b.match.stage, b.match.endsAt, isHistoryOnly(b)]),
+		[
+			[0, 280, false],
+			[1, 570, false],
+		],
+	);
+});
+
+test("a map intro of another stage or long after a replay-browser entry leaves the entry alone", () => {
+	for (const intro of [mapStart(8, { stage: 1 }), mapStart(120)]) {
+		const built = buildScannerMatches([
+			replayScoreboard(0, { paints: GAME_PAINTS }),
+			intro,
+			...counterReads(130, 300),
+		]);
+		assert.deepEqual(built.map(isHistoryOnly), [true, false]);
+	}
 });

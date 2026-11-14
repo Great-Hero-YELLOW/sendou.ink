@@ -2,10 +2,10 @@ import type { TFunction } from "i18next";
 import { Map as MapIcon } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import * as R from "remeda";
 import { SendouButton } from "~/components/elements/Button";
 import { SendouDialog } from "~/components/elements/Dialog";
 import { useTournament } from "~/features/tournament/tournament-context";
-import { nullFilledArray } from "~/utils/arrays";
 import type { TournamentMatchLoaderData } from "../loaders/to.$id.matches.$mid.server";
 import { useMatch } from "../match-page-context";
 import { pickInfoText } from "../tournament-match-utils";
@@ -27,7 +27,11 @@ export function OrganizerMatchMapListDialog({
 		(map) => map.bannedByTournamentTeamId,
 	);
 
-	let number = 0;
+	const playableSlots = R.times(
+		Math.max(data.mapList?.length ?? 0, data.match.roundMaps?.count ?? 0),
+		(i) => ({ key: i, map: data.mapList?.[i] }),
+	).filter(({ map }) => !map?.bannedByTournamentTeamId);
+
 	return (
 		<>
 			<SendouDialog
@@ -37,21 +41,12 @@ export function OrganizerMatchMapListDialog({
 				className="w-max"
 			>
 				<div className="mt-2">
-					{nullFilledArray(
-						Math.max(
-							data.mapList?.length ?? 0,
-							data.match.roundMaps?.count ?? 0,
-						),
-					).map((_, i) => {
-						const map = data.mapList?.[i];
-
-						if (map?.bannedByTournamentTeamId) return null;
-
-						number++;
+					{playableSlots.map(({ key, map }, slotIndex) => {
+						const number = slotIndex + 1;
 
 						if (!map)
 							return (
-								<div key={i}>
+								<div key={key}>
 									{number}){" "}
 									<span className="text-lighter text-xs italic">
 										Counterpick
@@ -60,7 +55,7 @@ export function OrganizerMatchMapListDialog({
 							);
 
 						return (
-							<div key={i}>
+							<div key={key}>
 								{number}) {t(`game-misc:MODE_LONG_${map.mode}`)} on{" "}
 								{t(`game-misc:STAGE_${map.stageId}`)}{" "}
 								<span className="text-lighter text-xs italic ml-1">

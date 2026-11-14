@@ -36,9 +36,6 @@
 
 .username {
 	font-weight: var(--weight-semi);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .iconYes {
@@ -47,10 +44,6 @@
 
 .iconNo {
 	color: var(--color-error);
-}
-
-.iconPending {
-	color: var(--color-text-lighter);
 }
 
 .buttons {

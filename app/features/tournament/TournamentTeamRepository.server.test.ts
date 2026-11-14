@@ -1,3 +1,4 @@
+import * as R from "remeda";
 import { beforeEach, describe, expect, test } from "vitest";
 import * as ImageFactory from "~/db/seed/factories/ImageFactory";
 import * as TournamentFactory from "~/db/seed/factories/TournamentFactory";
@@ -10,6 +11,7 @@ import { withUserId } from "~/utils/Test";
 import * as TournamentTeamRepository from "./TournamentTeamRepository.server";
 
 const TEAM_COUNT = 4;
+const NOT_PLAYED_MATCH_ID = -1;
 
 /** Pools of two teams each, followed by a final between the two pool winners. */
 const POOLS_TO_FINAL: TournamentSettings["bracketProgression"] = [
@@ -23,7 +25,7 @@ const POOLS_TO_FINAL: TournamentSettings["bracketProgression"] = [
 		name: "Final",
 		type: "single_elimination",
 		requiresCheckIn: false,
-		settings: { thirdPlaceMatch: false },
+		settings: { skippedRounds: ["THIRD_PLACE_MATCH"] },
 		sources: [{ bracketIdx: 0, placements: [1] }],
 	},
 ];
@@ -55,6 +57,15 @@ const membersByTeamId = (tournamentTeamId: number) =>
 		])
 		.where("TournamentTeamMember.tournamentTeamId", "=", tournamentTeamId)
 		.execute();
+
+const teamCountOf = async (tournamentId: number) =>
+	(
+		await db
+			.selectFrom("TournamentTeam")
+			.select("TournamentTeam.id")
+			.where("TournamentTeam.tournamentId", "=", tournamentId)
+			.execute()
+	).length;
 
 const tournamentNameOf = async (userId: number) =>
 	(
@@ -293,7 +304,144 @@ describe("TournamentTeamRepository", () => {
 		});
 	});
 
+	describe("insert", () => {
+		test("returns null when the owner is already on a team of the tournament", async () => {
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+			await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [ownerId()],
+				team: { name: "Team Olive", prefersNotToHost: 0, teamId: null },
+			});
+
+			const result = await withUserId(ownerId(), () =>
+				TournamentTeamRepository.insert({
+					team: { name: "Team Teal", prefersNotToHost: 0, teamId: null },
+					userId: ownerId(),
+					tournamentId: tournament.id,
+				}),
+			);
+
+			expect(result).toBeNull();
+			expect(await teamCountOf(tournament.id)).toBe(1);
+		});
+
+		test("creates the team when the owner is only on a team of another tournament", async () => {
+			const otherTournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+			await TournamentTeamFactory.create({
+				tournamentId: otherTournament.id,
+				memberUserIds: [ownerId()],
+				team: { name: "Team Olive", prefersNotToHost: 0, teamId: null },
+			});
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+
+			const result = await withUserId(ownerId(), () =>
+				TournamentTeamRepository.insert({
+					team: { name: "Team Teal", prefersNotToHost: 0, teamId: null },
+					userId: ownerId(),
+					tournamentId: tournament.id,
+				}),
+			);
+
+			expect(result).not.toBeNull();
+		});
+	});
+
 	describe("join", () => {
+		test("returns null when the user is already on another team of the tournament", async () => {
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+			await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [memberId()],
+				team: { name: "Team Olive", prefersNotToHost: 0, teamId: null },
+			});
+			const team = await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [ownerId()],
+				team: { name: "Team Teal", prefersNotToHost: 0, teamId: null },
+			});
+
+			const result = await withUserId(memberId(), () =>
+				TournamentTeamRepository.join({
+					newTeamId: team.id,
+					userId: memberId(),
+				}),
+			);
+
+			expect(result).toBeNull();
+			expect(
+				(await membersByTeamId(team.id)).map((member) => member.userId),
+			).toEqual([ownerId()]);
+		});
+
+		test("adds a user already on another team of the tournament when allowed", async () => {
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+			await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [memberId()],
+				team: { name: "Team Olive", prefersNotToHost: 0, teamId: null },
+			});
+			const team = await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [ownerId()],
+				team: { name: "Team Teal", prefersNotToHost: 0, teamId: null },
+			});
+
+			await withUserId(organizerId(), () =>
+				TournamentTeamRepository.join({
+					newTeamId: team.id,
+					userId: memberId(),
+					isOrganizerAdded: true,
+					allowOtherTeamMembership: true,
+				}),
+			);
+
+			expect(
+				(await membersByTeamId(team.id)).map((member) => member.userId),
+			).toContain(memberId());
+		});
+
+		test.each([
+			{ why: "joins past a not checked-in team", isCheckedIn: false },
+			{ why: "returns null for a checked-in team", isCheckedIn: true },
+		])("ignoring not checked-in teams $why", async ({ isCheckedIn }) => {
+			const tournament = await TournamentFactory.create({
+				authorId: organizerId(),
+			});
+			await TournamentTeamFactory.create(
+				{
+					tournamentId: tournament.id,
+					memberUserIds: [memberId()],
+					team: { name: "Team Olive", prefersNotToHost: 0, teamId: null },
+				},
+				{ isCheckedIn },
+			);
+			const team = await TournamentTeamFactory.create({
+				tournamentId: tournament.id,
+				memberUserIds: [ownerId()],
+				team: { name: "Team Teal", prefersNotToHost: 0, teamId: null },
+			});
+
+			const result = await withUserId(memberId(), () =>
+				TournamentTeamRepository.join({
+					newTeamId: team.id,
+					userId: memberId(),
+					ignoreNotCheckedInTeams: true,
+				}),
+			);
+
+			expect(result === null).toBe(isCheckedIn);
+		});
+
 		test("joining on your own is not marked as organizer added", async () => {
 			const tournament = await TournamentFactory.create({
 				authorId: organizerId(),
@@ -454,7 +602,40 @@ describe("TournamentTeamRepository", () => {
 				});
 
 			expect(recentMaps).toEqual([
-				{ mode: "SZ", stageId: 1 },
+				[{ mode: "SZ", stageId: 1 }],
+				[{ mode: "SZ", stageId: 1 }],
+			]);
+		});
+
+		test("lists each map once, most recently played first, however many players played it", async () => {
+			const players = await UserFactory.createMany(TEAM_COUNT * 2);
+			const tournament = await TournamentFactory.createPlayed(
+				{
+					authorId: organizerId(),
+					bracketProgression: POOLS_TO_FINAL,
+					minMembersPerTeam: 2,
+				},
+				{
+					teamRosters: R.chunk(
+						players.map((player) => player.id),
+						2,
+					),
+					playedOut: 0,
+					maps: POOL_MAPS,
+				},
+			);
+			const [final] = await TournamentFactory.playOut(tournament.id, 1, {
+				maps: FINAL_MAPS,
+			});
+
+			const [winnerMaps] =
+				await TournamentTeamRepository.findRecentlyPlayedMapsByIds({
+					teamIds: [final.winnerTeamId, final.loserTeamId],
+					excludeMatchId: NOT_PLAYED_MATCH_ID,
+				});
+
+			expect(winnerMaps).toEqual([
+				{ mode: "TC", stageId: 2 },
 				{ mode: "SZ", stageId: 1 },
 			]);
 		});

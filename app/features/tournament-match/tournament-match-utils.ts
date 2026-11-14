@@ -1,6 +1,4 @@
 import type { TFunction } from "i18next";
-import * as R from "remeda";
-import type { TournamentRoundMaps } from "~/db/tables-json";
 import { CHANNEL_PREFIX } from "~/features/events/events-types";
 import type { Tournament } from "~/features/tournament-bracket/core/Tournament";
 import type { TournamentDataTeam } from "~/features/tournament-bracket/core/Tournament.server";
@@ -26,19 +24,6 @@ export function resolveHostingTeam(
 	return teams[0];
 }
 
-export function mapCountPlayedInSetWithCertainty({
-	bestOf,
-	scores,
-}: {
-	bestOf: number;
-	scores: [number, number];
-}) {
-	const maxScore = Math.max(...scores);
-	const scoreSum = R.sum(scores);
-
-	return scoreSum + (Math.ceil(bestOf / 2) - maxScore);
-}
-
 export function matchIsLocked({
 	tournament,
 	matchId,
@@ -50,9 +35,7 @@ export function matchIsLocked({
 }) {
 	if (scores[0] !== 0 || scores[1] !== 0) return false;
 
-	const locked = tournament.ctx.castedMatchesInfo?.lockedMatches ?? [];
-
-	return locked.some((lm) => lm.matchId === matchId);
+	return tournament.isMatchLockedForCast(matchId);
 }
 
 export function pickInfoText({
@@ -87,24 +70,4 @@ export function pickInfoText({
 
 	logger.error(`Unknown source: ${String(map.source)}`);
 	return "";
-}
-
-export function isSetOverByResults({
-	results,
-	count,
-	countType,
-}: {
-	results: Array<{ winnerTeamId: number }>;
-	count: number;
-	countType: TournamentRoundMaps["type"];
-}) {
-	const winCounts = R.countBy(results, (r) => r.winnerTeamId);
-
-	if (countType === "PLAY_ALL") {
-		return R.sum(Object.values(winCounts)) === count;
-	}
-
-	const maxWins = Math.max(...Object.values(winCounts));
-
-	return maxWins >= Math.ceil(count / 2);
 }
